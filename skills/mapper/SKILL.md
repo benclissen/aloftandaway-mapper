@@ -49,8 +49,8 @@ page.
 - Sea and air legs are drawn as straight lines, with a warning. Add `via`
   points through `update_project` to steer a leg, or use `line`.
 - The `follow` camera acts as `glide`, with a warning.
-- Terrain and the ship, plane, car, train and walk symbols aren't available.
-  They warn too.
+- Terrain isn't available, and neither is any symbol other than `dot` or
+  `none` (ship, plane, car, train, walk and arrow). They warn too.
 - Output is one flattened video. Stage 2 adds layered ProRes and FCPXML for
   Final Cut Pro.
 
@@ -79,14 +79,17 @@ The manifest records the settings and where the credit went.
 
 ## Credit
 
-Every render needs the map credit: © OpenStreetMap contributors · OpenMapTiles
-· OpenFreeMap. By default it's burned into the bottom-right of the video. If
-the project's `credit` is `description`, tell the user to put it in the video
-description. `render_status` repeats the credit when the render is done.
+Every render needs this map credit, exactly as written:
+
+`© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap`
+
+By default it's burned into the bottom-right of the video. If the project's
+`credit` is `description`, tell the user to put it in the video description.
+`render_status` repeats the credit when the render is done.
 
 ## Example
 
-A cruise from Piraeus to Mykonos, Santorini and Rhodes:
+A cruise from Piraeus to Mykonos, Santorini and Rhodes, as `set_stops` input:
 
 ```json
 {

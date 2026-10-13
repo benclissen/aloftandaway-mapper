@@ -13,6 +13,25 @@ Read before working:
 Plans go in `docs/superpowers/plans/`. Build one stage at a time. Each stage
 gets its own plan, and the user approves it before any code is written.
 
+## Sub-agents
+
+Carry out plans with sub-agents (superpowers:subagent-driven-development).
+Each task gets a fresh implementer and a review, and the whole branch gets a
+final review. Always set the model explicitly, and pick it by how hard the
+work is:
+
+- **Opus 5.5** (`opus`) for complex work: design judgement, tricky maths,
+  the render and GPU pipeline, concurrency, recovery logic, and the final
+  whole-branch review.
+- **Sonnet 5.5** (`sonnet`) for medium work: multi-file features with a clear
+  plan, integration, and most task reviews.
+- **Haiku 5.5** (`haiku`) for very simple, straightforward work: small
+  mechanical edits to one or two files where the plan spells out the change,
+  and re-reviews of small fixes.
+
+Each task in a plan names its model. If a sub-agent gets stuck, retry the
+task one tier up.
+
 ## Rules
 
 - **This is a public repo.** Commit nothing private: no API keys or tokens,

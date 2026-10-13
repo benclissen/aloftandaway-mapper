@@ -96,6 +96,10 @@ describe('validateProject', () => {
     expect(warnings.filter((w) => w.code === 'zoom-above-max')).toEqual([
       expect.objectContaining({ path: ['camera'], fix: expect.stringContaining('blank') }),
     ])
+    // The agent can't see a fitted shot in the project, so the fix says where to find it.
+    const fix = warnings.find((w) => w.code === 'zoom-above-max')!.fix!
+    expect(fix).toContain('camera.resolvedStart')
+    expect(fix).toContain('camera.resolvedEnd')
   })
 
   test('a sea leg is a not-available-yet warning on its mode', () => {

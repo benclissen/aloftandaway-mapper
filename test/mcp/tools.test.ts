@@ -82,6 +82,33 @@ describe('tools', () => {
     expect(text(got)).toContain('0 errors, 0 warnings')
   })
 
+  test('project results include the resolved camera shots, wrapped to ±180', async () => {
+    const folder = path.join(tmp, 'pacific')
+    await call('create_project', { folder, name: 'Pacific' })
+    const set = await call('set_stops', {
+      folder,
+      stops: [
+        { name: 'Suva', at: [178.4419, -18.1416] },
+        { name: 'Apia', at: [-171.7513, -13.8333] },
+      ],
+    })
+    for (const result of [set, await call('get_project', { folder })]) {
+      const { camera } = result.structuredContent as {
+        camera: { resolvedStart: { center: [number, number]; zoom: number }; resolvedEnd: { center: [number, number] } }
+      }
+      // The fitted centre lies across the antimeridian from Suva, at about −176.7.
+      expect(camera.resolvedStart.center[0]).toBeGreaterThan(-180)
+      expect(camera.resolvedStart.center[0]).toBeLessThan(-176)
+      expect(camera.resolvedStart.zoom).toBeGreaterThan(0)
+      expect(camera.resolvedEnd).toEqual(camera.resolvedStart)
+    }
+
+    // A stored shot comes back as stored.
+    const start = { center: [179.5, -16], zoom: 6, bearing: 0, pitch: 0 }
+    const updated = await call('update_project', { folder, set: { camera: { start } } })
+    expect((updated.structuredContent as { camera: { resolvedStart: unknown } }).camera.resolvedStart).toEqual(start)
+  })
+
   test('update_project applies a patch', async () => {
     const folder = path.join(tmp, 'p')
     await call('create_project', { folder, name: 'P', output: { height: 1080 } })

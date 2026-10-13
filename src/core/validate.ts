@@ -94,7 +94,9 @@ export function validateProject(project: Project): { errors: Issue[]; warnings: 
         code: 'zoom-above-max',
         message: `The ${look.theme} theme's tiles stop at zoom ${max}, but the fitted ${which} ${fitted.length > 1 ? 'views are' : 'view is'} at zoom ${zoom}`,
         path: ['camera'],
-        fix: `Store ${fitted.map((w) => `camera.${w}`).join(' and ')} with a zoom of ${max} or less, or set look.theme to 'blank' if you need the deeper zoom.`,
+        fix:
+          `Store ${fitted.map((w) => `camera.${w}`).join(' and ')} with a zoom of ${max} or less, or set look.theme to 'blank' if you need the deeper zoom. ` +
+          'get_project shows the fitted shots as camera.resolvedStart and camera.resolvedEnd; start from those.',
       })
     }
   }

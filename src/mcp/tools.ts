@@ -12,12 +12,15 @@ import {
   OutputSchema,
   ProjectError,
   ProjectPatchSchema,
+  resolveShots,
   setStops,
   StopInputSchema,
   validateProject,
   zodIssues,
+  unwrapLng,
   type Issue,
   type Project,
+  type Shot,
 } from '../core/index.js'
 import { contactSheet, PreviewAtSchema, previewFrame } from '../render/preview.js'
 import { cancelRender, renderStatus, startRenderJob, type RenderStatus } from '../render/jobs.js'
@@ -68,9 +71,17 @@ function validationLine(errors: Issue[], warnings: Issue[]): string {
   return `${plural(errors.length, 'error')}, ${plural(warnings.length, 'warning')}`
 }
 
-/** What every project-changing tool returns: the project, its timeline and what validation says. */
+/** `shot` with its longitude wrapped to ±180, as the schema stores it. Fitted shots can lie beyond 180. */
+const wrapped = (shot: Shot): Shot => ({ ...shot, center: [unwrapLng(0, shot.center[0]), shot.center[1]] })
+
+/**
+ * What every project-changing tool returns: the project, its timeline, the camera's start and end shots as rendered
+ * (fitted to the route where the project has none) and what validation says.
+ */
 function projectResult(project: Project): ToolResult {
-  const timeline = buildTimeline(project, buildRoute(project))
+  const route = buildRoute(project)
+  const timeline = buildTimeline(project, route)
+  const shots = resolveShots(project, route)
   const validation = validateProject(project)
   const arrivals = timeline.arrivals.map((a) => ({
     stopId: a.stopId,
@@ -94,6 +105,7 @@ function projectResult(project: Project): ToolResult {
     data: {
       project,
       timeline: { durationSeconds: timeline.durationSeconds, totalFrames: timeline.totalFrames, arrivals },
+      camera: { resolvedStart: wrapped(shots.start), resolvedEnd: wrapped(shots.end) },
       validation,
     },
   }
@@ -252,7 +264,7 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'get_project',
     description:
-      'Read a project: stops, legs, look, camera, timing and output, plus arrival times and validation. Stop positions are [lng, lat]. Use it to check the current state before changing anything. The folder must be absolute.',
+      'Read a project: stops, legs, look, camera, timing and output, plus arrival times, validation and the shots the camera starts and ends on (camera.resolvedStart and resolvedEnd, fitted to the route when not stored). Stop positions are [lng, lat]. Use it to check the current state before changing anything. The folder must be absolute.',
     input: z.strictObject({ folder }),
     async run({ folder }) {
       return projectResult(await loadProject(folder))

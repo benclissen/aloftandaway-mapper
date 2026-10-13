@@ -241,6 +241,21 @@ describe('buildTimeline', () => {
     expect(tl.totalFrames).toBe(1)
     expect(tl.stateAt(0).frame).toBe(0)
   })
+
+  test('with no end hold and no last pause, the last frame shows the last stop', () => {
+    const base = greekIslands()
+    const p = greekIslands({
+      timing: { holdStart: 1, travel: 10, holdEnd: 0 },
+      camera: { ...base.camera, easing: 'linear' },
+    })
+    expect(p.stops.at(-1)!.pause).toBe(0)
+    const { route, tl } = timelineOf(p)
+    expect(tl.arrivals.at(-1)!.frame).toBe(tl.totalFrames - 1)
+    const last = tl.stateAt(tl.totalFrames - 1)
+    expect(last.head.at).toEqual(p.stops.at(-1)!.at)
+    expect(last.distance).toBe(route.length)
+    expect(tl.durationSeconds).toBe(tl.totalFrames / 25)
+  })
 })
 
 describe('formatTimecode', () => {

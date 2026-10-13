@@ -75,7 +75,6 @@ export function buildTimeline(project: Project, route: Route): Timeline {
   const rate = fpsValue(fps)
 
   const total = holdStart + travel + stops.reduce((sum, s) => sum + s.pause, 0) + holdEnd
-  const totalFrames = Math.max(1, toFrame(total))
 
   // Boundaries in seconds, accumulated in order and only then turned into frames.
   const lengths = route.legs.map((leg) => leg.length)
@@ -95,6 +94,8 @@ export function buildTimeline(project: Project, route: Route): Timeline {
   })
   const travelStartFrame = toFrame(holdStart)
   const travelEndFrame = toFrame(t)
+  // With no end hold and no last pause, the last arrival would land one past the end. Keep it on the last frame.
+  const totalFrames = Math.max(toFrame(total), travelEndFrame + 1)
 
   // Route distance at the start and end of each leg, summed in the order `buildRoute` sums them.
   const legStartDistance: number[] = []

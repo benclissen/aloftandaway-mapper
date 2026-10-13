@@ -101,3 +101,8 @@ export async function cancelRender(jobId: string): Promise<RenderStatus> {
 function copy(status: RenderStatus): RenderStatus {
   return structuredClone(status)
 }
+
+/** Cancels every job that is running or queued and resolves once they have all stopped. */
+export async function cancelAll(): Promise<void> {
+  await Promise.all([...jobs.keys()].map((jobId) => cancelRender(jobId)))
+}

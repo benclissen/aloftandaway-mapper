@@ -431,3 +431,11 @@ export function getServer(): Promise<MapperServer> {
   }
   return shared
 }
+
+/** Closes the process's server if `getServer` started one. Starting it just to close it would be wasteful. */
+export async function closeServerIfStarted(): Promise<void> {
+  const starting = shared
+  if (!starting) return
+  const server = await starting.catch(() => undefined)
+  await server?.close()
+}

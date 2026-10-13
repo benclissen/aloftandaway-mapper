@@ -28,33 +28,44 @@ export function createMcpServer(): McpServer {
 }
 
 /**
- * Serves MCP on stdin and stdout until stdin ends or the process gets SIGINT, SIGTERM or SIGHUP. Then it cancels renders,
- * closes the preview browser and the studio server, and exits. Stdout carries only protocol.
+ * Makes SIGINT, SIGTERM and SIGHUP shut the process down: `extra` runs first, then renders are cancelled and the
+ * preview browser and studio server are closed, then the process exits with `signalExitCode`. Returns the shutdown
+ * function, which a command calls to exit when it is done (with its own exit code). Only the first call does anything.
+ * A second signal while it runs kills the process the usual way.
  */
-export async function runStdio(): Promise<void> {
-  // Anything that logs to stdout would corrupt the protocol.
-  console.log = console.info = console.debug = (...args: unknown[]) => console.error(...args)
-
-  const server = createMcpServer()
+export function installShutdown(extra?: () => Promise<void>, signalExitCode = 0): (exitCode?: number) => Promise<void> {
   let shuttingDown: Promise<void> | undefined
-  const shutdown = (): Promise<void> => {
+  const shutdown = (exitCode = signalExitCode): Promise<void> => {
     shuttingDown ??= (async () => {
       setTimeout(() => process.exit(1), SHUTDOWN_LIMIT_MS).unref()
       try {
+        await extra?.()
         await cancelAll()
         await closePreviews()
         await closeServerIfStarted()
       } catch (e) {
         console.error('Mapper shutdown error:', e)
       }
-      process.exit(0)
+      process.exit(exitCode)
     })()
     return shuttingDown
   }
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.once(signal, () => void shutdown())
+  return shutdown
+}
 
+/**
+ * Serves MCP on stdin and stdout until stdin ends or the process gets SIGINT, SIGTERM or SIGHUP. Then it shuts down
+ * as `installShutdown` describes. Stdout carries only protocol.
+ */
+export async function runStdio(): Promise<void> {
+  // Anything that logs to stdout would corrupt the protocol.
+  console.log = console.info = console.debug = (...args: unknown[]) => console.error(...args)
+
+  const server = createMcpServer()
+  const shutdown = installShutdown()
   server.server.onclose = () => void shutdown()
   // The SDK's stdio transport doesn't notice stdin ending.
   process.stdin.on('end', () => void shutdown())
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.once(signal, () => void shutdown())
   await server.connect(new StdioServerTransport())
 }

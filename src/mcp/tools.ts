@@ -108,7 +108,8 @@ function formatIssues(issues: { path: (string | number)[]; message: string }[]):
   return issues.map((i) => `${i.path.length ? i.path.join('.') : '(input)'}: ${i.message}`).join('\n')
 }
 
-function errorText(e: unknown, toolName: string): string {
+/** The `Error: …` and `Fix: …` text for any failure. The CLI uses it for its own commands too. */
+export function errorText(e: unknown, toolName: string): string {
   const text = (message: string, fix: string) => `Error: ${message}\nFix: ${fix}`
   if (e instanceof ProjectError) {
     return text(
@@ -191,12 +192,13 @@ function statusOf(id: string): RenderStatus {
   }
 }
 
-function etaText(seconds: number): string {
+export function etaText(seconds: number): string {
   if (seconds < 60) return 'under a minute left'
   return `about ${Math.round(seconds / 60)} min left`
 }
 
-async function creditLine(manifestPath: string): Promise<string> {
+/** The reminder to credit the map, with where the render put it. */
+export async function creditLine(manifestPath: string): Promise<string> {
   let placement: unknown
   try {
     placement = (JSON.parse(await readFile(manifestPath, 'utf8')) as { creditPlacement?: unknown }).creditPlacement

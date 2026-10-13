@@ -3,8 +3,10 @@
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "rootDir": "src",
     "outDir": "dist",
     "types": ["node"]
   },
-  "include": ["bench/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/studio"]
 }

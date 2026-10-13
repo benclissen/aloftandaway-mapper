@@ -251,8 +251,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     if (parts.length === 1) {
       await rename(parts[0]!, video)
     } else {
-      await joinSegments({ parts, out: video, codec })
-      await Promise.all(parts.map((part) => rm(part, { force: true })))
+      await joinParts({ parts, out: video, codec })
     }
     const renderFps = round2(elapsedFps())
     await writeFile(manifestFile, `${JSON.stringify(manifest({ renderFps }), null, 2)}\n`)
@@ -272,6 +271,19 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     }
     await launched?.browser.close().catch(() => undefined)
   }
+}
+
+/** Joins the segments into `out` and deletes them. If the join fails, the segments are kept and named in the fix. */
+export async function joinParts(args: { parts: string[]; out: string; codec: Codec }): Promise<void> {
+  try {
+    await joinSegments(args)
+  } catch (e) {
+    throw new RenderError(
+      errorMessage(e),
+      `Render again. The ${args.parts.length} segments rendered so far are kept: ${args.parts.join(', ')}`,
+    )
+  }
+  await Promise.all(args.parts.map((part) => rm(part, { force: true })))
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

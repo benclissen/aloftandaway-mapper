@@ -24,6 +24,25 @@ export function assertAbsolute(folder: string): void {
   }
 }
 
+/**
+ * A `StoreError` with a fix for the file-system failures a user can cause: a path through a file (`ENOTDIR`) and
+ * missing permissions (`EACCES`, `EPERM`). Anything else is returned as it is.
+ */
+function fsError(e: unknown, file: string): unknown {
+  const code = (e as NodeJS.ErrnoException).code
+  const target = (e as NodeJS.ErrnoException).path ?? file
+  if (code === 'ENOTDIR') {
+    return new StoreError(
+      `${target} can't be reached: part of its path is a file, not a folder.`,
+      'Pass the project folder itself, not a file inside it.',
+    )
+  }
+  if (code === 'EACCES' || code === 'EPERM') {
+    return new StoreError(`Mapper isn't allowed to use ${target} (${code}).`, "Check the folder's permissions.")
+  }
+  return e
+}
+
 // Each folder runs its mutations one after another. A failed task still releases the folder.
 const queues = new Map<string, Promise<void>>()
 
@@ -55,7 +74,9 @@ export async function createProject(folder: string, name: string, output?: Parti
         'Open the existing project, or choose another folder.',
       )
     }
-    await mkdir(folder, { recursive: true })
+    await mkdir(folder, { recursive: true }).catch((e: unknown) => {
+      throw fsError(e, folder)
+    })
     await writeAtomic(folder, project)
     return project
   })
@@ -71,7 +92,7 @@ export async function loadProject(folder: string): Promise<Project> {
     if (isNotFound(e)) {
       throw new StoreError(`No project found at ${file}`, 'Create the project first with create_project.')
     }
-    throw e
+    throw fsError(e, file)
   }
   let json: unknown
   try {
@@ -140,7 +161,7 @@ async function writeAtomic(folder: string, project: Project): Promise<void> {
     await rename(tmp, file)
   } catch (e) {
     await unlink(tmp).catch(() => undefined)
-    throw e
+    throw fsError(e, file)
   }
 }
 
@@ -150,7 +171,7 @@ async function exists(file: string): Promise<boolean> {
     return true
   } catch (e) {
     if (isNotFound(e)) return false
-    throw e
+    throw fsError(e, file)
   }
 }
 

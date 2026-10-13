@@ -20,10 +20,10 @@ import {
   type Project,
 } from '../core/index.js'
 import { contactSheet, PreviewAtSchema, previewFrame } from '../render/preview.js'
-import { RenderError } from '../render/render.js'
 import { cancelRender, renderStatus, startRenderJob, type RenderStatus } from '../render/jobs.js'
+import { fixOf } from '../server/errors.js'
 import { getServer } from '../server/server.js'
-import { assertAbsolute, createProject, loadProject, mutateProject, StoreError } from '../server/store.js'
+import { assertAbsolute, createProject, loadProject, mutateProject } from '../server/store.js'
 
 /** An error the agent can act on. `fix` says what to do next. */
 export class ToolError extends Error {
@@ -131,7 +131,9 @@ export function errorText(e: unknown, toolName: string): string {
       'Change the listed fields and try again. Paths are relative to the tool input.',
     )
   }
-  if (e instanceof StoreError || e instanceof RenderError || e instanceof ToolError) return text(e.message, e.fix)
+  // StoreError, RenderError, EnvironmentError and ToolError all carry a fix.
+  const fix = fixOf(e)
+  if (fix !== undefined) return text((e as Error).message, fix)
   return text(e instanceof Error ? e.message : String(e), BUG_FIX)
 }
 
@@ -172,13 +174,6 @@ const START_WAIT_MS = 10_000
 const START_POLL_MS = 100
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
-/** Splits a job's error text, `<message>\nFix: <fix>`, into its message and fix. */
-function splitJobError(error: string): { message: string; fix: string } {
-  const at = error.lastIndexOf('\nFix: ')
-  if (at < 0) return { message: error, fix: BUG_FIX }
-  return { message: error.slice(0, at), fix: error.slice(at + '\nFix: '.length) }
-}
 
 function unknownJob(id: string): ToolError {
   return new ToolError(`No render job has the id '${id}'.`, 'Use the jobId that render returned. Job ids only last as long as this Mapper process.')
@@ -227,7 +222,7 @@ async function statusSummary(status: RenderStatus): Promise<string> {
       ].join('\n')
     }
     case 'failed':
-      return `Failed. ${status.error ?? 'No error was recorded.'}`
+      return `Failed. ${status.error ?? 'No error was recorded.'}\nFix: ${status.fix ?? BUG_FIX}`
     case 'cancelled':
       return 'Cancelled.'
   }
@@ -366,8 +361,7 @@ export const TOOLS: ToolDef<any>[] = [
       for (;;) {
         const status = statusOf(id)
         if (status.state === 'failed') {
-          const { message, fix } = splitJobError(status.error ?? 'The render failed.')
-          throw new ToolError(message, fix)
+          throw new ToolError(status.error ?? 'The render failed.', status.fix ?? BUG_FIX)
         }
         if (status.state === 'cancelled') throw new ToolError('The render was cancelled.', 'Start it again with render.')
         if (status.dir) {

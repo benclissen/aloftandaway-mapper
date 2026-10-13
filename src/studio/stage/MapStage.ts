@@ -9,6 +9,7 @@ import {
   cameraAt,
   layoutSize,
   MAP_CREDIT,
+  MAP_DATA_ERROR,
   slicePath,
   unwrapLng,
   type FrameState,
@@ -299,7 +300,7 @@ export class MapStage {
     const error = this.mapError
     if (!error) return
     this.mapError = undefined
-    throw new Error(`The map could not load its data: ${error.message}`)
+    throw new Error(`${MAP_DATA_ERROR}: ${error.message}`)
   }
 
   private setLayoutSize({ width, height }: { width: number; height: number }): void {

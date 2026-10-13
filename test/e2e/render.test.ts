@@ -189,7 +189,7 @@ test('validation errors block the render', async () => {
   const status = await waitFor(jobId, (s) => s.state !== 'running')
   expect(status.state).toBe('failed')
   expect(status.error).toMatch(/too-few-stops/)
-  expect(status.error).toMatch(/Fix: /)
+  expect(status.fix).toMatch(/set_stops/)
 })
 
 test('an unknown job id throws', () => {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { fixOf } from '../server/errors.js'
 import { renderProject, type RenderArgs, type RenderProgress, type RenderResult } from './render.js'
 
 export type JobState = 'running' | 'done' | 'failed' | 'cancelled'
@@ -9,8 +10,10 @@ export interface RenderStatus {
   /** Absent until the job starts. A queued job is `running` with no progress. */
   progress?: RenderProgress
   result?: RenderResult
-  /** The error message, followed by `Fix: …` when there is a suggested fix. */
+  /** Why the job failed. */
   error?: string
+  /** What to do about `error`, when Mapper knows. */
+  fix?: string
   /** The render folder, once it exists. */
   dir?: string
 }
@@ -58,16 +61,11 @@ async function runJob(job: Job, args: Omit<RenderArgs, 'onProgress' | 'onStart' 
       status.state = 'cancelled'
     } else {
       status.state = 'failed'
-      status.error = errorText(e)
+      status.error = e instanceof Error ? e.message : String(e)
+      status.fix = fixOf(e)
     }
   }
   job.settle()
-}
-
-function errorText(e: unknown): string {
-  if (!(e instanceof Error)) return String(e)
-  const fix = (e as { fix?: unknown }).fix
-  return typeof fix === 'string' && fix ? `${e.message}\nFix: ${fix}` : e.message
 }
 
 function find(jobId: string): Job {

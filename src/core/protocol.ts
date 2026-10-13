@@ -1,6 +1,9 @@
 import type { ProjectPatch } from './patch.js'
 import type { Project } from './schema.js'
 
+/** How render mode's error for map data that failed to load begins. Node recognises it by this text. */
+export const MAP_DATA_ERROR = 'The map could not load its data'
+
 /** Messages the server sends to the studio. */
 export type ServerMessage = { type: 'project'; project: Project }
 

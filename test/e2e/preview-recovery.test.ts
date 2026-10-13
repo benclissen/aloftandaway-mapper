@@ -5,7 +5,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, expect, test, vi } from 'vitest'
+import { MAP_DATA_ERROR } from '../../src/core/index.js'
+import { callTool, TOOLS } from '../../src/mcp/tools.js'
 import { closePreviews, contactSheet, previewFrame, previewStats } from '../../src/render/preview.js'
+import { EnvironmentError } from '../../src/server/errors.js'
 import type { MapperServer } from '../../src/server/server.js'
 import { startServer } from '../../src/server/server.js'
 import { createProject, saveProject } from '../../src/server/store.js'
@@ -88,6 +91,35 @@ test('a preview that fails on a map error rejects, and the next one gets a fresh
   // The fresh page is warm again.
   await previewFrame({ folder, at: { frame: 10 } })
   expect(previewStats().pageOpens).toBe(2)
+})
+
+test('map data that fails to load gives an error that says to check the connection', async () => {
+  await closePreviews()
+  await forgetTiles()
+  const folder = await writeFolder()
+  const fix =
+    'Check the internet connection. Map tiles come from tiles.openfreemap.org, and Mapper caches them after the first load.'
+
+  failing = true
+  try {
+    const error = await previewFrame({ folder, at: { frame: 0 } }).then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(error).toBeInstanceOf(EnvironmentError)
+    expect((error as EnvironmentError).message.startsWith(MAP_DATA_ERROR)).toBe(true)
+    expect((error as EnvironmentError).fix).toBe(fix)
+
+    const tool = TOOLS.find((t) => t.name === 'preview_frame')!
+    const result = await callTool(tool, { folder, at: { frame: 0 } })
+    expect(result.isError).toBe(true)
+    const text = result.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n')
+    expect(text).toContain(`Error: ${MAP_DATA_ERROR}`)
+    expect(text).toContain(`\nFix: ${fix}`)
+    expect(text).not.toContain('bug in Mapper')
+  } finally {
+    failing = false
+  }
 })
 
 test('a contact sheet that fails on a map error rejects, and the next one gets a fresh page', async () => {

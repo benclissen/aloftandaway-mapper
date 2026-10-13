@@ -1,4 +1,5 @@
 import { chromium, type Browser } from 'playwright'
+import { EnvironmentError } from '../server/errors.js'
 
 /** Chrome flags. The render-speed benchmark found the defaults already use the GPU (ANGLE on Metal). */
 const LAUNCH_ARGS: string[] = []
@@ -25,9 +26,9 @@ export async function launchBrowser(): Promise<LaunchedBrowser> {
       browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS, ...NO_SIGNAL_HANDLERS })
       channel = 'chromium'
     } catch (chromiumError) {
-      throw new Error(
-        `Could not start Google Chrome (${firstLine(chromeError)}) or Playwright's Chromium (${firstLine(chromiumError)}). ` +
-          'Install Google Chrome, or run `npx playwright install chromium`.',
+      throw new EnvironmentError(
+        `Could not start Google Chrome (${firstLine(chromeError)}) or Playwright's Chromium (${firstLine(chromiumError)}).`,
+        'Install Google Chrome, or run: npx playwright install chromium',
       )
     }
   }

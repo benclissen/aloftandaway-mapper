@@ -4,9 +4,13 @@ import path from 'node:path'
 import type { Writable } from 'node:stream'
 import { promisify } from 'node:util'
 import type { Fps } from '../core/index.js'
+import { EnvironmentError } from '../server/errors.js'
 
 export type Codec = 'prores' | 'h264'
 export type H264Encoder = 'h264_videotoolbox' | 'libx264'
+
+const noFfmpeg = () => new EnvironmentError('ffmpeg is not installed or not on the PATH.', 'brew install ffmpeg')
+const isNotFound = (e: unknown) => (e as NodeJS.ErrnoException).code === 'ENOENT'
 
 /** Lines of ffmpeg's stderr kept for error messages. */
 const STDERR_LINES = 20
@@ -186,10 +190,7 @@ export class Encoder {
 
   private failure(exit: Exit, when: string): Error {
     if ('error' in exit) {
-      const missing = (exit.error as NodeJS.ErrnoException).code === 'ENOENT'
-      return new Error(
-        missing ? 'ffmpeg is not installed or not on the PATH. Install it with: brew install ffmpeg' : `Could not run ffmpeg: ${exit.error.message}`,
-      )
+      return isNotFound(exit.error) ? noFfmpeg() : new Error(`Could not run ffmpeg: ${exit.error.message}`)
     }
     if (this.killed) return new Error('ffmpeg was stopped.')
     const tail = this.stderr.trimEnd().split('\n').slice(-STDERR_LINES).join('\n')
@@ -203,14 +204,20 @@ let h264Encoder: Promise<H264Encoder> | undefined
 /** The H.264 encoder to use: VideoToolbox when this ffmpeg has it, otherwise libx264. The answer is cached. */
 export function pickH264Encoder(): Promise<H264Encoder> {
   if (!h264Encoder) {
-    const picking = promisify(execFile)('ffmpeg', ['-hide_banner', '-encoders']).then(({ stdout }) => {
-      const names = new Set(stdout.split('\n').map((line) => line.trim().split(/\s+/)[1]))
-      if (names.has('h264_videotoolbox')) return 'h264_videotoolbox' as const
-      if (names.has('libx264')) return 'libx264' as const
-      throw new Error(
-        'This ffmpeg has no H.264 encoder (h264_videotoolbox or libx264). Reinstall it with: brew reinstall ffmpeg',
-      )
-    })
+    const picking = promisify(execFile)('ffmpeg', ['-hide_banner', '-encoders']).then(
+      ({ stdout }) => {
+        const names = new Set(stdout.split('\n').map((line) => line.trim().split(/\s+/)[1]))
+        if (names.has('h264_videotoolbox')) return 'h264_videotoolbox' as const
+        if (names.has('libx264')) return 'libx264' as const
+        throw new EnvironmentError(
+          'This ffmpeg has no H.264 encoder (h264_videotoolbox or libx264).',
+          'Install an ffmpeg build with h264_videotoolbox or libx264: brew reinstall ffmpeg',
+        )
+      },
+      (e: unknown) => {
+        throw isNotFound(e) ? noFfmpeg() : e
+      },
+    )
     h264Encoder = picking
     picking.catch(() => {
       if (h264Encoder === picking) h264Encoder = undefined

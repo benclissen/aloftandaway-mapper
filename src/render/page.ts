@@ -1,7 +1,26 @@
 import type { Browser, BrowserContext, Page } from 'playwright'
-import { layoutSize, type Aspect, type Project } from '../core/index.js'
+import { layoutSize, MAP_DATA_ERROR, type Aspect, type Project } from '../core/index.js'
+import { EnvironmentError } from '../server/errors.js'
 import { getServer } from '../server/server.js'
 import { capturePng } from './capture.js'
+
+const MAP_DATA_FIX =
+  'Check the internet connection. Map tiles come from tiles.openfreemap.org, and Mapper caches them after the first load.'
+
+/**
+ * Errors from the page reach Node as text. This turns render mode's map-data failure back into a typed error with a
+ * fix, keeping the line from its message on, and passes anything else on as it is.
+ */
+export function pageError(e: unknown): unknown {
+  if (!(e instanceof Error)) return e
+  const at = e.message.indexOf(MAP_DATA_ERROR)
+  if (at < 0) return e
+  return new EnvironmentError(e.message.slice(at).split('\n', 1)[0]!, MAP_DATA_FIX)
+}
+
+const rethrowTyped = (e: unknown): never => {
+  throw pageError(e)
+}
 
 /** The slice of `window` that render mode exposes. This module is type-checked without the DOM library. */
 interface MapperHandle {
@@ -61,21 +80,25 @@ export class RenderPage {
     pixelRatio: number,
     opts: { faultAtFrame?: number; faultAfterRenderFrame?: number } = {},
   ): Promise<number> {
-    const { frameCount } = await this.page.evaluate(
-      async ([input, ratio, fault, faultAfter]) => {
-        const mapper = (globalThis as unknown as { mapper: MapperHandle }).mapper
-        await mapper.ready
-        return mapper.load(input, { pixelRatio: ratio, faultAtFrame: fault, faultAfterRenderFrame: faultAfter })
-      },
-      [project, pixelRatio, opts.faultAtFrame, opts.faultAfterRenderFrame] as const,
-    )
+    const { frameCount } = await this.page
+      .evaluate(
+        async ([input, ratio, fault, faultAfter]) => {
+          const mapper = (globalThis as unknown as { mapper: MapperHandle }).mapper
+          await mapper.ready
+          return mapper.load(input, { pixelRatio: ratio, faultAtFrame: fault, faultAfterRenderFrame: faultAfter })
+        },
+        [project, pixelRatio, opts.faultAtFrame, opts.faultAfterRenderFrame] as const,
+      )
+      .catch(rethrowTyped)
     this.pixelRatio = pixelRatio
     return frameCount
   }
 
-  /** Shows frame `n` and resolves once it is fully painted. Rejects if map data failed to load. */
+  /** Shows frame `n` and resolves once it is fully painted. Rejects with an `EnvironmentError` if map data failed to load. */
   async renderFrame(n: number): Promise<void> {
-    await this.page.evaluate((frame) => (globalThis as unknown as { mapper: MapperHandle }).mapper.renderFrame(frame), n)
+    await this.page
+      .evaluate((frame) => (globalThis as unknown as { mapper: MapperHandle }).mapper.renderFrame(frame), n)
+      .catch(rethrowTyped)
   }
 
   /** True when the map's WebGL context is lost, which makes a frame captured now untrustworthy. */

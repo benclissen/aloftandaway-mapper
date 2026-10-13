@@ -10,6 +10,7 @@ import { dirname, extname, join, normalize, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { PNG } from 'pngjs';
 import { chromium, type Browser, type BrowserContext, type CDPSession, type Page } from 'playwright';
 import { WebSocketServer } from 'ws';
 
@@ -22,6 +23,7 @@ interface Bench {
   sendWS(url: string): Promise<number>;
   base64(): string;
   webgl(): string;
+  transparent(): Promise<void>;
 }
 
 declare global {
@@ -176,6 +178,73 @@ async function screenshot(cdp: CDPSession, pixelRatio: number): Promise<{ data: 
     clip: { x: 0, y: 0, ...CSS_SIZE, scale: pixelRatio },
   });
   return { data: Buffer.from(data, 'base64'), ms: performance.now() - start };
+}
+
+// ---------- pixel comparison ----------
+
+type AlphaClass = 'opaque' | 'semi-transparent' | 'transparent';
+
+interface Diff {
+  pixels: number;
+  /** Max and mean absolute difference for R, G, B, A. */
+  max: number[];
+  mean: number[];
+  /** Pixels where any channel differs by more than 2. */
+  over2: number;
+}
+
+/** Compares two straight-alpha RGBA buffers, grouped by the reference pixel's alpha. */
+function compareRGBA(reference: Uint8Array, actual: Uint8Array): Record<AlphaClass, Diff> {
+  const empty = (): Diff => ({ pixels: 0, max: [0, 0, 0, 0], mean: [0, 0, 0, 0], over2: 0 });
+  const result: Record<AlphaClass, Diff> = { opaque: empty(), 'semi-transparent': empty(), transparent: empty() };
+  for (let p = 0; p < reference.length; p += 4) {
+    const alpha = reference[p + 3];
+    const diff = result[alpha === 255 ? 'opaque' : alpha === 0 ? 'transparent' : 'semi-transparent'];
+    diff.pixels++;
+    let over2 = false;
+    for (let c = 0; c < 4; c++) {
+      const d = Math.abs(reference[p + c] - actual[p + c]);
+      diff.max[c] = Math.max(diff.max[c], d);
+      diff.mean[c] += d;
+      over2 ||= d > 2;
+    }
+    if (over2) diff.over2++;
+  }
+  for (const diff of Object.values(result)) diff.mean = diff.mean.map((sum) => (diff.pixels ? sum / diff.pixels : 0));
+  return result;
+}
+
+const describeDiff = (d: Diff) =>
+  `${d.pixels} px; max Δ RGBA ${d.max.join('/')}; mean Δ RGBA ${d.mean.map((m) => m.toFixed(3)).join('/')}; ${d.over2} px > 2 off`;
+
+/** readComposite and a CDP screenshot of the current frame, compared. */
+async function compareCapture(page: Page, cdp: CDPSession, wsUrl: string, inbox: Inbox): Promise<Record<AlphaClass, Diff>> {
+  await readback(page, 'readComposite');
+  const { data: reference } = await transfer(page, 'base64', wsUrl, inbox);
+  const png = PNG.sync.read((await screenshot(cdp, 2)).data);
+  const [width, height] = await page.evaluate(() => globalThis.bench.size());
+  if (png.width !== width || png.height !== height) throw new Error(`screenshot is ${png.width}×${png.height}, expected ${width}×${height}`);
+  return compareRGBA(reference, png.data);
+}
+
+/**
+ * Checks CDP screenshots against readComposite, first over the opaque map, then as a transparent
+ * layer using the recipe for the route and signs layers: no page background and
+ * Emulation.setDefaultBackgroundColorOverride at alpha 0. Then times that transparent capture.
+ */
+async function alphaCheck(page: Page, frames: number, wsUrl: string, inbox: Inbox) {
+  const cdp = await page.context().newCDPSession(page);
+  await page.evaluate(([i, n]) => globalThis.bench.frame(i, n), [Math.floor(frames / 2), frames]);
+  const opaque = (await compareCapture(page, cdp, wsUrl, inbox)).opaque;
+  await cdp.send('Emulation.setDefaultBackgroundColorOverride', { color: { r: 0, g: 0, b: 0, a: 0 } });
+  await page.evaluate(() => globalThis.bench.transparent());
+  const layer = await compareCapture(page, cdp, wsUrl, inbox);
+  const timing: number[] = [];
+  for (let i = 0; i < frames; i++) {
+    await page.evaluate(([i, n]) => globalThis.bench.frame(i, n), [i, frames]);
+    timing.push((await screenshot(cdp, 2)).ms);
+  }
+  return { opaque, layer, timing };
 }
 
 // ---------- ffmpeg ----------
@@ -401,6 +470,16 @@ async function main() {
     rows.push(['Transfer', 'WebSocket binary (send until received in Node)', ms(median(transferMs.sendWS))]);
     rows.push(['Transfer', 'page.evaluate(base64) + Buffer.from', ms(median(transferMs.base64))]);
     rows.push(['Transfer', 'CDP Page.captureScreenshot PNG (readback + transfer)', screenshotError ? `n/a: ${screenshotError}` : ms(median(screenshotMs))]);
+
+    log('Alpha: CDP screenshot against readComposite, opaque map and transparent layer');
+    const alphaPage = await openBench(context4k!, origin, 2);
+    const alpha = await alphaCheck(alphaPage, frames, wsUrl, inbox);
+    await alphaPage.close();
+    rows.push(['Alpha', 'opaque map: CDP PNG vs readComposite', describeDiff(alpha.opaque)]);
+    for (const [group, diff] of Object.entries(alpha.layer)) {
+      rows.push(['Alpha', `transparent layer, ${group} pixels: CDP PNG vs readComposite`, describeDiff(diff)]);
+    }
+    rows.push(['Alpha', 'transparent layer: CDP Page.captureScreenshot PNG', ms(median(alpha.timing))]);
 
     // 5. Encode ceiling
     const encodeFps: Record<string, number> = {};

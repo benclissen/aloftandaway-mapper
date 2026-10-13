@@ -5,7 +5,8 @@
 <title>Mapper render-speed benchmark</title>
 <link rel="stylesheet" href="/node_modules/maplibre-gl/dist/maplibre-gl.css">
 <style>
-  html, body { margin: 0; padding: 0; background: #000; }
+  /* No page background, so a CDP screenshot can be transparent where nothing is drawn. */
+  html, body { margin: 0; padding: 0; }
   #stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; }
   #map, #overlay { position: absolute; inset: 0; width: 1920px; height: 1080px; }
 </style>
@@ -69,6 +70,11 @@ overlayCtx.fillRect(80, 900, 420, 100);
 overlayCtx.fillStyle = '#1d2b3a';
 overlayCtx.font = '600 56px sans-serif';
 overlayCtx.fillText('Rhodes', 110, 970);
+// A semi-transparent coloured shape with anti-aliased edges, for the alpha comparison.
+overlayCtx.fillStyle = 'rgba(30, 110, 255, 0.45)';
+overlayCtx.beginPath();
+overlayCtx.arc(1500, 300, 180, 0, 2 * Math.PI);
+overlayCtx.fill();
 
 const composite = document.createElement('canvas');
 composite.width = mapCanvas.width;
@@ -128,6 +134,17 @@ window.bench = {
     map.getSource('route').setData(routeTo(t));
     await settled;
     return performance.now() - start;
+  },
+
+  /** Turns the map into a transparent route layer: basemap hidden, line at 60% opacity. */
+  async transparent() {
+    const settled = idle();
+    for (const layer of map.getStyle().layers) {
+      if (layer.id !== 'route') map.setLayoutProperty(layer.id, 'visibility', 'none');
+    }
+    map.setPaintProperty('route', 'line-color', '#ff2a00');
+    map.setPaintProperty('route', 'line-opacity', 0.6);
+    await settled;
   },
 
   readPixelsGL() {

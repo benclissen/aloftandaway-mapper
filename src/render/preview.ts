@@ -91,17 +91,25 @@ function forget(): void {
   pages.clear()
 }
 
-async function pageFor(aspect: Aspect, projectId: string): Promise<RenderPage> {
+interface CachedPage {
+  page: RenderPage
+  entry: Promise<RenderPage>
+}
+
+/** Drops `entry` from the cache, if it is still the cached page for the aspect, and closes the page. */
+function evict(aspect: Aspect, entry: Promise<RenderPage>, page: RenderPage): void {
+  if (pages.get(aspect) === entry) pages.delete(aspect)
+  void page.close().catch(() => undefined)
+}
+
+async function pageFor(aspect: Aspect, projectId: string): Promise<CachedPage> {
   let opening = pages.get(aspect)
   if (!opening) {
     const created = warmBrowser().then(async (browser) => {
       const page = await RenderPage.open({ browser, projectId, aspect })
       pageOpens++
-      page.onCrash(() => {
-        // A crashed or context-less page can't be reused. The next call opens a fresh one.
-        if (pages.get(aspect) === created) pages.delete(aspect)
-        void page.close()
-      })
+      // A crashed or context-less page can't be reused. The next call opens a fresh one.
+      page.onCrash(() => evict(aspect, created, page))
       return page
     })
     opening = created
@@ -112,7 +120,7 @@ async function pageFor(aspect: Aspect, projectId: string): Promise<RenderPage> {
   }
   const page = await opening
   if (page.projectId !== projectId) await page.navigate(projectId)
-  return page
+  return { page, entry: opening }
 }
 
 /** Closes the warm pages and browser and resets the stats. The next call launches again. */
@@ -137,18 +145,25 @@ interface Loaded {
 }
 
 /**
- * Reads the project from disk and loads it into the warm page for its aspect, so that a frame comes out
- * `frameWidth` px wide.
+ * Reads the project from disk, loads it into the warm page for its aspect so that a frame comes out `frameWidth`
+ * px wide, and runs `use` on it. If loading or `use` rejects, the page is evicted and closed, and the error is
+ * rethrown: MapLibre never refetches a tile that errored, so a page that saw a map error would keep painting the
+ * gap. The next call opens a fresh page.
  */
-async function openProject(folder: string, frameWidth: (aspect: Aspect) => number): Promise<Loaded> {
+async function withProject<T>(folder: string, frameWidth: (aspect: Aspect) => number, use: (loaded: Loaded) => Promise<T>): Promise<T> {
   const project = await loadProject(folder)
   const timeline = buildTimeline(project, buildRoute(project))
   if (timeline.totalFrames < 1) throw new Error('The project has no frames to preview.')
   const { aspect } = project.output
   const projectId = await (await getServer()).registerProject(folder)
-  const page = await pageFor(aspect, projectId)
-  await page.load(project, frameWidth(aspect) / layoutSize(aspect).width)
-  return { project, timeline, page }
+  const { page, entry } = await pageFor(aspect, projectId)
+  try {
+    await page.load(project, frameWidth(aspect) / layoutSize(aspect).width)
+    return await use({ project, timeline, page })
+  } catch (e) {
+    evict(aspect, entry, page)
+    throw e
+  }
 }
 
 function assertWholeNumber(name: string, value: number): void {
@@ -181,13 +196,14 @@ export async function previewFrame(args: { folder: string; at: PreviewAt; width?
   const at = PreviewAtSchema.parse(args.at)
   assertWholeNumber('width', width)
   return exclusive(async () => {
-    const { timeline, page } = await openProject(args.folder, () => width)
-    const frame = resolveFrame(at, timeline)
-    await page.renderFrame(frame)
-    const png = await page.capturePng()
+    const { frame, png, fps } = await withProject(args.folder, () => width, async ({ timeline, page }) => {
+      const frame = resolveFrame(at, timeline)
+      await page.renderFrame(frame)
+      return { frame, png: await page.capturePng(), fps: fpsValue(timeline.fps) }
+    })
     const file = path.join(await previewsDir(args.folder), `frame-${frame}.png`)
     await writeFile(file, png)
-    return { png, path: file, frame, seconds: frame / fpsValue(timeline.fps) }
+    return { png, path: file, frame, seconds: frame / fps }
   })
 }
 
@@ -244,15 +260,17 @@ export async function contactSheet(args: { folder: string; count?: number; width
   const cellWidth = Math.floor((width - SHEET_GAP * (columns + 1)) / columns)
   if (cellWidth < 1) throw new RangeError(`width ${width} is too small for ${count} frames in ${columns} columns.`)
   return exclusive(async () => {
-    const { project, timeline, page } = await openProject(args.folder, () => cellWidth)
-    const last = timeline.totalFrames - 1
-    const frames = Array.from({ length: count }, (_, i) => (count === 1 ? 0 : Math.round((i * last) / (count - 1))))
-    const cells: { dataUrl: string; caption: string }[] = []
-    for (const frame of frames) {
-      await page.renderFrame(frame)
-      const png = await page.capturePng()
-      cells.push({ dataUrl: `data:image/png;base64,${png.toString('base64')}`, caption: frameCaption(project, timeline, frame) })
-    }
+    const { frames, cells, fps } = await withProject(args.folder, () => cellWidth, async ({ project, timeline, page }) => {
+      const last = timeline.totalFrames - 1
+      const frames = Array.from({ length: count }, (_, i) => (count === 1 ? 0 : Math.round((i * last) / (count - 1))))
+      const cells: { dataUrl: string; caption: string }[] = []
+      for (const frame of frames) {
+        await page.renderFrame(frame)
+        const png = await page.capturePng()
+        cells.push({ dataUrl: `data:image/png;base64,${png.toString('base64')}`, caption: frameCaption(project, timeline, frame) })
+      }
+      return { frames, cells, fps: fpsValue(timeline.fps) }
+    })
 
     const browser = await warmBrowser()
     const sheetPage = await browser.newPage({ viewport: { width, height: 600 }, deviceScaleFactor: 1 })
@@ -267,7 +285,6 @@ export async function contactSheet(args: { folder: string; count?: number; width
     }
     const file = path.join(await previewsDir(args.folder), `contact-${timestamp(new Date())}.png`)
     await writeFile(file, png)
-    const fps = fpsValue(timeline.fps)
     return { png, path: file, frames: frames.map((frame) => ({ frame, seconds: frame / fps })) }
   })
 }

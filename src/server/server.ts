@@ -71,7 +71,7 @@ interface Route {
 }
 
 /** The package root: the nearest directory above this file that holds a package.json. */
-function packageRoot(): string {
+export function packageRoot(): string {
   let dir = path.dirname(fileURLToPath(import.meta.url))
   while (!existsSync(path.join(dir, 'package.json'))) {
     const parent = path.dirname(dir)

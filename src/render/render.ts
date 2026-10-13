@@ -1,8 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { mkdir, statfs, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
-import { fileURLToPath } from 'node:url'
 import {
   buildRoute,
   buildTimeline,
@@ -14,7 +13,7 @@ import {
   type Issue,
   type Project,
 } from '../core/index.js'
-import { getServer } from '../server/server.js'
+import { getServer, packageRoot } from '../server/server.js'
 import { assertAbsolute, loadProject, projectHash } from '../server/store.js'
 import { launchBrowser, type LaunchedBrowser } from './chrome.js'
 import { Encoder, ffmpegArgs, pickH264Encoder, type Codec } from './encode.js'
@@ -313,16 +312,8 @@ function rollingProgress(totalFrames: number, onProgress: ((p: RenderProgress) =
 
 let version: string | undefined
 
-/** The version in Mapper's package.json, found by walking up from this module. */
+/** The version in Mapper's package.json. */
 function mapperVersion(): string {
-  if (version === undefined) {
-    let dir = path.dirname(fileURLToPath(import.meta.url))
-    while (!existsSync(path.join(dir, 'package.json'))) {
-      const parent = path.dirname(dir)
-      if (parent === dir) throw new Error('Could not find the Mapper package root (no package.json above the render module).')
-      dir = parent
-    }
-    version = String((JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8')) as { version: unknown }).version)
-  }
+  version ??= String((JSON.parse(readFileSync(path.join(packageRoot(), 'package.json'), 'utf8')) as { version: unknown }).version)
   return version
 }

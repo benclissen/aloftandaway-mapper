@@ -8,10 +8,12 @@ import { promisify } from 'node:util'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import { MAP_CREDIT, type Project } from '../../src/core/index.js'
 import { cancelRender, renderStatus, startRenderJob, type RenderStatus } from '../../src/render/jobs.js'
+import { closePreviews, previewFrame } from '../../src/render/preview.js'
 import { frameRange, renderProject } from '../../src/render/render.js'
 import { getServer } from '../../src/server/server.js'
 import { createProject, loadProject, mutateProject, projectHash, saveProject } from '../../src/server/store.js'
 import { greekIslands } from '../fixtures/projects.js'
+import { pixelDiff } from './helpers.js'
 
 const run = promisify(execFile)
 let tempDir: string
@@ -23,6 +25,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  await closePreviews()
   await (await getServer()).close()
   if (previousCacheDir === undefined) delete process.env.MAPPER_CACHE_DIR
   else process.env.MAPPER_CACHE_DIR = previousCacheDir
@@ -39,6 +42,17 @@ async function writeFolder(project: Project): Promise<string> {
 async function ffprobe(file: string): Promise<Record<string, string | number>> {
   const { stdout } = await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_streams', '-of', 'json', file])
   return (JSON.parse(stdout) as { streams: Record<string, string | number>[] }).streams[0]!
+}
+
+/** Frame `n` of `video` as an 8-bit RGB PNG, converted back from Rec.709 limited range. */
+async function videoFramePng(video: string, n: number): Promise<Buffer> {
+  const { stdout } = await run(
+    'ffmpeg',
+    ['-v', 'error', '-i', video, '-vf', `select=eq(n\\,${n}),scale=in_color_matrix=bt709:in_range=tv`, '-frames:v', '1',
+      '-pix_fmt', 'rgb24', '-f', 'image2pipe', '-c:v', 'png', '-'],
+    { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 },
+  )
+  return stdout
 }
 
 function readManifest(file: string): Record<string, unknown> {
@@ -100,16 +114,42 @@ test('renders H.264', async () => {
 })
 
 test('renders the starting snapshot', async () => {
-  const folder = await writeFolder(greekIslands())
+  const original = greekIslands()
+  const folder = await writeFolder(original)
   const before = await loadProject(folder)
-  const jobId = startRenderJob({ folder, range: { from: 0, to: 2 } })
+  // A copy of the original, so its frames can still be previewed after `folder` changes.
+  const originalFolder = await writeFolder(original)
+  const jobId = startRenderJob({ folder, range: { from: 0, to: 4 } })
   await waitFor(jobId, (s) => (s.progress?.frame ?? 0) >= 5)
-  await mutateProject(folder, (p) => ({ ...p, name: 'Renamed mid-render' }))
+  // Move Rhodes far east and rename the project; both change every frame of a fresh render.
+  await mutateProject(folder, (p) => ({
+    ...p,
+    name: 'Renamed mid-render',
+    stops: p.stops.map((s) => (s.id === 'rhodes' ? { ...s, at: [34.0, 31.0] as [number, number] } : s)),
+  }))
+  // The edit must land mid-render, or this test proves nothing.
+  const during = renderStatus(jobId)
+  expect(during.state).toBe('running')
+  expect(during.progress!.frame).toBeLessThan(during.progress!.totalFrames)
+
   const status = await waitFor(jobId, (s) => s.state === 'done')
   const manifest = readManifest(status.result!.manifest)
   expect(manifest.projectHash).toBe(projectHash(before))
   expect(manifest.name).toBe('Greek Islands')
   expect(status.dir).toBe(status.result!.dir)
+
+  // The rendered last frame matches the original project's frame and not the edited one's.
+  const last = 99
+  const rendered = await videoFramePng(status.result!.video, last)
+  const fromOriginal = (await previewFrame({ folder: originalFolder, at: { frame: last }, width: 1920 })).png
+  const fromEdited = (await previewFrame({ folder, at: { frame: last }, width: 1920 })).png
+  const pixels = 1920 * 1080
+  const diffOriginal = pixelDiff(rendered, fromOriginal)
+  const diffEdited = pixelDiff(rendered, fromEdited)
+  // Measured: 24 px from encoding against about 30 000 px for the moved route and Rhodes sign. The blank theme's
+  // background is flat, so only the route, symbol and signs can differ.
+  expect(diffOriginal, `${diffOriginal} px differ from the original`).toBeLessThan(pixels * 0.0005)
+  expect(diffEdited, `${diffEdited} px differ from the edited project`).toBeGreaterThan(pixels * 0.005)
 })
 
 test('cancel stops the job', async () => {

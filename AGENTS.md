@@ -67,5 +67,23 @@ the installed Final Cut Pro.
 
 ## Commands
 
-No code yet. Add the install, test and run commands here once stage 1 is
-scaffolded.
+```bash
+npm install                       # install dependencies
+npm run build                     # compile the server and build the studio into dist/
+npm test                          # unit tests
+npm run test:e2e                  # build, then end-to-end tests
+npm run typecheck                 # type-check the server, bench and studio code
+npm run bench:render              # render speed benchmark
+npm run bench:pipeline            # build, then pipeline benchmark
+node dist/cli/main.js doctor      # check Chrome, ffmpeg, WebGL and disk space
+npm link                          # put `mapper` on PATH
+```
+
+- `MAPPER_NET=1 npm run test:e2e` also runs the tests that need the network
+  (they fetch OpenFreeMap tiles).
+- `UPDATE_GOLDENS=1 npm run test:e2e` refreshes the golden frames.
+- Don't run `npm test` and `npm run test:e2e` at the same time. The CLI tests
+  rebuild `dist`.
+- Register the MCP server with `node <abs path to repo>/dist/cli/main.js mcp`,
+  or `mapper mcp` after `npm link`. `skills/mapper/SKILL.md` has the setup for
+  each client.

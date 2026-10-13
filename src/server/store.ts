@@ -25,12 +25,11 @@ export function assertAbsolute(folder: string): void {
 }
 
 /**
- * A `StoreError` with a fix for the file-system failures a user can cause: a path through a file (`ENOTDIR`) and
- * missing permissions (`EACCES`, `EPERM`). Anything else is returned as it is.
+ * A `StoreError` naming `target` with a fix for the file-system failures a user can cause: a path through a file
+ * (`ENOTDIR`) and missing permissions (`EACCES`, `EPERM`). Anything else is returned as it is.
  */
-function fsError(e: unknown, file: string): unknown {
+function fsError(e: unknown, target: string): unknown {
   const code = (e as NodeJS.ErrnoException).code
-  const target = (e as NodeJS.ErrnoException).path ?? file
   if (code === 'ENOTDIR') {
     return new StoreError(
       `${target} can't be reached: part of its path is a file, not a folder.`,
@@ -161,7 +160,8 @@ async function writeAtomic(folder: string, project: Project): Promise<void> {
     await rename(tmp, file)
   } catch (e) {
     await unlink(tmp).catch(() => undefined)
-    throw fsError(e, file)
+    // Name the folder, not the temporary file.
+    throw fsError(e, folder)
   }
 }
 

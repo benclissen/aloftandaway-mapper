@@ -147,7 +147,9 @@ describe('environment failures say what to do', () => {
     const folder = await projectFolder('read-only')
     await chmod(folder, 0o555)
     try {
-      expectFix(await toolText('set_stops', { folder, stops: [{ name: 'Piraeus', at: [23.6466, 37.942] }] }), FIXES.access)
+      const text = await toolText('set_stops', { folder, stops: [{ name: 'Piraeus', at: [23.6466, 37.942] }] })
+      expectFix(text, FIXES.access)
+      expect(text).toContain(`Error: Mapper isn't allowed to use ${folder} (EACCES).`)
     } finally {
       await chmod(folder, 0o755)
     }

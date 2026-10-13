@@ -21,7 +21,7 @@ const TAG = {
   /** Gap from the dot's centre to the bottom of the box. */
   lift: 16,
 }
-const CREDIT = { margin: 16, color: 'rgba(255, 255, 255, 0.85)', shadow: 'rgba(0, 0, 0, 0.7)', shadowBlur: 2 }
+const CREDIT = { margin: 16, fill: 'rgba(255, 255, 255, 0.92)', halo: 'rgba(20, 24, 32, 0.7)', haloWidth: 3 }
 
 export interface OverlayArgs {
   project: Project
@@ -56,7 +56,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, args: OverlayArgs): v
     drawTag(ctx, project2px(stop.at), signText(stop), sign.opacity)
   }
 
-  if (project.credit === 'burned') drawCredit(ctx, width, height, pixelRatio)
+  if (project.credit === 'burned') drawCredit(ctx, width, height)
 }
 
 function drawDot(ctx: CanvasRenderingContext2D, [x, y]: [number, number], radius: number, color: string): void {
@@ -96,15 +96,19 @@ function drawTag(ctx: CanvasRenderingContext2D, [x, y]: [number, number], text: 
   ctx.restore()
 }
 
-function drawCredit(ctx: CanvasRenderingContext2D, width: number, height: number, pixelRatio: number): void {
+/** White text on a dark halo, so the credit reads on light and dark maps alike. */
+function drawCredit(ctx: CanvasRenderingContext2D, width: number, height: number): void {
   ctx.save()
   ctx.font = CREDIT_FONT
   ctx.textAlign = 'right'
   ctx.textBaseline = 'alphabetic'
-  ctx.fillStyle = CREDIT.color
-  // Shadows ignore the canvas transform, so they are given in device px.
-  ctx.shadowColor = CREDIT.shadow
-  ctx.shadowBlur = CREDIT.shadowBlur * pixelRatio
-  ctx.fillText(MAP_CREDIT, width - CREDIT.margin, height - CREDIT.margin)
+  const x = width - CREDIT.margin
+  const y = height - CREDIT.margin
+  ctx.strokeStyle = CREDIT.halo
+  ctx.lineWidth = CREDIT.haloWidth
+  ctx.lineJoin = 'round'
+  ctx.strokeText(MAP_CREDIT, x, y)
+  ctx.fillStyle = CREDIT.fill
+  ctx.fillText(MAP_CREDIT, x, y)
   ctx.restore()
 }

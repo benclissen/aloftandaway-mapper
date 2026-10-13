@@ -230,12 +230,7 @@ describe('RenderPage crash reports', () => {
     const { browser } = await launchBrowser()
     const folder = await writeFolder(greekIslands())
     const project = await loadProject(folder)
-    const server = await getServer()
-    const page = await RenderPage.open({
-      browser,
-      projectId: await server.registerProject(folder),
-      aspect: project.output.aspect,
-    })
+    const page = await RenderPage.open({ browser, aspect: project.output.aspect })
     await page.load(project, 0.25)
     return { browser, page, handle: browser.contexts()[0]!.pages()[0]! }
   }

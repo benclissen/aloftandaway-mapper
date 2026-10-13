@@ -13,7 +13,7 @@ import {
   type Issue,
   type Project,
 } from '../core/index.js'
-import { getServer, packageRoot } from '../server/server.js'
+import { packageRoot } from '../server/server.js'
 import { assertAbsolute, loadProject, projectHash } from '../server/store.js'
 import { launchBrowser, type LaunchedBrowser } from './chrome.js'
 import { Encoder, ffmpegArgs, joinSegments, pickH264Encoder, type Codec } from './encode.js'
@@ -156,13 +156,12 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     launched = await launchBrowser()
     throwIfAborted(signal)
     const { browser } = launched
-    const projectId = await (await getServer()).registerProject(folder)
     let page: RenderPage
     /** Rejects when `page` crashes or loses its WebGL context, so a step fails at once instead of timing out. */
     let pageFailed: Promise<never>
     /** Opens a page, loads the snapshot into it and arms `pageFailed`. */
     const openPage = async (faults: { faultAtFrame?: number; faultAfterRenderFrame?: number } = {}) => {
-      const opened = await RenderPage.open({ browser, projectId, aspect: snapshot.output.aspect })
+      const opened = await RenderPage.open({ browser, aspect: snapshot.output.aspect })
       try {
         const frameCount = await opened.load(snapshot, outputScale(snapshot.output), faults)
         if (frameCount !== timeline.totalFrames) {

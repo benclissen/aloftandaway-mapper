@@ -16,11 +16,10 @@ interface MapperHandle {
 
 /**
  * A headless page showing the studio in render mode, laid out at the aspect's layout size. Previews and renders
- * drive it the same way: `load` a project, `renderFrame`, then `capturePng`.
+ * drive it the same way: `load` a project, `renderFrame`, then `capturePng`. Render mode takes its project from
+ * `load`, so one page can show any number of projects of its aspect, one after another.
  */
 export class RenderPage {
-  /** The project id the page is showing. */
-  projectId: string
   private readonly aspect: Aspect
   private readonly context: BrowserContext
   private readonly page: Page
@@ -28,38 +27,29 @@ export class RenderPage {
   private pixelRatio: number | undefined
   private closed = false
 
-  private constructor(args: { aspect: Aspect; projectId: string; context: BrowserContext; page: Page }) {
+  private constructor(args: { aspect: Aspect; context: BrowserContext; page: Page }) {
     this.aspect = args.aspect
-    this.projectId = args.projectId
     this.context = args.context
     this.page = args.page
   }
 
   /** Opens a page at the layout size and waits for render mode to be ready. */
-  static async open(args: { browser: Browser; projectId: string; aspect: Aspect }): Promise<RenderPage> {
+  static async open(args: { browser: Browser; aspect: Aspect }): Promise<RenderPage> {
     const context = await args.browser.newContext({ viewport: layoutSize(args.aspect), deviceScaleFactor: 1 })
     try {
       const page = await context.newPage()
-      const renderPage = new RenderPage({ aspect: args.aspect, projectId: args.projectId, context, page })
+      const renderPage = new RenderPage({ aspect: args.aspect, context, page })
       page.on('crash', () => renderPage.crashed())
       page.on('pageerror', (error) => process.stderr.write(`Render page error: ${error.message}\n`))
       // Render mode calls this when the map canvas loses its WebGL context.
       await page.exposeFunction('__mapperContextLost', () => renderPage.crashed())
-      await renderPage.navigate(args.projectId)
+      await page.goto(`${(await getServer()).base}studio/?mode=render`)
+      await page.waitForFunction("'mapper' in window")
       return renderPage
     } catch (e) {
       await context.close().catch(() => undefined)
       throw e
     }
-  }
-
-  /** Shows `projectId`'s studio URL in render mode. The next `load` builds a fresh stage. */
-  async navigate(projectId: string): Promise<void> {
-    const server = await getServer()
-    await this.page.goto(server.studioUrl(projectId, { mode: 'render' }))
-    await this.waitForRenderMode()
-    this.projectId = projectId
-    this.pixelRatio = undefined
   }
 
   /**
@@ -104,13 +94,6 @@ export class RenderPage {
     this.crashHandlers.push(cb)
   }
 
-  /** Reloads the page, which drops the map and any tiles it failed to fetch. Call `load` again afterwards. */
-  async reload(): Promise<void> {
-    await this.page.reload()
-    await this.waitForRenderMode()
-    this.pixelRatio = undefined
-  }
-
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
@@ -119,9 +102,5 @@ export class RenderPage {
 
   private crashed(): void {
     for (const cb of this.crashHandlers) cb()
-  }
-
-  private async waitForRenderMode(): Promise<void> {
-    await this.page.waitForFunction("'mapper' in window")
   }
 }

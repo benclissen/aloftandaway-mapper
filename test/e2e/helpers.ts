@@ -41,8 +41,8 @@ function setup(): Promise<Shared> {
 }
 
 /**
- * Writes the project to a temp folder, registers it and opens it in render mode at the layout size. With
- * `tileUpstream`, the page gets its own server whose tile proxy fetches from there.
+ * Opens render mode at the layout size and loads the project into it. With `tileUpstream`, the page gets its own
+ * server whose tile proxy fetches from there.
  */
 export async function openRenderPage(
   project: Project,
@@ -57,15 +57,11 @@ export async function openRenderPage(
         tileUpstream: opts.tileUpstream,
       })
     : sharedServer
-  const folder = await mkdtemp(path.join(tempDir, 'project-'))
-  await createProject(folder, project.name)
-  await saveProject(folder, project)
-  const id = await server.registerProject(folder)
   const size = layoutSize(project.output.aspect)
   const context = await browser.newContext({ viewport: size, deviceScaleFactor: 1 })
   const page = await context.newPage()
   page.on('pageerror', (error) => process.stderr.write(`page error: ${error.message}\n`))
-  await page.goto(server.studioUrl(id, { mode: 'render' }))
+  await page.goto(`${server.base}studio/?mode=render`)
   await page.waitForFunction(() => 'mapper' in window)
   await page.evaluate(
     async ([p, ratio]) => {
@@ -97,11 +93,11 @@ export async function openStudioPage(
   const folder = await mkdtemp(path.join(tempDir, 'project-'))
   await createProject(folder, project.name)
   const saved = await saveProject(folder, { ...project, id: randomUUID() })
-  const id = await server.registerProject(folder)
+  const key = await server.registerProject(folder)
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1 })
   const page = await context.newPage()
   page.on('pageerror', (error) => process.stderr.write(`page error: ${error.message}\n`))
-  await page.goto(server.studioUrl(id))
+  await page.goto(server.studioUrl(key))
   return { page, folder, project: saved, close: () => context.close() }
 }
 

@@ -12,7 +12,6 @@ import {
   type Project,
   type Timeline,
 } from '../core/index.js'
-import { getServer } from '../server/server.js'
 import { loadProject } from '../server/store.js'
 import { launchBrowser } from './chrome.js'
 import { RenderPage } from './page.js'
@@ -102,11 +101,11 @@ function evict(aspect: Aspect, entry: Promise<RenderPage>, page: RenderPage): vo
   void page.close().catch(() => undefined)
 }
 
-async function pageFor(aspect: Aspect, projectId: string): Promise<CachedPage> {
+async function pageFor(aspect: Aspect): Promise<CachedPage> {
   let opening = pages.get(aspect)
   if (!opening) {
     const created = warmBrowser().then(async (browser) => {
-      const page = await RenderPage.open({ browser, projectId, aspect })
+      const page = await RenderPage.open({ browser, aspect })
       pageOpens++
       // A crashed or context-less page can't be reused. The next call opens a fresh one.
       page.onCrash(() => evict(aspect, created, page))
@@ -118,9 +117,7 @@ async function pageFor(aspect: Aspect, projectId: string): Promise<CachedPage> {
       if (pages.get(aspect) === created) pages.delete(aspect)
     })
   }
-  const page = await opening
-  if (page.projectId !== projectId) await page.navigate(projectId)
-  return { page, entry: opening }
+  return { page: await opening, entry: opening }
 }
 
 /** Closes the warm pages and browser and resets the stats. The next call launches again. */
@@ -155,8 +152,7 @@ async function withProject<T>(folder: string, frameWidth: (aspect: Aspect) => nu
   const timeline = buildTimeline(project, buildRoute(project))
   if (timeline.totalFrames < 1) throw new Error('The project has no frames to preview.')
   const { aspect } = project.output
-  const projectId = await (await getServer()).registerProject(folder)
-  const { page, entry } = await pageFor(aspect, projectId)
+  const { page, entry } = await pageFor(aspect)
   try {
     await page.load(project, frameWidth(aspect) / layoutSize(aspect).width)
     return await use({ project, timeline, page })

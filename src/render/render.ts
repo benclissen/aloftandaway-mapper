@@ -61,6 +61,8 @@ export interface RenderArgs {
   signal?: AbortSignal
   /** Test hook: loses the page's WebGL context the first time this frame is rendered. Only the first page gets it. */
   faultAtFrame?: number
+  /** Test hook: loses the context just after this frame is painted, before it is captured. First page only. */
+  faultAfterRenderFrame?: number
 }
 
 /** A render that can't start or failed. `fix` tells the agent what to do. */
@@ -159,10 +161,10 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     /** Rejects when `page` crashes or loses its WebGL context, so a step fails at once instead of timing out. */
     let pageFailed: Promise<never>
     /** Opens a page, loads the snapshot into it and arms `pageFailed`. */
-    const openPage = async (faultAtFrame?: number) => {
+    const openPage = async (faults: { faultAtFrame?: number; faultAfterRenderFrame?: number } = {}) => {
       const opened = await RenderPage.open({ browser, projectId, aspect: snapshot.output.aspect })
       try {
-        const frameCount = await opened.load(snapshot, outputScale(snapshot.output), { faultAtFrame })
+        const frameCount = await opened.load(snapshot, outputScale(snapshot.output), faults)
         if (frameCount !== timeline.totalFrames) {
           throw new Error(`The render page counted ${frameCount} frames, but the timeline has ${timeline.totalFrames}.`)
         }
@@ -177,7 +179,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
       page = opened
       pageFailed = failed
     }
-    await openPage(args.faultAtFrame)
+    await openPage({ faultAtFrame: args.faultAtFrame, faultAfterRenderFrame: args.faultAfterRenderFrame })
     throwIfAborted(signal)
 
     const progress = rollingProgress(frames, args.onProgress)
@@ -218,6 +220,11 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
       try {
         await step(page!.renderFrame(n), `render frame ${n}`, pageFailed!)
         png = await step(page!.capturePng(), `capture frame ${n}`, pageFailed!)
+        // The context can go after the frame was painted. The capture may then be a correctly sized blank map, and the
+        // loss event may not have reached Node yet, so ask the page before trusting the PNG.
+        if (await step(page!.contextLost(), `check frame ${n}`, pageFailed!)) {
+          throw new Error(`Could not capture frame ${n}: the WebGL context was lost.`)
+        }
       } catch (e) {
         if (signal?.aborted) throw e
         await recover(n, e)

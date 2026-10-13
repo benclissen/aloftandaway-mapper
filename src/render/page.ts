@@ -6,8 +6,12 @@ import { capturePng } from './capture.js'
 /** The slice of `window` that render mode exposes. This module is type-checked without the DOM library. */
 interface MapperHandle {
   ready: Promise<void>
-  load(project: Project, opts: { pixelRatio: number; faultAtFrame?: number }): Promise<{ frameCount: number }>
+  load(
+    project: Project,
+    opts: { pixelRatio: number; faultAtFrame?: number; faultAfterRenderFrame?: number },
+  ): Promise<{ frameCount: number }>
   renderFrame(n: number): Promise<void>
+  contextLost(): boolean
 }
 
 /**
@@ -59,17 +63,21 @@ export class RenderPage {
   }
 
   /**
-   * Loads the project into the map. Resolves to the frame count. `faultAtFrame` is a test hook that loses the WebGL
-   * context the first time that frame is rendered.
+   * Loads the project into the map. Resolves to the frame count. `faultAtFrame` and `faultAfterRenderFrame` are test hooks
+   * that lose the WebGL context while that frame is rendered, or just after it has been painted.
    */
-  async load(project: Project, pixelRatio: number, opts: { faultAtFrame?: number } = {}): Promise<number> {
+  async load(
+    project: Project,
+    pixelRatio: number,
+    opts: { faultAtFrame?: number; faultAfterRenderFrame?: number } = {},
+  ): Promise<number> {
     const { frameCount } = await this.page.evaluate(
-      async ([input, ratio, fault]) => {
+      async ([input, ratio, fault, faultAfter]) => {
         const mapper = (globalThis as unknown as { mapper: MapperHandle }).mapper
         await mapper.ready
-        return mapper.load(input, { pixelRatio: ratio, faultAtFrame: fault })
+        return mapper.load(input, { pixelRatio: ratio, faultAtFrame: fault, faultAfterRenderFrame: faultAfter })
       },
-      [project, pixelRatio, opts.faultAtFrame] as const,
+      [project, pixelRatio, opts.faultAtFrame, opts.faultAfterRenderFrame] as const,
     )
     this.pixelRatio = pixelRatio
     return frameCount
@@ -78,6 +86,11 @@ export class RenderPage {
   /** Shows frame `n` and resolves once it is fully painted. Rejects if map data failed to load. */
   async renderFrame(n: number): Promise<void> {
     await this.page.evaluate((frame) => (globalThis as unknown as { mapper: MapperHandle }).mapper.renderFrame(frame), n)
+  }
+
+  /** True when the map's WebGL context is lost, which makes a frame captured now untrustworthy. */
+  async contextLost(): Promise<boolean> {
+    return this.page.evaluate(() => (globalThis as unknown as { mapper: MapperHandle }).mapper.contextLost())
   }
 
   /** The current frame as a PNG at the pixel ratio of the last `load`. */

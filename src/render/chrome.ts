@@ -3,6 +3,9 @@ import { chromium, type Browser } from 'playwright'
 /** Chrome flags. The render-speed benchmark found the defaults already use the GPU (ANGLE on Metal). */
 const LAUNCH_ARGS: string[] = []
 
+/** Mapper owns shutdown: Playwright's own signal handlers would exit the process before renders are cancelled. */
+const NO_SIGNAL_HANDLERS = { handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false }
+
 export interface LaunchedBrowser {
   browser: Browser
   channel: 'chrome' | 'chromium'
@@ -15,11 +18,11 @@ export async function launchBrowser(): Promise<LaunchedBrowser> {
   let browser: Browser
   let channel: LaunchedBrowser['channel']
   try {
-    browser = await chromium.launch({ channel: 'chrome', headless: true, args: LAUNCH_ARGS })
+    browser = await chromium.launch({ channel: 'chrome', headless: true, args: LAUNCH_ARGS, ...NO_SIGNAL_HANDLERS })
     channel = 'chrome'
   } catch (chromeError) {
     try {
-      browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS })
+      browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS, ...NO_SIGNAL_HANDLERS })
       channel = 'chromium'
     } catch (chromiumError) {
       throw new Error(

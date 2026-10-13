@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -141,3 +141,77 @@ test('stdout carries only protocol', async () => {
     expect(message.id).toBeTypeOf('number')
   }
 }, 60_000)
+
+/** Pids of processes whose command line contains `needle`. Empty when there are none. */
+async function pgrep(needle: string): Promise<string[]> {
+  try {
+    return (await run('pgrep', ['-f', needle])).stdout.split('\n').filter(Boolean)
+  } catch (e) {
+    if ((e as { code?: number }).code === 1) return []
+    throw e
+  }
+}
+
+test('SIGTERM during a render cancels it and leaves no ffmpeg or Chrome', async () => {
+  const folder = path.join(tmp, 'Term')
+  // Chrome's profile lives under TMPDIR, so this folder's path picks out this child's Chrome and nothing else.
+  const childTmp = path.join(tmp, 'child-tmp')
+  await mkdir(childTmp)
+  const child = spawn(process.execPath, [MAIN, 'mcp'], {
+    env: { ...childEnv(), TMPDIR: childTmp },
+    stdio: ['pipe', 'pipe', 'inherit'],
+  })
+  const exited = new Promise<number | null>((resolve) => child.on('close', resolve))
+
+  const waiting = new Map<number, (message: { result?: CallToolResult }) => void>()
+  let buffered = ''
+  child.stdout.setEncoding('utf8').on('data', (text: string) => {
+    buffered += text
+    for (let end = buffered.indexOf('\n'); end >= 0; end = buffered.indexOf('\n')) {
+      const message = JSON.parse(buffered.slice(0, end)) as { id?: number; result?: CallToolResult }
+      buffered = buffered.slice(end + 1)
+      if (message.id !== undefined) waiting.get(message.id)?.(message)
+    }
+  })
+  let id = 0
+  const rpc = (method: string, params: object) =>
+    new Promise<{ result?: CallToolResult }>((resolve) => {
+      waiting.set(++id, resolve)
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+    })
+  const call = async (name: string, args: object) => {
+    const result = (await rpc('tools/call', { name, arguments: args })).result!
+    expect(result.isError, `${name}: ${textOf(result)}`).toBeFalsy()
+    return result.structuredContent as Record<string, any>
+  }
+
+  try {
+    await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'raw', version: '0.0.0' } })
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
+    await call('create_project', { folder, name: 'Term', output: { height: 1080 } })
+    await call('set_stops', { folder, stops: STOPS })
+    await call('update_project', { folder, set: { look: { theme: 'blank' }, timing: { holdStart: 1, travel: 4, holdEnd: 1 } } })
+    const { jobId, dir } = await call('render', { folder, codec: 'h264' })
+    expect(dir).toBeTypeOf('string')
+
+    for (let waited = 0; !(await call('render_status', { jobId })).progress; waited += 100) {
+      expect(waited, 'the render never reported progress').toBeLessThan(60_000)
+      await sleep(100)
+    }
+    // Both are running now.
+    expect((await pgrep(dir)).length, 'ffmpeg should be running').toBeGreaterThan(0)
+    expect((await pgrep(childTmp)).length, 'Chrome should be running').toBeGreaterThan(0)
+
+    child.kill('SIGTERM')
+    const timedOut = Symbol('timed out')
+    const code = await Promise.race([exited, sleep(20_000).then(() => timedOut)])
+    expect(code, 'the server did not exit within 20 s').toBe(0)
+
+    const manifest = JSON.parse(await readFile(path.join(dir, 'manifest.json'), 'utf8')) as Record<string, unknown>
+    expect(manifest.cancelled).toBe(true)
+    expect(await pgrep(dir), 'ffmpeg is still running').toEqual([])
+    expect(await pgrep(childTmp), 'Chrome is still running').toEqual([])
+  } finally {
+    child.kill('SIGKILL')
+  }
+}, 120_000)

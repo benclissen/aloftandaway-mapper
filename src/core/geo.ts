@@ -1,4 +1,4 @@
-import type { LngLat } from './schema.js'
+import { MAX_LAT, type LngLat } from './schema.js'
 
 /** Web Mercator world units: 0 to 1 across one world, x east, y south. Unwrapped longitudes can leave 0 to 1. */
 export type XY = [number, number]
@@ -21,6 +21,11 @@ export function unwrapLng(prev: number, lng: number): number {
   while (out - prev > 180) out -= 360
   while (out - prev < -180) out += 360
   return out
+}
+
+/** `lat` limited to the schema's ±85.0511. */
+export function clampLat(lat: number): number {
+  return Math.min(Math.max(lat, -MAX_LAT), MAX_LAT)
 }
 
 export function haversineKm(a: LngLat, b: LngLat): number {

@@ -1,6 +1,6 @@
 import { Marker, type Map as MapLibreMap } from 'maplibre-gl'
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
-import { layoutSize, type LngLat, type Project, type Shot } from '../../core/index.js'
+import { clampLat, layoutSize, type LngLat, type Project, type Shot } from '../../core/index.js'
 import { MapStage } from '../stage/MapStage.js'
 
 declare global {
@@ -129,7 +129,7 @@ class StageController {
     if (!map) return undefined
     const { lng, lat } = map.getCenter().wrap()
     return {
-      center: [round(lng, 6), round(lat, 6)],
+      center: [round(lng, 6), clampLat(round(lat, 6))],
       zoom: round(map.getZoom(), 4),
       bearing: normaliseBearing(map.getBearing()),
       pitch: map.getPitch(),
@@ -235,7 +235,7 @@ class StageController {
     marker.on('dragend', () => {
       this.dragging.delete(id)
       const { lng, lat } = marker.getLngLat().wrap()
-      void this.cb.onStopMoved(id, [round(lng, 5), round(lat, 5)]).then((saved) => {
+      void this.cb.onStopMoved(id, [round(lng, 5), clampLat(round(lat, 5))]).then((saved) => {
         // Nothing was saved, so no new project will move the marker: put it back over the stop.
         const stop = this.project?.stops.find((s) => s.id === id)
         if (!saved && stop && this.markers.get(id) === marker && !this.dragging.has(id)) marker.setLngLat(stop.at)

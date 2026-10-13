@@ -181,6 +181,27 @@ test('use this view as start shot saves the camera', async () => {
   }
 })
 
+test('a start shot saved fully zoomed out is inside the schema', async () => {
+  const { page, folder, close } = await openStudio()
+  try {
+    // As far out and as far north as the map lets the user go.
+    const minZoom = await page.evaluate(() => {
+      const map = (window as unknown as StudioWindow).mapperStudio.map
+      map.jumpTo({ zoom: -5, center: [0, 89] })
+      return map.getMinZoom()
+    })
+    expect(minZoom).toBe(0)
+    await page.getByTestId('use-start').click()
+    await expect.poll(async () => (await loadProject(folder)).camera.start, { timeout: 2000, interval: 100 }).toBeDefined()
+    const start = (await loadProject(folder)).camera.start!
+    expect(start.zoom).toBeGreaterThanOrEqual(0)
+    expect(Math.abs(start.center[1])).toBeLessThanOrEqual(85.0511)
+    expect(await page.locator('.notice-error').count()).toBe(0)
+  } finally {
+    await close()
+  }
+})
+
 test('external edits appear live', async () => {
   const { page, folder, close } = await openStudio()
   try {

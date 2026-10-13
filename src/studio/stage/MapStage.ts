@@ -150,6 +150,8 @@ export class MapStage {
       fadeDuration: 0,
       attributionControl: false,
       interactive: opts.interactive,
+      // MapLibre allows zoom −2; the schema starts at 0, so a view the user saves must too.
+      ...(opts.interactive ? { minZoom: 0 } : {}),
       // Draw CJK labels from the server's glyphs rather than a system font, so every machine renders the same.
       localIdeographFontFamily: false,
     })

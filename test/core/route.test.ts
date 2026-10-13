@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'vitest'
 import {
   buildRoute,
+  clampLat,
   haversineKm,
+  LngLatSchema,
+  MAX_LAT,
   headingDeg,
   pointAt,
   slicePath,
@@ -13,6 +16,15 @@ import {
 import { emptyProject, greekIslands, pacific, stopsAt } from '../fixtures/projects.js'
 
 describe('geo', () => {
+  test('clampLat keeps a latitude inside the schema, which stops short of MapLibre\'s 85.051129', () => {
+    expect(MAX_LAT).toBe(85.0511)
+    expect(clampLat(85.051129)).toBe(MAX_LAT)
+    expect(clampLat(-85.051129)).toBe(-MAX_LAT)
+    expect(clampLat(37.942)).toBe(37.942)
+    expect(LngLatSchema.safeParse([0, 85.051129]).success).toBe(false)
+    expect(LngLatSchema.safeParse([0, clampLat(85.051129)]).success).toBe(true)
+  })
+
   test('toXY puts lng 0 / lat 0 at the middle of the world and lng 90 a quarter east', () => {
     expect(toXY([0, 0])).toEqual([0.5, 0.5])
     expect(toXY([90, 0])[0]).toBeCloseTo(0.75, 12)

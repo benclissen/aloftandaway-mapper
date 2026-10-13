@@ -25,7 +25,8 @@ export const MAP_CREDIT = '© OpenStreetMap contributors · OpenMapTiles · Open
 
 // Schemas
 
-const MAX_LAT = 85.0511
+/** The schema's latitude limit. MapLibre's own is a little higher (85.051129), so views are clamped to this. */
+export const MAX_LAT = 85.0511
 
 export const LngLatSchema = z.tuple([z.number().min(-180).max(180), z.number().min(-MAX_LAT).max(MAX_LAT)])
 export type LngLat = z.infer<typeof LngLatSchema>

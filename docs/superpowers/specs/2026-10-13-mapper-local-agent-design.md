@@ -11,8 +11,9 @@ map, checks its own work, takes tweaks, and renders files that drop straight
 into Final Cut Pro.
 
 A typical request is: "Make a map for the Celebrity Xcel series, first six
-destinations, 4K 25p." The agent pulls the stops from a source, plans the route
-and camera, shows the user a preview, applies their changes, and renders a
+destinations, 4K 25p." The agent fetches the stops from wherever the user
+points it (a website's API, a spreadsheet, a GPX file) and passes them to
+Mapper. Then it plans the route and camera, shows the user a preview, applies their changes, and renders a
 layered clip with an FCPXML file.
 
 ### Success criteria
@@ -33,9 +34,10 @@ layered clip with an FCPXML file.
 - Editable Final Cut titles and render-to-exact-length (possible later).
 - Photo signs and stats overlays such as speed and elevation (possible later).
 - Browser-side video encoding. Rendering uses headless Chrome and ffmpeg.
+- Connecting to any trip-data API. Mapper takes stops as input; fetching them
+  is the agent's job.
 - Real ship tracks from AIS data. Parked, see [docs/plan.md](../../plan.md#parked-real-ship-tracks-ais).
-  The `Leg` type and the `MapperSource` interface leave room to add a
-  recorded-track leg later without breaking project files.
+  The `Leg` type leaves room to add a recorded-track leg later without breaking project files.
 
 ## Decisions
 
@@ -47,7 +49,7 @@ layered clip with an FCPXML file.
 | Output | ProRes layers plus FCPXML, with optional H.264 preview | What Final Cut handles best |
 | Defaults | 3840×2160, 25 fps, 16:9 | The user's usual Final Cut format |
 | Coordinates | `[lng, lat]` in WGS84 (GeoJSON order) | Agents and data sources speak lat/lng; Mercator maths stays internal |
-| Private data | External source plugins loaded from local config | The public repo knows nothing about private sources |
+| Trip data | Supplied by the agent as stops, or read from a GPX file | Mapper knows no data sources; the agent fetches data from wherever the user points it |
 
 ## Architecture
 
@@ -55,29 +57,28 @@ One npm package with a single `mapper` binary. Internal modules with one job eac
 
 ```
 src/
-├── core/      Schema, geometry, routing, timeline, camera. Pure TS: no DOM, no fs, no network.
+├── core/      Schema, geometry, routing, timeline, camera, GPX parsing. Pure TS: no DOM, no fs, no network.
 ├── studio/    Vite + React + MapLibre page. Modes: edit, render.
 ├── server/    Local HTTP + WebSocket server: serves studio, reads/writes project, tile cache.
 ├── render/    Playwright + Chrome frame loop, ffmpeg encoding, FCPXML writer.
-├── sources/   Source plugin interface, built-in sources, plugin loader.
 ├── mcp/       MCP server exposing the tools below.
 └── cli/       `mapper` commands: mcp, studio, render, doctor, and one per tool.
 skills/mapper/SKILL.md   Agent workflow guide.
 ```
 
-Dependency direction: `core` ← `sources`, `studio`, `server` ← `render` ← `mcp`, `cli`.
+Dependency direction: `core` ← `studio`, `server` ← `render` ← `mcp`, `cli`.
 `core` imports nothing else from the package.
 
 ### Runtime requirements
 
-- Node 22.18 or newer (TypeScript type stripping, used to load `.ts` plugins).
+- Node 22 or newer.
 - Google Chrome, or Playwright's Chromium as a fallback.
 - ffmpeg with `prores_ks` (for ProRes 4444 with alpha).
 - macOS is the primary target. Linux should work for everything except the
   Final Cut checks.
 
-`mapper doctor` checks each of these, plus WebGL in headless Chrome, free
-disk space and configured sources. For anything missing it prints the fix.
+`mapper doctor` checks each of these, plus WebGL in headless Chrome and free
+disk space. For anything missing it prints the fix.
 
 ## Project file
 
@@ -126,7 +127,8 @@ interface Stop {
   pause: number                   // seconds the line waits here (0 for none)
   sign: 'always' | 'on-arrival' | 'none'
   terminal?: boolean              // start/end port styling
-  source?: { source: string; collection: string; item: string; day?: number }
+  day?: number                    // itinerary day, used in marker names ("Day 3 · Santorini")
+  ref?: string                    // free-form id the agent keeps, e.g. the source record's id
 }
 
 interface Leg {
@@ -220,62 +222,38 @@ render; warnings don't. It checks:
 - Camera zoom above the tile source's maximum zoom.
 - Durations under one second per leg.
 - Fewer than two stops.
+- Two consecutive stops at the same place (an overnight that should be one
+  stop with a pause).
 
-## Sources
+## Getting stops in
+
+Mapper doesn't connect to any data source. The agent gets the trip data
+however the user tells it to, then hands Mapper the stops:
 
 ```ts
-interface MapperSource {
-  id: string                       // 'gpx', 'places', or a plugin id
-  label: string
-  listCollections(query?: string): Promise<CollectionSummary[]>
-  getCollection(id: string, options?: { limit?: number }): Promise<Collection>
-}
-
-interface CollectionSummary { id: string; title: string; subtitle?: string; stopCount?: number }
-
-interface Collection {
-  id: string
-  title: string
-  routeType: 'sea' | 'air' | 'land' | 'mixed'
-  stops: SourceStop[]              // in travel order, already de-duplicated
-}
-
-interface SourceStop {
-  item: string                     // the source's own id
+interface StopInput {
   name: string
   at: LngLat
   day?: number
+  label?: string
+  pause?: number                   // default 0
+  sign?: Stop['sign']              // default 'always'
   terminal?: boolean
-  legMode?: Leg['mode']            // for 'mixed' collections
+  ref?: string
+  legMode?: Leg['mode']            // mode of the leg leaving this stop; defaults to the call's legMode
 }
 ```
 
-Built-in sources:
+- `set_stops({ folder, stops, legMode?, replace? })` creates or replaces the
+  stops in travel order, and creates one leg per pair (`legMode` defaults to
+  `line`). With `replace: false`, the stops are appended to the end instead.
+- `import_gpx({ folder, path, track?, stops? })` reads a local GPX file.
+  `stops: 'waypoints'` makes a stop of each named waypoint; `'ends'` (the
+  default) uses the start and end only. The track between stops becomes
+  `via` points, simplified.
 
-- **gpx**: `getCollection(path)` reads a GPX file. Tracks and routes become
-  stops, either from named waypoints or from start and end only, plus a
-  `via` path.
-- **places**: `listCollections(query)` searches Photon. Each result is a
-  one-stop collection, so the agent can look up a place name.
-
-External plugins are listed in `~/.config/mapper/config.json`:
-
-```json
-{
-  "sources": [
-    { "id": "example", "module": "/absolute/path/to/plugin/index.ts", "options": {} }
-  ]
-}
-```
-
-A plugin module's default export is `(options) => MapperSource`. Plugins are
-trusted local code, loaded with dynamic `import()`. A failing plugin is
-reported by `mapper doctor` and `list_sources`. It never stops Mapper from
-starting.
-
-`import_collection` maps a `Collection` onto the project. It creates stops
-with `source` refs and creates legs from `routeType` (`sea` → sea legs, and so
-on). `limit` keeps the first N stops.
+The agent should pass stops already in travel order, with sea days dropped
+and overnights merged. `validate_project` warns if it didn't.
 
 ## MCP tools
 
@@ -285,12 +263,10 @@ fix.
 
 | Tool | Input | Result |
 |---|---|---|
-| `list_sources` | — | Sources with status |
-| `list_collections` | `source`, `query?` | Collection summaries |
-| `get_collection` | `source`, `id`, `limit?` | Collection with stops |
 | `create_project` | `folder`, `name`, `output?` | Project summary |
 | `get_project` | `folder` | Full project and the timeline summary (duration, arrival times) |
-| `import_collection` | `folder`, `source`, `id`, `limit?`, `replace?` | Project summary |
+| `set_stops` | `folder`, `stops`, `legMode?`, `replace?` (default true) | Project summary and validation |
+| `import_gpx` | `folder`, `path`, `track?`, `stops?` | Project summary and validation |
 | `update_project` | `folder`, `set?` (JSON Merge Patch over every top-level field except `stops` and `legs`), `ops?` (array ops below) | Project summary and validation |
 | `validate_project` | `folder` | Errors and warnings |
 | `preview_frame` | `folder`, `at` (exactly one of `{ seconds }`, `{ frame }`, `{ progress }` where progress is 0–1), `width?` | PNG image |
@@ -406,7 +382,8 @@ Studio render mode (`?mode=render&layer=map|route|signs|all`):
 
 `skills/mapper/SKILL.md` covers:
 
-- The workflow: sources → create → import → validate → contact sheet →
+- The workflow: get the trip data the user points to → create → set_stops →
+  validate → contact sheet →
   tweak → studio link for the user → render → report output paths.
 - Rules: always look at a contact sheet before rendering. Fix validation
   warnings or explain them. Never edit `mapper.json` by hand. Tell the user
@@ -419,7 +396,6 @@ Studio render mode (`?mode=render&layer=map|route|signs|all`):
 | Failure | Behaviour |
 |---|---|
 | Chrome, ffmpeg or ProRes missing | `doctor` and the render say what's missing and how to install it |
-| Plugin fails to load | Listed as unavailable with the error; other sources keep working |
 | Invalid patch | Tool error with the Zod path and message; project unchanged |
 | Sea routing fails | Falls back to `line`; warning |
 | Tile or WebGL failure mid-render | Retry, reload, resume from the failed frame |
@@ -433,8 +409,7 @@ Studio render mode (`?mode=render&layer=map|route|signs|all`):
   same however it's reached), great-circle arcs, sea routing fixtures
   (Athens → Mykonos and Barcelona → Marseille stay at sea; a path between
   two landlocked points fails cleanly).
-- **sources**: GPX fixtures; the plugin loader with a fixture plugin,
-  including a broken one.
+- **GPX**: parser fixtures (tracks, routes, named waypoints, multiple tracks).
 - **server**: Host and token checks, folder confinement, file-watch sync.
 - **render**:
   - Golden frames: chosen frames of fixture projects compared with stored
@@ -445,7 +420,7 @@ Studio render mode (`?mode=render&layer=map|route|signs|all`):
 - **FCPXML**: `xmllint --dtdvalid` against the bundled DTD, plus structural
   assertions (lanes, roles, marker times).
 - **mcp**: an end-to-end test with the MCP SDK client against a fixture
-  project: create → import (fixture source) → validate → preview → render a
+  project: create → set_stops → validate → preview → render a
   2-second clip.
 
 ## Build stages
@@ -458,11 +433,9 @@ Each stage gets its own implementation plan.
    H.264). One built-in theme.
 2. **Final Cut export**: layer passes, ProRes 4444 with alpha, FCPXML with
    lanes, roles and markers, DTD validation.
-3. **Routes**: sea routing, `air` arcs, follow camera, GPX and places sources,
+3. **Routes**: sea routing, `air` arcs, follow camera, GPX import,
    `validate_project` warnings.
-4. **Private source plugin**: designed and built outside this repo. It
-   implements the `MapperSource` interface above.
-5. **Look**: more themes, sign styles, transport symbols, terrain and tilt.
+4. **Look**: more themes, sign styles, transport symbols, terrain and tilt.
 
 ## Risks
 

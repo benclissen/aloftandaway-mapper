@@ -28,7 +28,6 @@ Design written, no code yet.
 | Vector tiles | [OpenFreeMap](https://openfreemap.org/) (OpenStreetMap data) |
 | Satellite | [EOxCloudless 2016](https://cloudless.eox.at/) (CC BY 4.0) |
 | Elevation | [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) |
-| Place search | [Photon](https://photon.komoot.io/) |
 | Rendering | Headless Chrome (Playwright) and ffmpeg |
 | Output | ProRes layers (map, route and signs with alpha) and FCPXML for Final Cut Pro |
 | Storage | A project folder on disk |

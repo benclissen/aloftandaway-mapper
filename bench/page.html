@@ -1,0 +1,168 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Mapper render-speed benchmark</title>
+<link rel="stylesheet" href="/node_modules/maplibre-gl/dist/maplibre-gl.css">
+<style>
+  html, body { margin: 0; padding: 0; background: #000; }
+  #stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; }
+  #map, #overlay { position: absolute; inset: 0; width: 1920px; height: 1080px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="map"></div>
+  <canvas id="overlay"></canvas>
+</div>
+<script type="module">
+import * as maplibregl from '/node_modules/maplibre-gl/dist/maplibre-gl.mjs';
+
+// Benchmark only: the style is fetched at runtime and never stored in the repo.
+const STYLE = 'https://tiles.openfreemap.org/styles/positron';
+const PIRAEUS = { center: [23.6466, 37.942], zoom: 6 };
+const RHODES = { center: [28.2278, 36.451], zoom: 8 };
+const ROUTE_POINTS = 256;
+
+const pixelRatio = Number(new URLSearchParams(location.search).get('pixelRatio') ?? 1);
+
+const map = new maplibregl.Map({
+  container: 'map',
+  style: STYLE,
+  center: PIRAEUS.center,
+  zoom: PIRAEUS.zoom,
+  pixelRatio,
+  maxCanvasSize: [8192, 8192],
+  fadeDuration: 0,
+  attributionControl: false,
+  interactive: false,
+  canvasContextAttributes: { preserveDrawingBuffer: true },
+});
+
+const lerp = (a, b, t) => a + (b - a) * t;
+const lerpPoint = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
+
+// A straight Piraeus → Rhodes line, densified so setData carries a realistic vertex count.
+const route = Array.from({ length: ROUTE_POINTS }, (_, k) =>
+  lerpPoint(PIRAEUS.center, RHODES.center, k / (ROUTE_POINTS - 1)));
+
+function routeTo(t) {
+  const end = t * (ROUTE_POINTS - 1);
+  const whole = Math.floor(end);
+  const coords = route.slice(0, whole + 1);
+  if (end > whole) coords.push(lerpPoint(route[whole], route[whole + 1], end - whole));
+  if (coords.length < 2) coords.push(coords[0]);
+  return { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } };
+}
+
+const mapCanvas = map.getCanvas();
+const gl = mapCanvas.getContext('webgl2');
+
+// A stand-in for the signs layer: a 2D canvas the size of the map canvas.
+const overlay = document.getElementById('overlay');
+overlay.width = mapCanvas.width;
+overlay.height = mapCanvas.height;
+const overlayCtx = overlay.getContext('2d');
+overlayCtx.scale(pixelRatio, pixelRatio);
+overlayCtx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+overlayCtx.fillRect(80, 900, 420, 100);
+overlayCtx.fillStyle = '#1d2b3a';
+overlayCtx.font = '600 56px sans-serif';
+overlayCtx.fillText('Rhodes', 110, 970);
+
+const composite = document.createElement('canvas');
+composite.width = mapCanvas.width;
+composite.height = mapCanvas.height;
+const compositeCtx = composite.getContext('2d');
+
+const pixels = new Uint8Array(mapCanvas.width * mapCanvas.height * 4);
+let last = pixels;
+const sockets = new Map();
+
+function idle() {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('map did not go idle within 60 s')), 60_000);
+    map.once('idle', () => { clearTimeout(timer); resolve(); });
+  });
+}
+
+function socket(url) {
+  if (!sockets.has(url)) {
+    sockets.set(url, new Promise((resolve, reject) => {
+      const ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => resolve(ws);
+      ws.onerror = () => reject(new Error(`WebSocket ${url} failed`));
+    }));
+  }
+  return sockets.get(url);
+}
+
+function drained(ws) {
+  return new Promise((resolve) => {
+    const check = () => (ws.bufferedAmount === 0 ? resolve() : setTimeout(check, 0));
+    check();
+  });
+}
+
+window.bench = {
+  ready: new Promise((resolve) => map.once('load', () => {
+    map.addSource('route', { type: 'geojson', data: routeTo(0) });
+    map.addLayer({
+      id: 'route',
+      type: 'line',
+      source: 'route',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#d9472b', 'line-width': 6 },
+    });
+    resolve();
+  })),
+
+  size: () => [mapCanvas.width, mapCanvas.height],
+
+  async frame(i, n) {
+    const t = i / n;
+    const start = performance.now();
+    const settled = idle();
+    map.jumpTo({ center: lerpPoint(PIRAEUS.center, RHODES.center, t), zoom: lerp(PIRAEUS.zoom, RHODES.zoom, t) });
+    map.getSource('route').setData(routeTo(t));
+    await settled;
+    return performance.now() - start;
+  },
+
+  readPixelsGL() {
+    const start = performance.now();
+    gl.readPixels(0, 0, mapCanvas.width, mapCanvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    last = pixels;
+    return performance.now() - start;
+  },
+
+  readComposite() {
+    const start = performance.now();
+    compositeCtx.clearRect(0, 0, composite.width, composite.height);
+    compositeCtx.drawImage(mapCanvas, 0, 0);
+    compositeCtx.drawImage(overlay, 0, 0);
+    last = compositeCtx.getImageData(0, 0, composite.width, composite.height).data;
+    return performance.now() - start;
+  },
+
+  async sendWS(url) {
+    const ws = await socket(url);
+    const start = performance.now();
+    ws.send(last);
+    await drained(ws);
+    return performance.now() - start;
+  },
+
+  base64() {
+    return new Uint8Array(last.buffer, last.byteOffset, last.byteLength).toBase64();
+  },
+
+  webgl() {
+    const info = gl.getExtension('WEBGL_debug_renderer_info');
+    return info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  },
+};
+</script>
+</body>
+</html>

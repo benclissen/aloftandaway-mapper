@@ -33,6 +33,9 @@ layered clip with an FCPXML file.
 - Editable Final Cut titles and render-to-exact-length (possible later).
 - Photo signs and stats overlays such as speed and elevation (possible later).
 - Browser-side video encoding. Rendering uses headless Chrome and ffmpeg.
+- Real ship tracks from AIS data. Parked, see [docs/plan.md](../../plan.md#parked-real-ship-tracks-ais).
+  The `Leg` type and the `MapperSource` interface leave room to add a
+  recorded-track leg later without breaking project files.
 
 ## Decisions
 

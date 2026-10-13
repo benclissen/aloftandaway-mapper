@@ -15,3 +15,33 @@ something that works.
 
 Out of scope for now: hosting, a full manual editor, editable Final Cut titles,
 render-to-exact-length, photo signs, stats overlays.
+
+## Parked: real ship tracks (AIS)
+
+Researched 2026-10-13, inspired by [The Cruise Globe](https://thecruiseglobe.com/).
+It draws a cruise's real route from historical AIS satellite data (2015
+onwards), given the ship and the sailing dates.
+
+Why it's parked: the goal would be real routes for *past* cruises, and
+historical AIS data is only available from paid providers. Free options
+only record from now on.
+
+| Source | Cost | Notes |
+|---|---|---|
+| Phone GPS log (GPX) | Free | Future trips only; already covered by GPX import |
+| [aisstream.io](https://aisstream.io) live feed, recorded locally | Free | Future trips only; shore receivers, gaps mid-ocean |
+| [Datalastic](https://datalastic.com/pricing/) historical API | About €199/month, billed per vessel-day; €9 trial | Up to 31 days per request, by IMO/MMSI |
+| [VesselFinder](https://www.vesselfinder.com/vessel-positions-api) historical API | €330 per 10,000 credits; 1 credit per shore position, 10 per satellite position | Archive from 2009 |
+
+Prices are from vendor pages and third-party comparisons as of 2026-10-13.
+Confirm current prices, and check that the licence allows derived routes in
+commercial videos, before buying.
+
+If we pick it up again:
+
+- An `ais` source plugin with the provider behind a swappable adapter. The
+  API key goes in local config.
+- A `track` leg mode that draws a recorded path as-is, with port calls
+  detected from stationary periods, and optionally the real timing.
+- One month of a historical provider would be enough to backfill every past
+  cruise in one go.

@@ -189,6 +189,13 @@ describe('studio files', () => {
     expect(reply.body).toBe('console.log(1)')
   })
 
+  test('serves .mjs as JavaScript, so module workers load', async () => {
+    await writeFile(path.join(studioDir, 'assets', 'worker.mjs'), 'export {}')
+    const reply = await call(`${server.base}studio/assets/worker.mjs`)
+    expect(reply.status).toBe(200)
+    expect(reply.headers['content-type']).toContain('text/javascript')
+  })
+
   test('falls back to index.html', async () => {
     for (const url of [`${server.base}studio/`, `${server.base}studio/?project=${id}`, `${server.base}studio/some/route`]) {
       const reply = await call(url)

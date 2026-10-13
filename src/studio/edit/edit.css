@@ -1,0 +1,307 @@
+/* Edit mode only. Loaded with the edit app, so render mode keeps its transparent page. */
+
+.studio,
+.studio-message {
+  --bg: #1c1d1f;
+  --surface: #242528;
+  --raised: #2e3034;
+  --line: #36383d;
+  --text: #e8e6e1;
+  --muted: #9a9ca1;
+  --free: #f0b546;
+  --error: #f28b82;
+  --thumb: 14px;
+
+  font: 13px/1.4 Inter, system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.studio {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.studio-message {
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+/* Stage */
+
+.stage-area {
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.stage-frame {
+  position: relative;
+  overflow: hidden;
+  /* A hairline edge so the frame reads against the surround, whatever the map's colours. */
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 10px 40px rgba(0, 0, 0, 0.45);
+}
+
+.stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.studio .stop-handle {
+  width: 30px;
+  height: 30px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3), inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+  cursor: grab;
+}
+
+.studio .stop-handle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.studio .stop-handle:active {
+  cursor: grabbing;
+}
+
+/* Controls */
+
+.controls {
+  display: grid;
+  gap: 6px;
+  padding: 10px 20px 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+.studio button {
+  font: inherit;
+  color: var(--text);
+  height: 28px;
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.studio button:hover {
+  background: var(--raised);
+}
+
+.studio button:focus-visible,
+.studio input:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+/* Scrubber */
+
+.scrubber {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.studio .play {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.track {
+  position: relative;
+  height: 30px;
+}
+
+.track input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  inset: 0 0 auto;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.track input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.track input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: var(--thumb);
+  height: var(--thumb);
+  margin-top: calc(2px - var(--thumb) / 2);
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 0 0 3px var(--surface);
+}
+
+/* Ring the thumb, not the whole track. */
+.studio .track input[type='range']:focus-visible {
+  outline: none;
+}
+
+.track input[type='range']:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px var(--text);
+}
+
+.ticks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 19px;
+  height: 10px;
+}
+
+/* Centred under the thumb's position for the arrival frame. */
+.studio .tick {
+  position: absolute;
+  left: calc(var(--thumb) / 2 + (100% - var(--thumb)) * var(--at));
+  top: 0;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  transform: translateX(-50%);
+}
+
+.studio .tick::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 2px;
+  height: 7px;
+  border-radius: 1px;
+  background: var(--muted);
+}
+
+.studio .tick:hover {
+  background: transparent;
+}
+
+.studio .tick:hover::before {
+  background: var(--text);
+}
+
+.time {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.time .duration {
+  color: var(--muted);
+}
+
+.time .duration::before {
+  content: ' / ';
+}
+
+/* Camera row */
+
+.controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 28px;
+}
+
+.shot-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.segmented {
+  display: inline-flex;
+  margin-right: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.studio .segmented button {
+  border: 0;
+  border-radius: 0;
+  color: var(--muted);
+}
+
+.studio .segmented button + button {
+  border-left: 1px solid var(--line);
+}
+
+.studio .segmented button[aria-pressed='true'] {
+  color: var(--text);
+  background: var(--raised);
+}
+
+.studio .segmented button:focus-visible {
+  outline-offset: -2px;
+}
+
+.free-view {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  color: var(--free);
+}
+
+.free-view::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.notice span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notice-error {
+  color: var(--error);
+}
+
+.studio .dismiss {
+  height: 22px;
+  width: 22px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+}

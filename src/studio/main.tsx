@@ -9,6 +9,6 @@ if (!root) throw new Error('The studio page has no #root element.')
 if (new URLSearchParams(location.search).get('mode') === 'render') {
   startRenderMode(root)
 } else {
-  // The editing studio arrives in a later stage.
-  createRoot(root).render(<p>Mapper studio</p>)
+  // Loaded on demand, so render mode never gets the edit app or its styles.
+  void import('./edit/App.js').then(({ App }) => createRoot(root).render(<App />))
 }

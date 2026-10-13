@@ -122,6 +122,8 @@ export class MapStage {
   private mapError: Error | undefined
   /** Frames are shown one at a time, in call order. */
   private queue: Promise<void> = Promise.resolve()
+  /** The state the overlay was last drawn with. */
+  private overlayState: FrameState | undefined
 
   constructor(container: HTMLElement, opts: MapStageOptions) {
     this.container = container
@@ -224,6 +226,14 @@ export class MapStage {
     })
   }
 
+  /**
+   * Redraws the overlay for the last frame shown, at the map's current view. For interactive stages, where the user
+   * can move the map between frames.
+   */
+  redrawOverlay(): void {
+    if (this.overlayState && this.loaded) this.drawOverlay(this.overlayState)
+  }
+
   /** The map and overlay composited into one canvas at device resolution. */
   composite(): HTMLCanvasElement {
     const mapCanvas = this.map.getCanvas()
@@ -305,6 +315,7 @@ export class MapStage {
 
   private drawOverlay(state: FrameState): void {
     const { project } = this.require()
+    this.overlayState = state
     const center = this.map.getCenter().lng
     drawOverlay(this.ctx, {
       project,

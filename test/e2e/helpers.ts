@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
@@ -82,6 +83,26 @@ export async function openRenderPage(
       if (server !== sharedServer) await server.close()
     },
   }
+}
+
+/**
+ * Writes the project (with a fresh id, since the fixtures share one) to a temp folder, registers it and opens the
+ * studio's edit mode at `viewport`.
+ */
+export async function openStudioPage(
+  project: Project,
+  viewport: { width: number; height: number },
+): Promise<{ page: Page; folder: string; project: Project; close(): Promise<void> }> {
+  const { server, browser, tempDir } = await setup()
+  const folder = await mkdtemp(path.join(tempDir, 'project-'))
+  await createProject(folder, project.name)
+  const saved = await saveProject(folder, { ...project, id: randomUUID() })
+  const id = await server.registerProject(folder)
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1 })
+  const page = await context.newPage()
+  page.on('pageerror', (error) => process.stderr.write(`page error: ${error.message}\n`))
+  await page.goto(server.studioUrl(id))
+  return { page, folder, project: saved, close: () => context.close() }
 }
 
 /** Renders `frame` and captures it as a PNG at the page's pixel ratio. */

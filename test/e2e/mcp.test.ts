@@ -152,10 +152,10 @@ async function pgrep(needle: string): Promise<string[]> {
   }
 }
 
-test('SIGTERM during a render cancels it and leaves no ffmpeg or Chrome', async () => {
-  const folder = path.join(tmp, 'Term')
+test.each(['SIGTERM', 'SIGHUP', 'SIGINT'] as const)('%s during a render cancels it and leaves no ffmpeg or Chrome', async (signal) => {
+  const folder = path.join(tmp, `Signal-${signal}`)
   // Chrome's profile lives under TMPDIR, so this folder's path picks out this child's Chrome and nothing else.
-  const childTmp = path.join(tmp, 'child-tmp')
+  const childTmp = path.join(tmp, `child-tmp-${signal}`)
   await mkdir(childTmp)
   const child = spawn(process.execPath, [MAIN, 'mcp'], {
     env: { ...childEnv(), TMPDIR: childTmp },
@@ -188,7 +188,7 @@ test('SIGTERM during a render cancels it and leaves no ffmpeg or Chrome', async 
   try {
     await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'raw', version: '0.0.0' } })
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
-    await call('create_project', { folder, name: 'Term', output: { height: 1080 } })
+    await call('create_project', { folder, name: signal, output: { height: 1080 } })
     await call('set_stops', { folder, stops: STOPS })
     await call('update_project', { folder, set: { look: { theme: 'blank' }, timing: { holdStart: 1, travel: 4, holdEnd: 1 } } })
     const { jobId, dir } = await call('render', { folder, codec: 'h264' })
@@ -202,7 +202,7 @@ test('SIGTERM during a render cancels it and leaves no ffmpeg or Chrome', async 
     expect((await pgrep(dir)).length, 'ffmpeg should be running').toBeGreaterThan(0)
     expect((await pgrep(childTmp)).length, 'Chrome should be running').toBeGreaterThan(0)
 
-    child.kill('SIGTERM')
+    child.kill(signal)
     const timedOut = Symbol('timed out')
     const code = await Promise.race([exited, sleep(20_000).then(() => timedOut)])
     expect(code, 'the server did not exit within 20 s').toBe(0)

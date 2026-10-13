@@ -28,7 +28,7 @@ export function createMcpServer(): McpServer {
 }
 
 /**
- * Serves MCP on stdin and stdout until stdin ends or the process gets SIGINT or SIGTERM. Then it cancels renders,
+ * Serves MCP on stdin and stdout until stdin ends or the process gets SIGINT, SIGTERM or SIGHUP. Then it cancels renders,
  * closes the preview browser and the studio server, and exits. Stdout carries only protocol.
  */
 export async function runStdio(): Promise<void> {
@@ -55,7 +55,6 @@ export async function runStdio(): Promise<void> {
   server.server.onclose = () => void shutdown()
   // The SDK's stdio transport doesn't notice stdin ending.
   process.stdin.on('end', () => void shutdown())
-  process.once('SIGINT', () => void shutdown())
-  process.once('SIGTERM', () => void shutdown())
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.once(signal, () => void shutdown())
   await server.connect(new StdioServerTransport())
 }

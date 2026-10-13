@@ -27,6 +27,19 @@ export function createMcpServer(): McpServer {
   return server
 }
 
+/** How long to wait for a reader to take buffered output before exiting anyway. */
+const DRAIN_LIMIT_MS = 5_000
+
+/**
+ * Exits once stdout and stderr have written everything. `process.exit` straight after a large `console.log` cuts the
+ * output off when stdout is a pipe (on macOS at 64 KB).
+ */
+export async function exitAfterDrain(exitCode: number): Promise<never> {
+  const drain = (stream: NodeJS.WriteStream) => new Promise<void>((resolve) => stream.write('', () => resolve()))
+  await Promise.race([Promise.all([drain(process.stdout), drain(process.stderr)]), new Promise((resolve) => setTimeout(resolve, DRAIN_LIMIT_MS))])
+  return process.exit(exitCode)
+}
+
 /**
  * Makes SIGINT, SIGTERM and SIGHUP shut the process down: `extra` runs first, then renders are cancelled and the
  * preview browser and studio server are closed, then the process exits with `signalExitCode`. Returns the shutdown
@@ -46,7 +59,7 @@ export function installShutdown(extra?: () => Promise<void>, signalExitCode = 0)
       } catch (e) {
         console.error('Mapper shutdown error:', e)
       }
-      process.exit(exitCode)
+      await exitAfterDrain(exitCode)
     })()
     return shuttingDown
   }

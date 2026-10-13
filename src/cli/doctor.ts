@@ -135,7 +135,7 @@ export async function runDoctor(probes: Probes = realProbes): Promise<Check[]> {
       ok: h264 !== null,
       level: 'warn',
       detail: h264 ?? 'neither h264_videotoolbox nor libx264 is available',
-      ...(h264 ? {} : { fix: 'Install an ffmpeg build with prores_ks: brew reinstall ffmpeg' }),
+      ...(h264 ? {} : { fix: 'Install an ffmpeg build with h264_videotoolbox or libx264: brew reinstall ffmpeg' }),
     })
   }
 

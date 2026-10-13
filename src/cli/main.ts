@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { renderProject, type RenderResult } from '../render/render.js'
 import { getServer } from '../server/server.js'
 import { assertAbsolute } from '../server/store.js'
-import { installShutdown, runStdio } from '../mcp/server.js'
+import { exitAfterDrain, installShutdown, runStdio } from '../mcp/server.js'
 import { callTool, creditLine, errorText, etaText, TOOLS, type ToolDef } from '../mcp/tools.js'
 import { doctorExitCode, formatChecks, runDoctor } from './doctor.js'
 
@@ -36,14 +36,18 @@ async function exit(shutdown: (code?: number) => Promise<void>, code: number): P
 // Commands
 
 interface ToolCommand {
-  /** The command name: the tool name with hyphens, except `render` which is `render-job`. */
+  /** The command name: the tool name with hyphens. */
   name: string
   def: ToolDef<any>
 }
 
-/** `open_studio` is left out because `mapper studio` replaces it. `render` is `render-job`; `mapper render` is the synchronous command. */
-const TOOL_COMMANDS: ToolCommand[] = TOOLS.filter((t) => t.name !== 'open_studio').map((def) => ({
-  name: def.name === 'render' ? 'render-job' : def.name.replaceAll('_', '-'),
+/**
+ * Left out: `open_studio`, which `mapper studio` replaces, and the render job tools. A job lives in one process, so
+ * from a shell `mapper render` does the job.
+ */
+const SHELL_SKIPS = new Set(['open_studio', 'render', 'render_status', 'cancel_render'])
+const TOOL_COMMANDS: ToolCommand[] = TOOLS.filter((t) => !SHELL_SKIPS.has(t.name)).map((def) => ({
+  name: def.name.replaceAll('_', '-'),
   def,
 }))
 
@@ -66,11 +70,11 @@ function usage(): string {
     ...OWN_COMMANDS.map(([u, s]) => row(u, s)),
     '',
     'Tool commands, one per MCP tool. Pass the input with --json \'{"folder":"/abs/path"}\' or --json-file <path>:',
-    ...TOOL_COMMANDS.map((c) => row(c.name, c.name === 'render-job' ? 'Start a render job (the MCP render tool)' : firstSentence(c.def.description))),
+    ...TOOL_COMMANDS.map((c) => row(c.name, firstSentence(c.def.description))),
     '',
     'Tool commands print the result as JSON on stdout and a summary on stderr. Folders must be absolute paths.',
-    'The MCP tools render, render_status and cancel_render are render-job, render-status and cancel-render. A job only',
-    'lives as long as one Mapper process, so from the shell use `mapper render`, which waits for the render.',
+    'The MCP render tools (render, render_status, cancel_render) have no tool commands: a render job lives in one',
+    'process. From a shell, use `mapper render`, which waits for the render.',
     'Run mapper <command> --help for a command\'s options.',
   ].join('\n')
 }
@@ -277,12 +281,12 @@ async function main(argv: string[]): Promise<number | undefined> {
 
 try {
   const code = await main(process.argv.slice(2))
-  if (code !== undefined) process.exit(code)
+  if (code !== undefined) await exitAfterDrain(code)
 } catch (e) {
   if (e instanceof UsageError) {
     console.error(`Error: ${e.message}\nFix: ${e.fix}\n\n${usage()}`)
-    process.exit(USAGE_EXIT)
+    await exitAfterDrain(USAGE_EXIT)
   }
   console.error(errorText(e, 'mapper'))
-  process.exit(1)
+  await exitAfterDrain(1)
 }

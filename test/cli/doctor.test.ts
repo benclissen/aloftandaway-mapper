@@ -53,7 +53,11 @@ test('ffmpeg without prores_ks is an error', async () => {
 
 test('no H.264 encoder is only a warning', async () => {
   const checks = await runDoctor({ ...healthy(), ffmpegEncoders: async () => ' V....D prores_ks  Apple ProRes' })
-  expect(find(checks, 'H.264 encoder')).toMatchObject({ ok: false, level: 'warn' })
+  expect(find(checks, 'H.264 encoder')).toMatchObject({
+    ok: false,
+    level: 'warn',
+    fix: 'Install an ffmpeg build with h264_videotoolbox or libx264: brew reinstall ffmpeg',
+  })
   expect(doctorExitCode(checks)).toBe(0)
 })
 

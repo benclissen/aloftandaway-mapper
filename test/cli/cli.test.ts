@@ -71,16 +71,40 @@ test('create, set stops and validate through the tool commands', async () => {
   expect(JSON.parse(validated.stdout).errors).toEqual([])
 })
 
+test.each(['render-job', 'render-status', 'cancel-render', 'open-studio'])('%s is not a command', async (name) => {
+  const { code, stderr } = await mapper(name)
+  expect(code).toBe(2)
+  expect(stderr).toContain(`Unknown command '${name}'`)
+})
+
+test('large output reaches a pipe whole', async () => {
+  const folder = path.join(tmp, 'big')
+  const stops = Array.from({ length: 500 }, (_, i) => ({ name: `Stop ${i}`, at: [i * 0.1, 10 + (i % 7)] }))
+  const created = await mapper('create-project', '--json', JSON.stringify({ folder, name: 'Big' }))
+  expect(created.code, created.stderr).toBe(0)
+  const file = path.join(tmp, 'big-stops.json')
+  await writeFile(file, JSON.stringify({ folder, stops }))
+  const set = await mapper('set-stops', '--json-file', file)
+  expect(set.code, set.stderr).toBe(0)
+
+  const got = await mapper('get-project', '--json', JSON.stringify({ folder }))
+  expect(got.code, got.stderr).toBe(0)
+  expect(got.stdout.length).toBeGreaterThan(200_000)
+  expect(JSON.parse(got.stdout).project.stops).toHaveLength(500)
+})
+
 test('--help lists every command', async () => {
   const { code, stdout } = await mapper('--help')
   expect(code).toBe(0)
   for (const name of ['mcp', 'studio', 'render', 'doctor', 'create-project', 'get-project', 'set-stops', 'update-project']) {
     expect(stdout).toContain(name)
   }
-  for (const name of ['validate-project', 'preview-frame', 'preview-contact-sheet', 'render-job', 'render-status', 'cancel-render']) {
+  for (const name of ['validate-project', 'preview-frame', 'preview-contact-sheet']) {
     expect(stdout).toContain(name)
   }
-  expect(stdout).not.toContain('open-studio')
+  for (const name of ['open-studio', 'render-job', 'render-status', 'cancel-render']) {
+    expect(stdout).not.toMatch(new RegExp(`^  ${name}\\b`, 'm'))
+  }
 })
 
 test('an unknown command exits 2 with usage on stderr', async () => {

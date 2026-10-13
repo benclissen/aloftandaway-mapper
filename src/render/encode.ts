@@ -1,4 +1,6 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { rm, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 import type { Writable } from 'node:stream'
 import { promisify } from 'node:util'
 import type { Fps } from '../core/index.js'
@@ -68,6 +70,44 @@ export function ffmpegArgs(args: {
     rate,
     args.out,
   ]
+}
+
+/** The concat demuxer's list file: one `file '<path>'` line per segment, each single quote written as `'\''`. */
+export function concatList(files: string[]): string {
+  return files.map((file) => `file '${file.replaceAll("'", "'\\''")}'\n`).join('')
+}
+
+/**
+ * Joins `parts` into `out` without re-encoding, using ffmpeg's concat demuxer. The list file sits next to `out` and
+ * is deleted afterwards. The parts are left for the caller to delete.
+ */
+export async function joinSegments(args: { parts: string[]; out: string; codec: Codec }): Promise<void> {
+  const list = path.join(path.dirname(args.out), 'concat.txt')
+  await writeFile(list, concatList(args.parts))
+  try {
+    await promisify(execFile)('ffmpeg', [
+      '-hide_banner',
+      '-nostats',
+      '-loglevel',
+      'error',
+      '-y',
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      list,
+      '-c',
+      'copy',
+      ...(args.codec === 'h264' ? ['-movflags', '+faststart'] : []),
+      args.out,
+    ])
+  } catch (e) {
+    const stderr = (e as { stderr?: string }).stderr?.trim()
+    throw new Error(`Could not join the render's segments${stderr ? `:\n${stderr}` : '.'}`, { cause: e })
+  } finally {
+    await rm(list, { force: true })
+  }
 }
 
 type Exit = { code: number | null; signal: NodeJS.Signals | null } | { error: Error }

@@ -6,7 +6,7 @@ import { capturePng } from './capture.js'
 /** The slice of `window` that render mode exposes. This module is type-checked without the DOM library. */
 interface MapperHandle {
   ready: Promise<void>
-  load(project: Project, opts: { pixelRatio: number }): Promise<{ frameCount: number }>
+  load(project: Project, opts: { pixelRatio: number; faultAtFrame?: number }): Promise<{ frameCount: number }>
   renderFrame(n: number): Promise<void>
 }
 
@@ -58,15 +58,18 @@ export class RenderPage {
     this.pixelRatio = undefined
   }
 
-  /** Loads the project into the map. Resolves to the frame count. */
-  async load(project: Project, pixelRatio: number): Promise<number> {
+  /**
+   * Loads the project into the map. Resolves to the frame count. `faultAtFrame` is a test hook that loses the WebGL
+   * context the first time that frame is rendered.
+   */
+  async load(project: Project, pixelRatio: number, opts: { faultAtFrame?: number } = {}): Promise<number> {
     const { frameCount } = await this.page.evaluate(
-      async ([input, ratio]) => {
+      async ([input, ratio, fault]) => {
         const mapper = (globalThis as unknown as { mapper: MapperHandle }).mapper
         await mapper.ready
-        return mapper.load(input, { pixelRatio: ratio })
+        return mapper.load(input, { pixelRatio: ratio, faultAtFrame: fault })
       },
-      [project, pixelRatio] as const,
+      [project, pixelRatio, opts.faultAtFrame] as const,
     )
     this.pixelRatio = pixelRatio
     return frameCount

@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { PNG } from 'pngjs'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import type { Fps } from '../../src/core/index.js'
-import { Encoder, ffmpegArgs, pickH264Encoder, type Codec } from '../../src/render/encode.js'
+import { concatList, Encoder, ffmpegArgs, joinSegments, pickH264Encoder, type Codec } from '../../src/render/encode.js'
 
 const run = promisify(execFile)
 let tempDir: string
@@ -105,4 +106,26 @@ test('kill stops ffmpeg', async () => {
 
 test('picks an H.264 encoder', async () => {
   expect(['h264_videotoolbox', 'libx264']).toContain(await pickH264Encoder())
+})
+
+test('concat list quotes every path and escapes single quotes', () => {
+  expect(concatList(['/a/Bob\'s Trip/all.part1.mov', '/b/plain.mov'])).toBe(
+    "file '/a/Bob'\\''s Trip/all.part1.mov'\nfile '/b/plain.mov'\n",
+  )
+  expect(concatList(["/x/''/y.mov"])).toBe("file '/x/'\\'''\\''/y.mov'\n")
+})
+
+test.each(['prores', 'h264'] as const)('joins segments in a folder with a space and an apostrophe (%s)', async (codec) => {
+  const ext = codec === 'prores' ? 'mov' : 'mp4'
+  const dir = path.join(tempDir, `Bob's Trip ${codec}`)
+  await mkdir(dir)
+  const parts = [path.join(dir, `all.part1.${ext}`), path.join(dir, `all.part2.${ext}`)]
+  await encode({ codec, fps: { num: 25, den: 1 }, frames: 7, out: parts[0]! })
+  await encode({ codec, fps: { num: 25, den: 1 }, frames: 5, out: parts[1]! })
+  const out = path.join(dir, `all.${ext}`)
+  await joinSegments({ parts, out, codec })
+  expect(Number((await ffprobe(out)).nb_read_frames)).toBe(12)
+  expect((await ffprobe(out)).color_space).toBe('bt709')
+  // The list file is a scratch file; nothing is left behind but the parts and the output.
+  expect(existsSync(path.join(dir, 'concat.txt'))).toBe(false)
 })

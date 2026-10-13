@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { mkdir, statfs, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, statfs, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
@@ -16,11 +16,13 @@ import {
 import { getServer, packageRoot } from '../server/server.js'
 import { assertAbsolute, loadProject, projectHash } from '../server/store.js'
 import { launchBrowser, type LaunchedBrowser } from './chrome.js'
-import { Encoder, ffmpegArgs, pickH264Encoder, type Codec } from './encode.js'
+import { Encoder, ffmpegArgs, joinSegments, pickH264Encoder, type Codec } from './encode.js'
 import { RenderPage } from './page.js'
 
 /** How long one `renderFrame` or `capturePng` may take before the render fails. */
 const STEP_TIMEOUT_MS = 60_000
+/** How many times one render may reopen the page and carry on. The next failure fails the render. */
+const MAX_RECOVERIES = 3
 /** Progress fps is averaged over this many frames. */
 const FPS_WINDOW = 25
 /** Estimated bytes per pixel per frame, before the safety margin. */
@@ -57,6 +59,8 @@ export interface RenderArgs {
   /** Called once the render folder exists, before the first frame. */
   onStart?: (info: { dir: string }) => void
   signal?: AbortSignal
+  /** Test hook: loses the page's WebGL context the first time this frame is rendered. Only the first page gets it. */
+  faultAtFrame?: number
 }
 
 /** A render that can't start or failed. `fix` tells the agent what to do. */
@@ -83,6 +87,10 @@ export class RenderCancelled extends Error {
 /**
  * Renders the project in `folder` to `renders/<YYYY-MM-DD-HHmmss>/all.mov` (ProRes 422 HQ) or `all.mp4` (H.264),
  * with a `manifest.json`. The project is read once, so later edits don't affect a running render.
+ *
+ * Frames are deterministic, so a render survives a crashed page, a lost WebGL context or a stuck frame: it opens a
+ * fresh page and carries on from the failed frame into a new segment (`all.part<k>`), up to 3 times. The segments are
+ * joined without re-encoding at the end.
  */
 export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   const { folder, signal } = args
@@ -102,12 +110,16 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   throwIfAborted(signal)
 
   const dir = await makeRenderDir(folder, new Date())
-  const video = path.join(dir, codec === 'prores' ? 'all.mov' : 'all.mp4')
+  const ext = codec === 'prores' ? 'mov' : 'mp4'
+  const video = path.join(dir, `all.${ext}`)
   const manifestFile = path.join(dir, 'manifest.json')
   args.onStart?.({ dir })
 
   let launched: LaunchedBrowser | undefined
   let encoder: Encoder | undefined
+  /** The segment files written so far, in order. */
+  const parts: string[] = []
+  let recoveries = 0
   let framesDone = 0
   let loopStart = performance.now()
   const elapsedFps = () => framesDone / Math.max((performance.now() - loopStart) / 1000, 1e-9)
@@ -121,6 +133,8 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     codec,
     range: { fromFrame, toFrame },
     totalFrames: frames,
+    segments: parts.length,
+    recoveries,
     durationSeconds: frames / fpsValue(snapshot.output.fps),
     credit: MAP_CREDIT,
     creditPlacement: snapshot.credit,
@@ -139,34 +153,101 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   try {
     launched = await launchBrowser()
     throwIfAborted(signal)
+    const { browser } = launched
     const projectId = await (await getServer()).registerProject(folder)
-    const page = await RenderPage.open({ browser: launched.browser, projectId, aspect: snapshot.output.aspect })
-    const frameCount = await page.load(snapshot, outputScale(snapshot.output))
-    if (frameCount !== timeline.totalFrames) {
-      throw new Error(`The render page counted ${frameCount} frames, but the timeline has ${timeline.totalFrames}.`)
+    let page: RenderPage
+    /** Rejects when `page` crashes or loses its WebGL context, so a step fails at once instead of timing out. */
+    let pageFailed: Promise<never>
+    /** Opens a page, loads the snapshot into it and arms `pageFailed`. */
+    const openPage = async (faultAtFrame?: number) => {
+      const opened = await RenderPage.open({ browser, projectId, aspect: snapshot.output.aspect })
+      try {
+        const frameCount = await opened.load(snapshot, outputScale(snapshot.output), { faultAtFrame })
+        if (frameCount !== timeline.totalFrames) {
+          throw new Error(`The render page counted ${frameCount} frames, but the timeline has ${timeline.totalFrames}.`)
+        }
+      } catch (e) {
+        await opened.close()
+        throw e
+      }
+      const failed = new Promise<never>((_, reject) => {
+        opened.onCrash(() => reject(new Error('the render page crashed or lost its WebGL context')))
+      })
+      failed.catch(() => undefined)
+      page = opened
+      pageFailed = failed
     }
+    await openPage(args.faultAtFrame)
     throwIfAborted(signal)
 
-    encoder = Encoder.start(ffmpegArgs({ codec, ...size, fps: snapshot.output.fps, out: video, h264Encoder }))
     const progress = rollingProgress(frames, args.onProgress)
     loopStart = performance.now()
     // Frame n+1 renders and captures while frame n is written, so at most one frame waits in Node.
     let writing: Promise<void> = Promise.resolve()
-    for (let n = fromFrame; n < toFrame; n++) {
-      await step(page.renderFrame(n), `render frame ${n}`)
-      const png = await step(page.capturePng(), `capture frame ${n}`)
+    /**
+     * Ends the current segment and opens a fresh page, after frame `n` failed because of `cause`. A new page also drops
+     * any tiles that errored, which MapLibre never refetches. Fails the render once the recoveries are used up.
+     */
+    const recover = async (n: number, cause: unknown) => {
+      // The failed frame was never written. Finish the segment with every frame before it.
+      await writing
+      await encoder?.finish()
+      encoder = undefined
+      await page.close()
+      for (let lastCause = cause; ; ) {
+        if (recoveries >= MAX_RECOVERIES) {
+          throw new RenderError(
+            `Frame ${n} failed ${MAX_RECOVERIES + 1} times, after ${MAX_RECOVERIES} recoveries. Last error: ${errorMessage(lastCause)}`,
+            'Check that Chrome has WebGL and the map tiles can load, then render again. A range starting near this frame is quicker to retry.',
+          )
+        }
+        recoveries++
+        try {
+          await openPage()
+          return
+        } catch (e) {
+          if (signal?.aborted) throw e
+          lastCause = e
+        }
+      }
+    }
+
+    let n = fromFrame
+    while (n < toFrame) {
+      let png: Buffer
+      try {
+        await step(page!.renderFrame(n), `render frame ${n}`, pageFailed!)
+        png = await step(page!.capturePng(), `capture frame ${n}`, pageFailed!)
+      } catch (e) {
+        if (signal?.aborted) throw e
+        await recover(n, e)
+        continue
+      }
+      // A wrong size is a bug, not a transient fault, so it fails the render without a recovery.
       checkPngSize(png, size, n)
       await writing
+      if (!encoder) {
+        const part = path.join(dir, `all.part${parts.length + 1}.${ext}`)
+        parts.push(part)
+        encoder = Encoder.start(ffmpegArgs({ codec, ...size, fps: snapshot.output.fps, out: part, h264Encoder }))
+      }
       framesDone = n - fromFrame
       if (n > fromFrame) progress(framesDone)
       writing = encoder.write(png)
       // Rejections are awaited on the next frame; this stops them counting as unhandled until then.
       writing.catch(() => undefined)
+      n++
     }
     await writing
-    await encoder.finish()
+    await encoder!.finish()
     framesDone = frames
     progress(framesDone)
+    if (parts.length === 1) {
+      await rename(parts[0]!, video)
+    } else {
+      await joinSegments({ parts, out: video, codec })
+      await Promise.all(parts.map((part) => rm(part, { force: true })))
+    }
     const renderFps = round2(elapsedFps())
     await writeFile(manifestFile, `${JSON.stringify(manifest({ renderFps }), null, 2)}\n`)
     return { dir, video, manifest: manifestFile, frames, renderFps, projectHash: hash }
@@ -263,20 +344,23 @@ async function makeRenderDir(folder: string, date: Date): Promise<string> {
 }
 
 /**
- * Waits for `work`, which does `what` (e.g. "render frame 12"), and fails with an error naming it if `work` rejects
- * or takes over 60 s. A late rejection from `work` is ignored, since the render has already failed by then.
+ * Waits for `work`, which does `what` (e.g. "render frame 12"), and fails with an error naming it if `work` rejects,
+ * `pageFailed` rejects or it takes over 60 s. A late rejection from `work` is ignored, since the step has already
+ * failed by then.
  */
-function step<T>(work: Promise<T>, what: string): Promise<T> {
+function step<T>(work: Promise<T>, what: string, pageFailed: Promise<never>): Promise<T> {
   let timer: NodeJS.Timeout | undefined
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`Could not ${what} within ${STEP_TIMEOUT_MS / 1000} s.`)), STEP_TIMEOUT_MS)
   })
-  const named = work.catch((e: unknown) => {
-    throw new Error(`Could not ${what}: ${e instanceof Error ? e.message : String(e)}`, { cause: e })
+  const named = Promise.race([work, pageFailed]).catch((e: unknown) => {
+    throw new Error(`Could not ${what}: ${errorMessage(e)}`, { cause: e })
   })
   named.catch(() => undefined)
   return Promise.race([named, timeout]).finally(() => clearTimeout(timer))
 }
+
+const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 

@@ -211,10 +211,6 @@ describe('studio files', () => {
     expect(reply.body).not.toContain('secret')
   })
 
-  test('tiles are 404 until the proxy is mounted', async () => {
-    expect((await call(`${server.base}tiles/planet/0/0/0.pbf`)).status).toBe(404)
-  })
-
   test('studioUrl carries the project and extra query', () => {
     expect(server.studioUrl(id)).toBe(`${server.base}studio/?project=${id}`)
     expect(server.studioUrl(id, { mode: 'render', layer: 'map' })).toBe(`${server.base}studio/?project=${id}&mode=render&layer=map`)

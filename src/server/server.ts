@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import { applyPatch, ProjectError, type PatchRequest, type ServerMessage } from '../core/index.js'
 import { assertAbsolute, loadProject, mutateProject, PROJECT_FILE, StoreError } from './store.js'
+import { createTileProxy } from './tiles.js'
 
 export interface MapperServer {
   port: number
@@ -156,6 +157,12 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     return segments.slice(2)
   }
 
+  const tiles = createTileProxy({
+    cacheDir: path.resolve(opts.cacheDir),
+    upstream: opts.tileUpstream,
+    publicBase: () => `${mapper.base}tiles/`,
+  })
+
   // Routes
 
   const routes: Route[] = [
@@ -200,10 +207,10 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
       },
     },
     {
-      // Task 10 mounts the tile proxy here.
+      // The proxy validates the path itself; it takes the segments still percent-encoded.
       method: 'GET',
-      match: (rest) => (rest[0] === 'tiles' ? [] : undefined),
-      handle: ({ res }) => sendError(res, 404, 'Not found'),
+      match: (rest) => (rest[0] === 'tiles' ? [rest.slice(1).join('/')] : undefined),
+      handle: ({ res, params }) => tiles(params[0]!, res),
     },
   ]
 

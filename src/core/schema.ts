@@ -187,16 +187,20 @@ export class ProjectError extends Error {
   }
 }
 
-export function parseProject(json: unknown): Project {
-  const result = ProjectSchema.safeParse(json)
-  if (result.success) return result.data
-  const issues = result.error.issues.flatMap((issue): ProjectIssue[] => {
+/** Flatten a Zod error into `ProjectIssue`s. Unknown keys get their own path entry. */
+export function zodIssues(error: z.ZodError): ProjectIssue[] {
+  return error.issues.flatMap((issue): ProjectIssue[] => {
     const path = issue.path.map((p) => (typeof p === 'number' ? p : String(p)))
     // Point at the offending key itself, not just its parent object.
     if (issue.code === 'unrecognized_keys') return issue.keys.map((key) => ({ path: [...path, key], message: 'unknown key' }))
     return [{ path, message: issue.message }]
   })
-  throw new ProjectError(issues)
+}
+
+export function parseProject(json: unknown): Project {
+  const result = ProjectSchema.safeParse(json)
+  if (result.success) return result.data
+  throw new ProjectError(zodIssues(result.error))
 }
 
 // Defaults

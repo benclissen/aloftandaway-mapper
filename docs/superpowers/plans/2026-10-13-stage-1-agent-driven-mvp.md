@@ -4,7 +4,7 @@
 
 **Goal:** An agent creates a project from typed-in stops over MCP, checks a contact sheet, the user tweaks it in the local studio, and Mapper renders a flattened 4K 25p clip.
 
-**Architecture:** One npm package with a `mapper` binary. Pure-TS `core` (schema, patching, routing, timeline, camera, validation) is shared by a Vite/React/MapLibre studio page and the Node side. A local HTTP/WebSocket server serves the studio, proxies and caches tiles, and syncs project edits. The renderer drives the studio's render mode in headless Chrome through Playwright, streams RGBA frames over WebSocket into ffmpeg, and runs as jobs behind MCP tools and CLI commands.
+**Architecture:** One npm package with a `mapper` binary. Pure-TS `core` (schema, patching, routing, timeline, camera, validation) is shared by a Vite/React/MapLibre studio page and the Node side. A local HTTP/WebSocket server serves the studio, proxies and caches tiles, and syncs project edits. The renderer drives the studio's render mode in headless Chrome through Playwright, captures each frame as a PNG with the Chrome DevTools Protocol (chosen by the Task 1 benchmark), pipes it into ffmpeg, and runs as jobs behind MCP tools and CLI commands.
 
 **Tech Stack:** TypeScript (strict, ESM), Node ≥ 22, Zod 4, MapLibre GL JS 5, React 19, Vite, Playwright, `ws`, ffmpeg, `@modelcontextprotocol/sdk`, Vitest, pixelmatch + pngjs.
 
@@ -46,7 +46,7 @@ Deferred, and not to be built here:
 - In `mapper mcp`, stdout carries only MCP protocol. All logs go to stderr.
 - The server binds `127.0.0.1` only. The tile proxy fetches only from `https://tiles.openfreemap.org`.
 - Every tool and CLI command takes absolute folder paths and rejects relative ones.
-- ProRes is `prores_ks -profile:v 3 -vendor apl0 -pix_fmt yuv422p10le`. Every output is tagged `-color_primaries bt709 -color_trc bt709 -colorspace bt709`, converted from RGB with `scale=out_color_matrix=bt709:out_range=tv`, at a frame rate of exactly `num/den`.
+- ProRes is `prores_ks -profile:v 3 -vendor apl0 -pix_fmt yuv422p10le`. Every output is tagged `-color_primaries bt709 -color_trc bt709 -colorspace bt709`, converted from RGB with `scale=out_color_matrix=bt709:out_range=tv,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709` (ffmpeg 9 needs `setparams` before primaries and transfer are tagged), at a frame rate of exactly `num/den`.
 - Commit messages are imperative sentences without prefixes, matching the existing history ("Add project schema"), and end with the `Co-Authored-By` trailer.
 
 ## Review Focus
@@ -79,7 +79,6 @@ src/server/
   store.ts        create/load/save/mutate project on disk, projectHash
   server.ts       HTTP + WS server, security, project API, file watch
   tiles.ts        Tile proxy with disk cache
-  frames.ts       Frame WebSocket hub
 src/studio/
   index.html, main.tsx
   stage/themes.ts, stage/MapStage.ts, stage/overlay.ts
@@ -159,7 +158,8 @@ git commit -m "Add scaffold and 4K render-speed benchmark"
 
 **Files:**
 - Create: `src/core/schema.ts`, `src/core/index.ts`, `vitest.config.ts`, `test/core/schema.test.ts`, `test/core/purity.test.ts`, `test/fixtures/projects.ts`
-- Modify: `package.json` (add `zod`, `vitest`; scripts `test`, `typecheck`)
+- Modify: `package.json` (add `zod`, `vitest`; scripts `test`, `typecheck`), `tsconfig.node.json`
+- Create: `tsconfig.bench.json`
 
 **Interfaces:**
 - Produces (from `src/core/schema.ts`, re-exported by `src/core/index.ts`):
@@ -208,7 +208,7 @@ test('rejects lat beyond Mercator range and duplicate stop ids', () => { /* lat 
 
 - [ ] **Step 2: Run tests to verify they fail.** Run: `npx vitest run --project unit test/core`. Expected: FAIL, cannot resolve `src/core/schema`.
 
-- [ ] **Step 3: Implement `src/core/schema.ts` and `src/core/index.ts`** to the interface and rules above. `vitest.config.ts` defines the `unit` and `e2e` projects described in the file map. Scripts: `"test": "vitest run --project unit"`, `"typecheck": "tsc -p tsconfig.node.json --noEmit"`.
+- [ ] **Step 3: Implement `src/core/schema.ts` and `src/core/index.ts`** to the interface and rules above. `vitest.config.ts` defines the `unit` and `e2e` projects described in the file map. Point `tsconfig.node.json` at `src` (`rootDir: "src"`, include `src/**/*.ts`, exclude `src/studio`) so the build emits `dist/cli/main.js`. Move the benchmark into `tsconfig.bench.json` (`noEmit`, includes `bench`). Scripts: `"test": "vitest run --project unit"`, `"typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.bench.json"`.
 
 - [ ] **Step 4: Run tests to verify they pass.** Run: `npm test && npm run typecheck`. Expected: PASS, no type errors.
 
@@ -513,7 +513,7 @@ Checks in stage 1. Codes are stable API, and every issue carries a `fix` sentenc
 **Model:** Sonnet 5.5
 
 **Files:**
-- Create: `src/server/server.ts`, `src/server/frames.ts`, `test/server/server.test.ts`
+- Create: `src/server/server.ts`, `test/server/server.test.ts`
 - Modify: `package.json` (add `ws` types if missing)
 
 **Interfaces:**
@@ -521,15 +521,13 @@ Checks in stage 1. Codes are stable API, and every issue carries a `fix` sentenc
 - Produces:
   - `startServer(opts: { studioDir: string; cacheDir: string; tileUpstream?: string }): Promise<MapperServer>`
   - `getServer(): Promise<MapperServer>`: process-wide singleton, starting on first use with `studioDir = <package>/dist/studio` and `cacheDir = $MAPPER_CACHE_DIR ?? ~/.cache/mapper`
-  - `interface MapperServer { port: number; token: string; base: string /* http://127.0.0.1:<port>/<token>/ */; registerProject(folder: string): Promise<string /* project id */>; studioUrl(projectId: string, query?: Record<string, string>): string; frames: FrameHub; close(): Promise<void> }`
-  - `frames.ts`: `class FrameHub { channel(jobId: string): FrameChannel }`; `interface FrameChannel { url: string /* ws:// … /frames/<jobId> */; next(timeoutMs: number): Promise<Buffer>; close(): void }`
+  - `interface MapperServer { port: number; token: string; base: string /* http://127.0.0.1:<port>/<token>/ */; registerProject(folder: string): Promise<string /* project id */>; studioUrl(projectId: string, query?: Record<string, string>): string; close(): Promise<void> }`
 
 Routes, all under `/<token>/` (anything else, or a wrong token, gets 404):
 - `GET studio/*`: static files from `studioDir`, with `index.html` as fallback.
 - `GET api/projects/:id` → `{ project }`.
 - `POST api/projects/:id/patch` (JSON `PatchRequest`) → `{ project }`, or 400 `{ error: { message, path } }` with the file unchanged.
 - WS `ws/projects/:id`: sends `{ type: 'project', project }` on connect, and again whenever `mapper.json` changes on disk.
-- WS `frames/:jobId`: binary messages queue into that job's `FrameChannel`.
 - `GET tiles/*`: handled in Task 10. Return 404 until then.
 
 Security: listen on `127.0.0.1` on port 0. For HTTP and WS upgrades alike, reject with 403 any request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>`. The token is 32 random bytes, hex-encoded. Only registered ids resolve to folders, and no route accepts a path. File watch: `fs.watch` on the project *folder* (atomic renames replace the file), debounced 50 ms, reload, and broadcast only if `updatedAt` changed.
@@ -541,11 +539,10 @@ Security: listen on `127.0.0.1` on port 0. For HTTP and WS upgrades alike, rejec
   - `patch applies and persists`: POST `{ ops: [{ op: 'update_stop', id, changes: { name: 'Pireas' } }] }` → 200; `loadProject` shows the new name.
   - `bad patch is 400 with a path and leaves the file unchanged`.
   - `pushes external edits over WebSocket`: connect, then `saveProject` from the test; receive a `project` message with the new name within 1000 ms.
-  - `frame channel delivers binary messages in order`: a `ws` client sends three buffers; `next()` returns them in order; `next(50)` with nothing pending rejects with a timeout error.
 
 - [ ] **Step 2: Run to verify they fail.** Run: `npx vitest run test/server/server.test.ts`. Expected: FAIL.
 
-- [ ] **Step 3: Implement `src/server/server.ts` and `src/server/frames.ts`.**
+- [ ] **Step 3: Implement `src/server/server.ts`.**
 
 - [ ] **Step 4: Run to verify they pass.** Run: `npm test`. Expected: PASS.
 
@@ -592,7 +589,7 @@ Behaviour: `subpath` maps one-to-one onto the upstream path (`planet`, `planet/<
 The shared drawing code for the studio, previews and renders.
 
 **Files:**
-- Create: `src/studio/index.html`, `src/studio/main.tsx`, `src/studio/stage/themes.ts`, `src/studio/stage/MapStage.ts`, `src/studio/stage/overlay.ts`, `src/studio/render-mode.ts`, `vite.config.ts`, `tsconfig.studio.json`, `src/render/chrome.ts`, `test/e2e/stage.test.ts`, `test/e2e/helpers.ts`, `test/e2e/golden/*.png`
+- Create: `src/render/capture.ts`, `src/studio/index.html`, `src/studio/main.tsx`, `src/studio/stage/themes.ts`, `src/studio/stage/MapStage.ts`, `src/studio/stage/overlay.ts`, `src/studio/render-mode.ts`, `vite.config.ts`, `tsconfig.studio.json`, `src/render/chrome.ts`, `test/e2e/stage.test.ts`, `test/e2e/helpers.ts`, `test/e2e/golden/*.png`
 - Modify: `package.json` (add `react`, `react-dom`, `@fontsource/inter`, `vite`, `@vitejs/plugin-react`, `pixelmatch`, `pngjs`, types; scripts `build`, `test:e2e`)
 
 **Interfaces:**
@@ -602,10 +599,11 @@ The shared drawing code for the studio, previews and renders.
   - `class MapStage { constructor(container: HTMLElement, opts: { pixelRatio: number; interactive: boolean; tileBase: string }); load(project: Project): Promise<void>; readonly frameCount: number; readonly timeline: Timeline; showFrame(n: number, opts?: { camera?: boolean }): Promise<void>; composite(): HTMLCanvasElement; readonly map: maplibregl.Map; destroy(): void }`. The container is always `layoutSize(aspect)` CSS px. Map options: `pixelRatio`, `preserveDrawingBuffer: true`, `fadeDuration: 0`, `attributionControl: false`, `maxCanvasSize: [8192, 8192]`. `load` rebuilds the style only when theme or labels change. `showFrame` sets route data (`slicePath`) and the head point, `jumpTo(cameraAt(...))` unless `camera: false`, waits for `idle`, then redraws the overlay.
   - `drawOverlay(ctx: CanvasRenderingContext2D, args: { project: Project; state: FrameState; project2px: (p: LngLat) => [number, number]; pixelRatio: number }): void`. Draws stop dots (terminal stops 1.5× larger), `tag` signs for visible stops at their opacity, and the credit when `credit === 'burned'`. Sizes are in layout px × `pixelRatio`. `tag` design: a white rounded rectangle (radius 6, 92% opacity), Inter 600 at 26 px in `#1d2430`, padding 10/16, a 10 px pointer down to the dot, the label sitting 16 px above the dot. Credit: Inter 400 at 14 px, white at 85% with a 2 px dark shadow, 16 px from the bottom-right corner.
   - Route layers: the line follows `look.line` (`width` in layout px; dash `dashed` = `[2, 1.5]`, `dotted` = `[0.1, 1.6]` with round caps; `outline` adds a white line 2× as wide underneath; `glow` adds a 3× width, 40%-opacity, blurred line underneath). The head is a circle layer when `symbol !== 'none'`.
-  - Render mode (`?mode=render`) sets `window.mapper: MapperPage`, with `interface MapperPage { ready: Promise<void>; load(project: Project, opts: { pixelRatio: number }): Promise<{ frameCount: number }>; frameCount: number; renderFrame(n: number): Promise<void>; snapshotPng(): Promise<string /* base64 */>; openFrameSink(url: string): Promise<void>; pushFrame(): Promise<void> }`. `ready` resolves after `document.fonts.ready` and the Inter faces have loaded. `pushFrame` sends the composite's RGBA (or whichever capture method Task 1 chose) as one binary message.
+  - Render mode (`?mode=render`) sets `window.mapper: MapperPage`, with `interface MapperPage { ready: Promise<void>; load(project: Project, opts: { pixelRatio: number }): Promise<{ frameCount: number }>; frameCount: number; renderFrame(n: number): Promise<void> }`. `ready` resolves after `document.fonts.ready` and the Inter faces have loaded. The page has no capture code: Node captures frames over CDP (Task 12). The map container and overlay canvas sit at the top-left of the page with no margins or scrollbars, so a clip of `layoutSize` covers exactly the frame.
+  - `src/render/capture.ts`: `capturePng(page: Page, args: { width: number; height: number; pixelRatio: number }): Promise<Buffer>`, using a cached CDP session and `Page.captureScreenshot({ format: 'png', optimizeForSpeed: true, clip: { x: 0, y: 0, width, height, scale: pixelRatio } })`, as in `bench/render-speed.ts`. `width` and `height` are the layout size.
   - `src/render/chrome.ts`: `launchBrowser(): Promise<{ browser: Browser; channel: 'chrome' | 'chromium'; webgl: string }>` with the launch args from `docs/render-speed.md`, trying `channel: 'chrome'` first and falling back to bundled Chromium.
   - Scripts: `"build": "tsc -p tsconfig.node.json && vite build"` (Vite `root: 'src/studio'`, `base: './'`, `outDir: '../../dist/studio'`), `"test:e2e": "npm run build && vitest run --project e2e"`.
-  - `test/e2e/helpers.ts`: `openRenderPage(project: Project, pixelRatio: number): Promise<{ page: Page; close(): Promise<void> }>` (writes the project to a temp folder, registers it, opens render mode, calls `load`); `snapshot(page: Page, frame: number): Promise<Buffer>` (`renderFrame` + `snapshotPng`); `pixelDiff(a: Buffer, b: Buffer): number` (count of differing pixels, pixelmatch threshold 0.1); `expectGolden(name: string, png: Buffer): void` (fails above 0.5% differing pixels; writes `test/e2e/golden/<name>.png` when `UPDATE_GOLDENS=1`).
+  - `test/e2e/helpers.ts`: `openRenderPage(project: Project, pixelRatio: number): Promise<{ page: Page; close(): Promise<void> }>` (writes the project to a temp folder, registers it, opens render mode, calls `load`); `snapshot(page: Page, frame: number): Promise<Buffer>` (`renderFrame`, then `capturePng` from `src/render/capture.ts`); `pixelDiff(a: Buffer, b: Buffer): number` (count of differing pixels, pixelmatch threshold 0.1); `expectGolden(name: string, png: Buffer): void` (fails above 0.5% differing pixels; writes `test/e2e/golden/<name>.png` when `UPDATE_GOLDENS=1`).
 
 - [ ] **Step 1: Write the failing e2e tests** in `test/e2e/stage.test.ts` (fixture `greekIslands()`, theme `blank`, no network):
 ```ts
@@ -643,20 +641,20 @@ test('paper theme draws water (MAPPER_NET only)', async () => { /* theme paper, 
 **Interfaces:**
 - Consumes: `launchBrowser`, `getServer`, `loadProject`, `MapperPage`, `formatTimecode`.
 - Produces:
-  - `class RenderPage { static open(args: { browser: Browser; projectId: string; aspect: Aspect }): Promise<RenderPage>; load(project: Project, pixelRatio: number): Promise<number /* frameCount */>; renderFrame(n: number): Promise<void>; snapshotPng(): Promise<Buffer>; openFrameSink(url: string): Promise<void>; pushFrame(): Promise<void>; onCrash(cb: () => void): void; reload(): Promise<void>; close(): Promise<void> }`. The viewport is `layoutSize(aspect)`. Page `crash` and WebGL `webglcontextlost` (reported via `console`/`exposeFunction`) fire `onCrash`.
+  - `class RenderPage { static open(args: { browser: Browser; projectId: string; aspect: Aspect }): Promise<RenderPage>; load(project: Project, pixelRatio: number): Promise<number /* frameCount */>; renderFrame(n: number): Promise<void>; capturePng(): Promise<Buffer> /* capture.ts at the loaded pixelRatio */; onCrash(cb: () => void): void; reload(): Promise<void>; close(): Promise<void> }`. The viewport is `layoutSize(aspect)`. Page `crash` and WebGL `webglcontextlost` (reported via `console`/`exposeFunction`) fire `onCrash`.
   - `type PreviewAt = { seconds: number } | { frame: number } | { progress: number }` and `PreviewAtSchema` (Zod; exactly one key).
   - `previewFrame(args: { folder: string; at: PreviewAt; width?: number /* 960 */ }): Promise<{ png: Buffer; path: string; frame: number; seconds: number }>`
   - `contactSheet(args: { folder: string; count?: number /* 9 */; width?: number /* 1920 */ }): Promise<{ png: Buffer; path: string; frames: { frame: number; seconds: number }[] }>`
   - `closePreviews(): Promise<void>`
 
-Behaviour: a module-level warm browser and one `RenderPage` per aspect are reused between calls. Every call loads the project fresh from disk. `pixelRatio = width / layoutWidth`. `progress` maps to `round(progress × (totalFrames − 1))`, and seconds to `round(seconds × fps)`, clamped. Contact-sheet frames are `round(i × (total − 1)/(count − 1))`. The sheet is built in a second page with `setContent` of an HTML grid (`ceil(√count)` columns, cells `<img>` with captions `MM:SS:FF · f<frame>` plus the stop name when the frame is an arrival frame), then screenshotted. PNGs are saved to `<folder>/.mapper/previews/frame-<n>.png` and `contact-<timestamp>.png`.
+Behaviour: a module-level warm browser and one `RenderPage` per aspect are reused between calls. Every call loads the project fresh from disk. `pixelRatio = width / layoutWidth`. The module exports `previewStats(): { browserLaunches: number; pageOpens: number }` for tests. `progress` maps to `round(progress × (totalFrames − 1))`, and seconds to `round(seconds × fps)`, clamped. Contact-sheet frames are `round(i × (total − 1)/(count − 1))`. The sheet is built in a second page with `setContent` of an HTML grid (`ceil(√count)` columns, cells `<img>` with captions `MM:SS:FF · f<frame>` plus the stop name when the frame is an arrival frame), then screenshotted. PNGs are saved to `<folder>/.mapper/previews/frame-<n>.png` and `contact-<timestamp>.png`.
 
 - [ ] **Step 1: Write the failing tests:**
   - `preview at progress 0.5 is 960×540 PNG`: decode with pngjs and check the size; `frame` equals `round(0.5 × (total − 1))`.
   - `seconds and frame agree`: `{ seconds: 4 }` and `{ frame: 100 }` at 25 fps give identical PNG bytes.
   - `rejects two at keys`: `PreviewAtSchema.parse({ seconds: 1, frame: 2 })` throws.
   - `contact sheet is width 1920 with 9 frames`: PNG width 1920, `frames.length === 9`, first frame 0, last `total − 1`.
-  - `second preview reuses the warm page`: the second call takes under half as long as the first (log both).
+  - `second preview reuses the warm page`: after two previews, `previewStats()` is `{ browserLaunches: 1, pageOpens: 1 }`. Log both durations, but don't assert on time.
 
 - [ ] **Step 2: Run to verify they fail.** Run: `npm run test:e2e -- test/e2e/preview.test.ts`. Expected: FAIL.
 
@@ -676,10 +674,10 @@ Behaviour: a module-level warm browser and one `RenderPage` per aspect are reuse
 - Create: `src/render/encode.ts`, `src/render/render.ts`, `src/render/jobs.ts`, `test/render/encode.test.ts`, `test/e2e/render.test.ts`
 
 **Interfaces:**
-- Consumes: `RenderPage`, `FrameHub`/`FrameChannel`, store, `validateProject`, `projectHash`, `frameSize`, `outputScale`, `MAP_CREDIT`.
+- Consumes: `RenderPage` (with `capturePng`), store, `validateProject`, `projectHash`, `frameSize`, `outputScale`, `MAP_CREDIT`.
 - Produces:
   - `type Codec = 'prores' | 'h264'`
-  - `ffmpegArgs(args: { codec: Codec; width: number; height: number; fps: Fps; out: string; h264Encoder?: 'h264_videotoolbox' | 'libx264'; vflip?: boolean }): string[]`. Input `-f rawvideo -pix_fmt rgba -s WxH -framerate num/den -i pipe:0`; filter `scale=out_color_matrix=bt709:out_range=tv` (prefixed by `vflip,` when needed); colour tags; `-r num/den`. ProRes: `-c:v prores_ks -profile:v 3 -vendor apl0 -pix_fmt yuv422p10le`. H.264: `-c:v h264_videotoolbox -b:v 40M` (libx264: `-crf 16 -preset medium`), `-pix_fmt yuv420p -tag:v avc1 -movflags +faststart`.
+  - `ffmpegArgs(args: { codec: Codec; width: number; height: number; fps: Fps; out: string; h264Encoder?: 'h264_videotoolbox' | 'libx264' }): string[]`. Input `-f image2pipe -c:v png -framerate num/den -i pipe:0` (PNG frames from CDP); filter `scale=out_color_matrix=bt709:out_range=tv,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709`; colour tags; `-r num/den`. ProRes: `-c:v prores_ks -profile:v 3 -vendor apl0 -pix_fmt yuv422p10le`. H.264: `-c:v h264_videotoolbox -b:v 40M` (libx264: `-crf 16 -preset medium`), `-pix_fmt yuv420p -tag:v avc1 -movflags +faststart`.
   - `class Encoder { static start(args: string[]): Encoder; write(frame: Buffer): Promise<void> /* resolves on drain */; finish(): Promise<void>; kill(): void }`. `finish` rejects with the last 20 lines of ffmpeg stderr on a non-zero exit.
   - `pickH264Encoder(): Promise<'h264_videotoolbox' | 'libx264'>` (parses `ffmpeg -hide_banner -encoders`, cached)
   - `interface RenderProgress { frame: number; totalFrames: number; fps: number; etaSeconds: number }`
@@ -687,7 +685,7 @@ Behaviour: a module-level warm browser and one `RenderPage` per aspect are reuse
   - `renderProject(args: { folder: string; codec?: Codec /* 'prores' */; range?: { from: number; to: number }; onProgress?: (p: RenderProgress) => void; signal?: AbortSignal }): Promise<RenderResult>`
   - `jobs.ts`: `type JobState = 'running' | 'done' | 'failed' | 'cancelled'`; `interface RenderStatus { jobId: string; state: JobState; progress?: RenderProgress; result?: RenderResult; error?: string; dir?: string }`; `startRenderJob(args: Omit<Parameters<typeof renderProject>[0], 'onProgress' | 'signal'>): string`; `renderStatus(jobId: string): RenderStatus`; `cancelRender(jobId: string): Promise<RenderStatus>`. One render runs at a time per process, and later jobs queue (reported as `running` with no progress until they start).
 
-`renderProject` steps: load the project once (the snapshot) and hash it. Validate, and if there are errors, throw them with fixes. Work out the frame range (seconds → `[floor(from·fps), ceil(to·fps))`, clamped). Check free disk with `fs.statfs` on the folder against an estimate of `frames × width × height × (prores ? 0.45 : 0.03) × 1.5` bytes, and throw with the needed GB if short. Create `renders/<YYYY-MM-DD-HHmmss>/`. Open a `RenderPage` in a fresh browser context at `pixelRatio = outputScale(output)`, `load(snapshot)` and open the frame sink. Then loop: render and push frame *n*, take the buffer from `channel.next(60_000)`, check its length is `width·height·4`, and write it to the encoder. Frame *n+1* renders while frame *n* is being written; at most one frame is held in Node. After the loop, finish the encoder and write `manifest.json`: `{ mapperVersion, projectId, projectHash, name, output, frameSize, codec, range: { fromFrame, toFrame }, totalFrames, durationSeconds, credit: MAP_CREDIT, creditPlacement, renderFps, chrome: { channel, webgl }, renderedAt }`. The output is `all.mov` (ProRes) or `all.mp4` (H.264). Aborting kills ffmpeg, closes the page, and leaves the folder with what exists. Progress fps is the rolling average over the last 25 frames.
+`renderProject` steps: load the project once (the snapshot) and hash it. Validate, and if there are errors, throw them with fixes. Work out the frame range (seconds → `[floor(from·fps), ceil(to·fps))`, clamped). Check free disk with `fs.statfs` on the folder against an estimate of `frames × width × height × (prores ? 0.45 : 0.03) × 1.5` bytes, and throw with the needed GB if short. Create `renders/<YYYY-MM-DD-HHmmss>/`. Open a `RenderPage` in a fresh browser context at `pixelRatio = outputScale(output)`, and `load(snapshot)`. Then loop: `renderFrame(n)` and `capturePng()`, each under a 60 s timeout, check the PNG's IHDR width and height against `frameSize(output)`, and write it to the encoder. Frame *n+1* renders and captures while frame *n* is being written; at most one frame waits in Node. After the loop, finish the encoder and write `manifest.json`: `{ mapperVersion, projectId, projectHash, name, output, frameSize, codec, range: { fromFrame, toFrame }, totalFrames, durationSeconds, credit: MAP_CREDIT, creditPlacement, renderFps, chrome: { channel, webgl }, renderedAt }`. The output is `all.mov` (ProRes) or `all.mp4` (H.264). Aborting kills ffmpeg, closes the page, and leaves the folder with what exists. Progress fps is the rolling average over the last 25 frames.
 
 - [ ] **Step 1: Write the failing tests.** `test/render/encode.test.ts` (needs ffmpeg, no Chrome; in the `unit` project because ffmpeg is a stated requirement):
 ```ts
@@ -698,7 +696,7 @@ test('prores args match the spec', () => {
   expect(a.join(' ')).toContain('scale=out_color_matrix=bt709:out_range=tv')
 })
 test('round-trips colour through BT.709', async () => {
-  // 10 frames 256×144 of RGBA (217,71,43,255) → prores → decode first frame with
+  // 10 PNG frames (pngjs) 256×144 of RGBA (217,71,43,255) → prores → decode first frame with
   // `ffmpeg -i out -frames:v 1 -vf scale=in_color_matrix=bt709:in_range=tv -f rawvideo -pix_fmt rgb24 -`
   // centre pixel within ±3 per channel; repeat for h264
 })
@@ -736,7 +734,7 @@ test('encoder failure surfaces ffmpeg stderr', async () => { /* out path in a mi
 - Consumes: Task 13.
 - Produces: `renderProject` gains internal segments. Manifest adds `segments: number`. Render mode's `load` opts gain `faultAtFrame?: number` (test hook: calls `WEBGL_lose_context.loseContext()` once when that frame is rendered; ignored when absent). `renderProject` args gain `faultAtFrame?: number`, passed through.
 
-Behaviour: when the page crashes, the context is lost, `renderFrame` throws, or `channel.next` times out, the render finishes the current segment's encoder (`all.part<k>.mov`), reloads the page, re-`load`s the snapshot, and continues from the failed frame into a new segment. It allows at most 3 recoveries per render, then fails with the last error. At the end, if there is more than one segment, it joins them with `ffmpeg -f concat -safe 0 -i list.txt -c copy` into `all.mov`/`all.mp4` and deletes the parts. With a single segment, it writes straight to the final name.
+Behaviour: when the page crashes, the context is lost, `renderFrame` throws, or `capturePng` times out, the render finishes the current segment's encoder (`all.part<k>.mov`), reloads the page, re-`load`s the snapshot, and continues from the failed frame into a new segment. It allows at most 3 recoveries per render, then fails with the last error. At the end, if there is more than one segment, it joins them with `ffmpeg -f concat -safe 0 -i list.txt -c copy` into `all.mov`/`all.mp4` and deletes the parts. With a single segment, it writes straight to the final name.
 
 - [ ] **Step 1: Write the failing test:** `recovers from a lost WebGL context`: render 2 s with `faultAtFrame: 20`; the output has exactly 50 frames, `manifest.segments === 2`, and no `*.part*` files remain.
 

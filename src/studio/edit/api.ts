@@ -1,14 +1,15 @@
 import { parseProject, type Project, type ProjectPatch, type ServerMessage } from '../../core/index.js'
 
-// The page is served at `<base>studio/?project=<id>`, where the base already carries the session token.
+// The page is served at `<base>studio/?project=<key>`, where the base already carries the session token and the key
+// is the server's opaque key for the project folder.
 
-function projectId(): string {
-  const id = new URLSearchParams(location.search).get('project')
-  if (!id) throw new Error('This link has no project in it. Ask your agent to open the studio again.')
-  return id
+function projectKey(): string {
+  const key = new URLSearchParams(location.search).get('project')
+  if (!key) throw new Error('This link has no project in it. Ask your agent to open the studio again.')
+  return key
 }
 
-const apiUrl = (suffix = '') => new URL(`../api/projects/${encodeURIComponent(projectId())}${suffix}`, location.href)
+const apiUrl = (suffix = '') => new URL(`../api/projects/${encodeURIComponent(projectKey())}${suffix}`, location.href)
 
 async function readProject(res: Response): Promise<Project> {
   const body = (await res.json().catch(() => undefined)) as { project?: unknown; error?: { message?: string } } | undefined
@@ -37,7 +38,7 @@ export async function patch(body: ProjectPatch): Promise<Project> {
  * page's own patches. `onClose` hears if the connection drops. Returns a function that disconnects.
  */
 export function subscribe(onProject: (p: Project) => void, onClose?: () => void): () => void {
-  const url = new URL(`../ws/projects/${encodeURIComponent(projectId())}`, location.href)
+  const url = new URL(`../ws/projects/${encodeURIComponent(projectKey())}`, location.href)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   const ws = new WebSocket(url)
   let closing = false

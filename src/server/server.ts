@@ -16,9 +16,13 @@ export interface MapperServer {
   token: string
   /** `http://127.0.0.1:<port>/<token>/` */
   base: string
-  /** Registers a project folder and returns the project's id. */
+  /**
+   * Registers a project folder and returns its key, an opaque id for the folder's studio URLs. The same folder always
+   * gets the same key. Keys aren't project ids, since a copied folder keeps its project's id.
+   */
   registerProject(folder: string): Promise<string>
-  studioUrl(projectId: string, query?: Record<string, string>): string
+  /** The studio's edit page for the folder with `key`, from `registerProject`. */
+  studioUrl(key: string, query?: Record<string, string>): string
   close(): Promise<void>
 }
 
@@ -45,8 +49,10 @@ const CONTENT_TYPES = new Map(Object.entries({
 }))
 
 interface Registered {
+  /** Resolved folder path. */
   folder: string
-  id: string
+  /** The opaque key in the folder's URLs. */
+  key: string
   watcher: FSWatcher | undefined
   clients: Set<WebSocket>
   /** `updatedAt` of the last project this entry broadcast or loaded. */
@@ -127,7 +133,9 @@ async function readBody(req: http.IncomingMessage): Promise<string> {
 export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   const studioDir = path.resolve(opts.studioDir)
   const token = randomBytes(32).toString('hex')
+  /** Registered folders by key, and keys by resolved folder. */
   const projects = new Map<string, Registered>()
+  const keys = new Map<string, string>()
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })
   let port = 0
   let closed = false
@@ -229,9 +237,9 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     }
   }
 
-  function lookup(encodedId: string): Registered | undefined {
-    const id = decode(encodedId)
-    return id === undefined ? undefined : projects.get(id)
+  function lookup(encodedKey: string): Registered | undefined {
+    const key = decode(encodedKey)
+    return key === undefined ? undefined : projects.get(key)
   }
 
   async function serveStudio({ res, rest }: RouteContext): Promise<void> {
@@ -315,7 +323,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     } catch {
       return // Half-written or temporarily invalid; the next file event tries again.
     }
-    if (closed || projects.get(entry.id) !== entry || project.updatedAt === entry.lastUpdatedAt) return
+    if (closed || projects.get(entry.key) !== entry || project.updatedAt === entry.lastUpdatedAt) return
     entry.lastUpdatedAt = project.updatedAt
     for (const ws of entry.clients) send(ws, { type: 'project', project })
   }
@@ -331,25 +339,19 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   async function registerProject(folder: string): Promise<string> {
     assertAbsolute(folder)
     const resolved = path.resolve(folder)
+    // Checks there is a valid project to serve.
     const project = await loadProject(resolved)
-    const existing = projects.get(project.id)
-    if (existing?.folder === resolved) return project.id
+    const known = keys.get(resolved)
+    if (known !== undefined) return known
 
-    for (const entry of projects.values()) {
-      if (entry.folder === resolved && entry.id !== project.id) {
-        dispose(entry)
-        projects.delete(entry.id)
-      }
-    }
     const entry: Registered = {
       folder: resolved,
-      id: project.id,
+      key: randomBytes(16).toString('hex'),
       watcher: undefined,
-      clients: existing?.clients ?? new Set(),
+      clients: new Set(),
       lastUpdatedAt: project.updatedAt,
       timer: undefined,
     }
-    if (existing) dispose(existing)
     // Watch the folder, not the file: atomic saves rename a temporary file over mapper.json.
     try {
       entry.watcher = watch(resolved, (_event, filename) => {
@@ -359,23 +361,24 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     } catch {
       // Without a watcher the studio still works; it just won't see outside edits.
     }
-    projects.set(project.id, entry)
-    return project.id
+    projects.set(entry.key, entry)
+    keys.set(resolved, entry.key)
+    return entry.key
   }
 
-  function studioUrl(projectId: string, query: Record<string, string> = {}): string {
+  function studioUrl(key: string, query: Record<string, string> = {}): string {
     const extra = new URLSearchParams(query).toString()
-    return `${mapper.base}studio/?project=${encodeURIComponent(projectId)}${extra ? `&${extra}` : ''}`
+    return `${mapper.base}studio/?project=${encodeURIComponent(key)}${extra ? `&${extra}` : ''}`
   }
 
   async function close(): Promise<void> {
     if (closed) return
     closed = true
-    for (const entry of projects.values()) {
-      dispose(entry)
-      for (const ws of entry.clients) ws.terminate()
-    }
+    for (const entry of projects.values()) dispose(entry)
     projects.clear()
+    keys.clear()
+    // Every socket the server accepted, whichever entry it belongs to.
+    for (const ws of wss.clients) ws.terminate()
     wss.close()
     await new Promise<void>((resolve) => {
       server.close(() => resolve())

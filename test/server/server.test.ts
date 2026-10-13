@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
@@ -12,7 +13,7 @@ let tmp: string
 let studioDir: string
 let folder: string
 let server: MapperServer
-let id: string
+let key: string
 let project: Project
 
 interface Reply {
@@ -48,16 +49,16 @@ function call(url: string, init: { method?: string; host?: string; body?: string
   })
 }
 
-function projectUrl(suffix = '', projectId = id): string {
-  return `${server.base}api/projects/${projectId}${suffix}`
+function projectUrl(suffix = '', projectKey = key): string {
+  return `${server.base}api/projects/${projectKey}${suffix}`
 }
 
 function patchProject(body: unknown): Promise<Reply> {
   return call(projectUrl('/patch'), { method: 'POST', body: JSON.stringify(body) })
 }
 
-function wsUrl(projectId = id): string {
-  return server.base.replace('http:', 'ws:') + `ws/projects/${projectId}`
+function wsUrl(projectKey = key): string {
+  return server.base.replace('http:', 'ws:') + `ws/projects/${projectKey}`
 }
 
 /** Opens a socket and collects its messages. */
@@ -121,7 +122,7 @@ beforeEach(async () => {
   })
   project = saved
   server = await startServer({ studioDir, cacheDir: path.join(tmp, 'cache') })
-  id = await server.registerProject(folder)
+  key = await server.registerProject(folder)
 })
 
 afterEach(async () => {
@@ -148,11 +149,11 @@ describe('security', () => {
 
   test('rejects a wrong token', async () => {
     const other = 'f'.repeat(64)
-    const reply = await call(`http://127.0.0.1:${server.port}/${other}/api/projects/${id}`)
+    const reply = await call(`http://127.0.0.1:${server.port}/${other}/api/projects/${key}`)
     expect(reply.status).toBe(404)
-    const short = await call(`http://127.0.0.1:${server.port}/abc/api/projects/${id}`)
+    const short = await call(`http://127.0.0.1:${server.port}/abc/api/projects/${key}`)
     expect(short.status).toBe(404)
-    const none = await call(`http://127.0.0.1:${server.port}/api/projects/${id}`)
+    const none = await call(`http://127.0.0.1:${server.port}/api/projects/${key}`)
     expect(none.status).toBe(404)
   })
 
@@ -161,7 +162,8 @@ describe('security', () => {
     expect(reply.status).toBe(403)
   })
 
-  test('unregistered project ids are 404', async () => {
+  test('unregistered project keys are 404', async () => {
+    expect((await call(projectUrl('', project.id))).status).toBe(404)
     expect((await call(projectUrl('', 'not-registered'))).status).toBe(404)
     expect((await call(projectUrl('', '%2e%2e%2ftrip'))).status).toBe(404)
     expect((await call(projectUrl('', '%E0%A4%A'))).status).toBe(404)
@@ -169,7 +171,7 @@ describe('security', () => {
     expect(patch.status).toBe(404)
   })
 
-  test('websocket upgrades check Host, token and id', async () => {
+  test('websocket upgrades check Host, token and key', async () => {
     expect(await rejection(wsUrl(), { Host: 'evil.example' })).toBe(403)
     expect(await rejection(wsUrl().replace(server.token, 'f'.repeat(64)))).toBe(404)
     expect(await rejection(wsUrl('not-registered'))).toBe(404)
@@ -197,7 +199,7 @@ describe('studio files', () => {
   })
 
   test('falls back to index.html', async () => {
-    for (const url of [`${server.base}studio/`, `${server.base}studio/?project=${id}`, `${server.base}studio/some/route`]) {
+    for (const url of [`${server.base}studio/`, `${server.base}studio/?project=${key}`, `${server.base}studio/some/route`]) {
       const reply = await call(url)
       expect(reply.status).toBe(200)
       expect(reply.headers['content-type']).toContain('text/html')
@@ -218,9 +220,9 @@ describe('studio files', () => {
     expect(reply.body).not.toContain('secret')
   })
 
-  test('studioUrl carries the project and extra query', () => {
-    expect(server.studioUrl(id)).toBe(`${server.base}studio/?project=${id}`)
-    expect(server.studioUrl(id, { mode: 'render', layer: 'map' })).toBe(`${server.base}studio/?project=${id}&mode=render&layer=map`)
+  test('studioUrl carries the project key and extra query', () => {
+    expect(server.studioUrl(key)).toBe(`${server.base}studio/?project=${key}`)
+    expect(server.studioUrl(key, { mode: 'edit', layer: 'map' })).toBe(`${server.base}studio/?project=${key}&mode=edit&layer=map`)
   })
 })
 
@@ -228,7 +230,7 @@ describe('project api', () => {
   test('GET returns the project', async () => {
     const reply = await call(projectUrl())
     expect(reply.status).toBe(200)
-    expect(reply.json().project.id).toBe(id)
+    expect(reply.json().project.id).toBe(project.id)
     expect(reply.json().project.stops).toHaveLength(2)
   })
 
@@ -285,19 +287,62 @@ describe('project api', () => {
 })
 
 describe('registerProject', () => {
-  test('returns the id again for the same folder and rejects relative paths', async () => {
-    expect(await server.registerProject(folder)).toBe(id)
-    expect(await server.registerProject(folder)).toBe(id)
+  test('returns the same opaque key for the same folder and rejects relative paths', async () => {
+    expect(key).toMatch(/^[0-9a-f]{32}$/)
+    expect(key).not.toBe(project.id)
+    expect(await server.registerProject(folder)).toBe(key)
+    expect(await server.registerProject(`${folder}/`)).toBe(key)
     await expect(server.registerProject('relative/trip')).rejects.toThrow('absolute')
     await expect(server.registerProject(path.join(tmp, 'missing'))).rejects.toThrow('No project found')
   })
 
   test('serves several projects', async () => {
     const second = path.join(tmp, 'second')
-    const other = await createProject(second, 'Second')
-    expect(await server.registerProject(second)).toBe(other.id)
-    expect((await call(projectUrl('', other.id))).json().project.name).toBe('Second')
+    await createProject(second, 'Second')
+    const secondKey = await server.registerProject(second)
+    expect(secondKey).not.toBe(key)
+    expect((await call(projectUrl('', secondKey))).json().project.name).toBe('Second')
     expect((await call(projectUrl())).json().project.name).toBe('Trip')
+  })
+
+  test('a copied folder keeps the same project id but gets its own key, so edits stay in their folder', async () => {
+    const copy = path.join(tmp, 'copy')
+    await cp(folder, copy, { recursive: true })
+    expect((await loadProject(copy)).id).toBe(project.id)
+    const { ws, next } = await connect()
+    await next()
+
+    const copyKey = await server.registerProject(copy)
+    expect(copyKey).not.toBe(key)
+    const reply = await patchProject({ ops: [{ op: 'update_stop', id: 'a', changes: { name: 'Original' } }] })
+    expect(reply.status).toBe(200)
+    expect((await loadProject(folder)).stops[0]?.name).toBe('Original')
+    expect((await loadProject(copy)).stops[0]?.name).toBe('Piraeus')
+    // The original's socket still hears about the original.
+    expect((await next(1000)).project.stops[0]?.name).toBe('Original')
+
+    await call(projectUrl('/patch', copyKey), {
+      method: 'POST',
+      body: JSON.stringify({ ops: [{ op: 'update_stop', id: 'a', changes: { name: 'Copy' } }] }),
+    })
+    expect((await loadProject(copy)).stops[0]?.name).toBe('Copy')
+    expect((await loadProject(folder)).stops[0]?.name).toBe('Original')
+    ws.close()
+  })
+
+  test("re-registering a folder whose project id changed keeps its key and its clients", async () => {
+    const { ws, next } = await connect()
+    await next()
+    await saveProject(folder, { ...(await loadProject(folder)), id: randomUUID() })
+    await next(1000)
+    expect(await server.registerProject(folder)).toBe(key)
+
+    await patchProject({ ops: [{ op: 'update_stop', id: 'b', changes: { name: 'Still here' } }] })
+    expect((await next(1000)).project.stops[1]?.name).toBe('Still here')
+
+    const closed = new Promise<void>((resolve) => ws.once('close', () => resolve()))
+    await server.close()
+    await closed
   })
 })
 
@@ -306,7 +351,7 @@ describe('websocket sync', () => {
     const { ws, next } = await connect()
     const message = await next()
     expect(message.type).toBe('project')
-    expect(message.project.id).toBe(id)
+    expect(message.project.id).toBe(project.id)
     ws.close()
   })
 

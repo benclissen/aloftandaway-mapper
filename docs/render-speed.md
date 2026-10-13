@@ -82,3 +82,23 @@ claims are unverified spot checks from debugging and have no table rows: a
 `ws` did not speed up the WebSocket path. If the screenshot path fails in Task
 13, the WebSocket path still runs at about 3.7 fps, about 7 minutes per layer
 for a 60 s clip.
+
+## Pipeline (Task 13)
+
+- Date: 2026-10-13
+- Script: `npm run bench:pipeline` (`bench/pipeline.ts`)
+- Clip: `greekIslands()` fixture, `look.theme: 'paper'`, 3840×2160 at 25 fps, range 0–10 s (10 s, 250 frames), ProRes 422 HQ
+- Path: `renderProject`: browser per render, `RenderPage.capturePng()` (CDP PNG) → `prores_ks`, frame n+1 rendering while frame n is written
+- Cold: empty tile cache (a fresh `MAPPER_CACHE_DIR`), tiles from the live OpenFreeMap service. Warm: the same cache, second run.
+- `renderFps` is frames ÷ time from the first `renderFrame` to ffmpeg finishing. Wall time is the whole `renderProject` call, including Chrome launch and map load.
+
+| Run | Frames | renderFps | Wall time | Wall ÷ clip length |
+|---|---|---|---|---|
+| Cold | 250 | 9.71 fps | 26.4 s | 2.6× |
+| Warm | 250 | 9.93 fps | 25.8 s | 2.6× |
+
+Warm `renderFps` against Task 1's 9.29 fps CDP end-to-end figure: +7%.
+
+ffprobe of the warm output: codec `prores`, profile `HQ`, pix_fmt `yuv422p10le`, 3840×2160, r_frame_rate `25/1`, nb_frames 250, color_space `bt709`, color_transfer `bt709`, color_primaries `bt709`, color_range `tv`.
+
+Frame at 5 s extracted to `test-output/bench/pipeline-frame.png` (not committed).

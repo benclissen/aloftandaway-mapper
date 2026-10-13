@@ -16,6 +16,8 @@ export interface MapperPage {
 declare global {
   interface Window {
     mapper: MapperPage
+    /** Exposed by the Node side to hear about WebGL context loss. */
+    __mapperContextLost?: () => void
   }
 }
 
@@ -33,6 +35,8 @@ export function startRenderMode(root: HTMLElement): void {
   const ready = fontsReady()
   let stage: MapStage | undefined
   let stageRatio = 0
+  // Destroying a stage loses its WebGL context on purpose; only an unexpected loss is a crash.
+  let stopWatchingContext: (() => void) | undefined
 
   window.mapper = {
     ready,
@@ -44,9 +48,14 @@ export function startRenderMode(root: HTMLElement): void {
       const project = parseProject(input)
       await ready
       if (!stage || stageRatio !== pixelRatio) {
+        stopWatchingContext?.()
         stage?.destroy()
         stage = new MapStage(root, { pixelRatio, interactive: false, tileBase })
         stageRatio = pixelRatio
+        const canvas = stage.map.getCanvas()
+        const onLost = () => window.__mapperContextLost?.()
+        canvas.addEventListener('webglcontextlost', onLost)
+        stopWatchingContext = () => canvas.removeEventListener('webglcontextlost', onLost)
       }
       await stage.load(project)
       return { frameCount: stage.frameCount }

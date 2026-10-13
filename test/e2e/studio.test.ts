@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import type { Map as MapLibreMap } from 'maplibre-gl'
 import type { Page } from 'playwright'
 import { afterAll, expect, test } from 'vitest'
@@ -92,6 +94,41 @@ test('dragging a stop saves its new position in a scaled container', async () =>
     expect(at[0]).toBeLessThanOrEqual(180)
     // Rounded to 5 decimals.
     for (const v of at) expect(Math.round(v * 1e5) / 1e5).toBe(v)
+  } finally {
+    await close()
+  }
+})
+
+test('a drag the server rejects snaps the stop back and says why', async () => {
+  const { page, folder, close } = await openStudio()
+  try {
+    const file = path.join(folder, 'mapper.json')
+    const saved = await readFile(file, 'utf8')
+    await page.route('**/patch', (route) =>
+      route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Simulated failure' } }) }),
+    )
+    const [x0, y0] = (await center(page, 'stop-marker-mykonos')).map(Math.round) as [number, number]
+    await page.mouse.move(x0, y0)
+    await page.mouse.down()
+    await page.mouse.move(x0 + 120, y0 + 60, { steps: 8 })
+    await page.mouse.up()
+
+    await page.getByRole('alert').filter({ hasText: 'Simulated failure' }).waitFor()
+    // Back over the saved position: where the map puts the stored `at`, in screen px.
+    const target = await page.evaluate(async (at) => {
+      const map = (window as unknown as StudioWindow).mapperStudio.map
+      const container = map.getContainer()
+      const box = container.getBoundingClientRect()
+      const fit = box.width / container.offsetWidth
+      const p = map.project(at)
+      return [box.left + p.x * fit, box.top + p.y * fit]
+    }, await stopAt(folder, 'mykonos'))
+    const [x1, y1] = await center(page, 'stop-marker-mykonos')
+    expect(Math.abs(x1 - target[0]!)).toBeLessThan(1)
+    expect(Math.abs(y1 - target[1]!)).toBeLessThan(1)
+    expect(Math.abs(x1 - x0)).toBeLessThan(1)
+    expect(Math.abs(y1 - y0)).toBeLessThan(1)
+    expect(await readFile(file, 'utf8')).toBe(saved)
   } finally {
     await close()
   }

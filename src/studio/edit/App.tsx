@@ -77,20 +77,23 @@ export function App() {
     return timeline.arrivals.map((a) => ({ stopId: a.stopId, frame: a.frame, name: project.stops[a.index]?.name ?? '' }))
   }, [project, timeline])
 
+  /** Sends a patch and resolves to whether it was saved. A failure shows the server's message. */
   const send = useCallback(
-    async (body: ProjectPatch, saved?: string) => {
+    async (body: ProjectPatch, saved?: string): Promise<boolean> => {
       try {
         accept(await patch(body))
         setNotice(saved ? { kind: 'info', text: saved } : undefined)
+        return true
       } catch (e) {
         setNotice({ kind: 'error', text: `Not saved. ${(e as Error).message}` })
+        return false
       }
     },
     [accept],
   )
 
   const onStopMoved = useCallback(
-    (id: string, at: LngLat) => void send({ ops: [{ op: 'update_stop', id, changes: { at } }] }),
+    (id: string, at: LngLat) => send({ ops: [{ op: 'update_stop', id, changes: { at } }] }),
     [send],
   )
   const onUserMove = useCallback(() => setFreeView(true), [])

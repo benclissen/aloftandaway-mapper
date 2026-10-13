@@ -24,7 +24,8 @@ interface StageProps {
   handle: RefObject<StageHandle | null>
   /** The user panned, zoomed, rotated or tilted the map. */
   onUserMove(): void
-  onStopMoved(id: string, at: LngLat): void
+  /** Resolves to whether the new position was saved; if not, the marker goes back to the stop. */
+  onStopMoved(id: string, at: LngLat): Promise<boolean>
   onError(message: string): void
 }
 
@@ -44,7 +45,7 @@ function normaliseBearing(bearing: number): number {
 
 interface Callbacks {
   onUserMove(): void
-  onStopMoved(id: string, at: LngLat): void
+  onStopMoved(id: string, at: LngLat): Promise<boolean>
   onError(message: string): void
   onShown(frame: number): void
 }
@@ -234,7 +235,11 @@ class StageController {
     marker.on('dragend', () => {
       this.dragging.delete(id)
       const { lng, lat } = marker.getLngLat().wrap()
-      this.cb.onStopMoved(id, [round(lng, 5), round(lat, 5)])
+      void this.cb.onStopMoved(id, [round(lng, 5), round(lat, 5)]).then((saved) => {
+        // Nothing was saved, so no new project will move the marker: put it back over the stop.
+        const stop = this.project?.stops.find((s) => s.id === id)
+        if (!saved && stop && this.markers.get(id) === marker && !this.dragging.has(id)) marker.setLngLat(stop.at)
+      })
     })
     return marker
   }

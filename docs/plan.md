@@ -1,63 +1,17 @@
 # Build plan
 
-The aim is to get the riskiest piece working first: a route drawn on a map,
-exported as a clean 1080p MP4. Everything else adds on top of that.
+Mapper runs locally and is driven by an AI agent. See the
+[design spec](superpowers/specs/2026-10-13-mapper-local-agent-design.md) for
+the full design. Each stage gets its own implementation plan and ends with
+something that works.
 
-## Phase 0: Skeleton
+| # | Stage | Done when |
+|---|---|---|
+| 1 | **Agent-driven MVP**: schema, timeline, preview studio, local server, MCP tools and CLI, `mapper doctor`, flattened render | An agent creates a project from typed-in stops, checks a contact sheet, the user tweaks it in the studio, and it renders a 4K 25p clip |
+| 2 | **Final Cut export**: layer passes, ProRes 4444 with alpha, FCPXML with lanes, roles and markers | Double-clicking the FCPXML gives a three-layer compound clip with arrival markers |
+| 3 | **Routes**: sea routing around land, flight arcs, follow camera, GPX import, place search, validation warnings | A cruise route stays at sea |
+| 4 | **Private source plugin**: built outside this repo against the `MapperSource` interface | Real trip data builds a project |
+| 5 | **Look**: brand theme and more themes, sign styles, transport symbols, terrain and tilt | Videos look on-brand |
 
-- Vite, React and TypeScript app, deployed to Cloudflare Pages from `main`
-- Full-screen MapLibre map on an OpenFreeMap style
-- Project list and editor routes; projects saved in IndexedDB
-
-## Phase 1: Route
-
-- Click to add points, drag to move, delete, undo
-- Smooth spline through the points (auto handles), with sharp and curved
-  modes per point
-- GPX import (tracks and routes), with simplification
-- Place search through Photon
-
-## Phase 2: Animation engine and preview
-
-- Timeline model: hold at start, line draw, hold at end
-- Progressive line (trimmed geometry or `line-gradient`) with a moving symbol
-  at the tip
-- Camera modes: fixed, start shot to end shot, follow the line
-- Play and scrub the preview in the editor
-
-## Phase 3: Export (MVP ends here)
-
-- Fixed-step frame loop: set the frame state, wait for the map to go idle,
-  then capture
-- `VideoFrame` → `VideoEncoder` (H.264) → Mediabunny MP4, with progress and
-  cancel
-- 1080p at 30 fps first, with map credit burned in
-- Browser support check, with a clear message
-
-**MVP:** draw or import a route, play it, download a 1080p MP4.
-
-## Phase 4: Look
-
-- 3–5 Aloft & Away map themes of our own (restyled OpenFreeMap style JSON)
-- Line styling (colour, width, dash, outline, glow)
-- Transport symbols and per-leg transport
-
-## Phase 5: Story layers
-
-- Signs and captions, shown always or as the line passes
-- Photos placed from EXIF
-- Overlays: title, elevation profile, distance and speed
-
-## Phase 6: Scale up
-
-- Several scenes, joined or exported separately
-- Terrain and tilt, globe, satellite (EOxCloudless 2016)
-- 4K, 60 fps, and recovering failed renders
-- Project file export and import
-
-## Ideas specific to Aloft & Away
-
-- Brand themes and sign art that match aloftandaway.com
-- Export shapes for Stories and Reels (9:16) as well as YouTube
-- Later: pull routes from Tripsy trips, or embed animated maps on place
-  and story pages
+Out of scope for now: hosting, a full manual editor, editable Final Cut titles,
+render-to-exact-length, photo signs, stats overlays.

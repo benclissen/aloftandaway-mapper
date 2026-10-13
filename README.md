@@ -1,8 +1,9 @@
 # Mapper
 
-Animated map videos of Aloft & Away trips. Draw a route or drop in a GPX file,
-pick a map style, add signs and camera moves, and export an MP4, all in the
-browser.
+Animated map videos of Aloft & Away trips, built by your AI agent. Ask Claude
+(or any MCP-capable agent) for a map. It plans the route and camera, shows you
+a local preview to tweak, and renders layered ProRes clips with an FCPXML file
+ready for Final Cut Pro. Everything runs on your machine; nothing is hosted.
 
 Mapper is an independent build. It takes its feature set from
 [Map Animator](https://mapanimator.baldinger.se/) by Robert Baldinger, studied
@@ -11,24 +12,26 @@ or copy.
 
 ## Status
 
-Research done, no code yet.
+Design written, no code yet.
 
+- [Design spec](docs/superpowers/specs/2026-10-13-mapper-local-agent-design.md): the local, agent-driven design
+- [docs/plan.md](docs/plan.md): build stages
 - [docs/research.md](docs/research.md): how Map Animator works, and whether we can build it
-- [docs/plan.md](docs/plan.md): what we'd build, in what order
 
 ## Planned stack
 
 | Concern | Choice |
 |---|---|
-| App | Vite, React, TypeScript |
+| Agent interface | MCP server (stdio), CLI and an agent skill |
+| Preview studio | Vite, React, TypeScript, served on `127.0.0.1` |
 | Map rendering | [MapLibre GL JS](https://maplibre.org/) |
 | Vector tiles | [OpenFreeMap](https://openfreemap.org/) (OpenStreetMap data) |
 | Satellite | [EOxCloudless 2016](https://cloudless.eox.at/) (CC BY 4.0) |
 | Elevation | [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) |
 | Place search | [Photon](https://photon.komoot.io/) |
-| Video | WebCodecs `VideoEncoder` and [Mediabunny](https://mediabunny.dev/) for MP4 |
-| Storage | IndexedDB, in the browser |
-| Hosting | Cloudflare Pages |
+| Rendering | Headless Chrome (Playwright) and ffmpeg |
+| Output | ProRes layers (map, route and signs with alpha) and FCPXML for Final Cut Pro |
+| Storage | A project folder on disk |
 
 ## Map credits
 

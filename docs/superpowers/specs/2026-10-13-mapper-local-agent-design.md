@@ -1,0 +1,472 @@
+# Mapper: local, agent-driven design
+
+Date: 2026-10-13
+Status: awaiting review
+
+## Purpose
+
+Mapper turns a trip into an animated map clip for a travel film. An AI agent
+(Claude Code, Claude Desktop, Codex, Cursor or any other MCP client) builds the
+map, checks its own work, takes tweaks, and renders files that drop straight
+into Final Cut Pro.
+
+A typical request is: "Make a map for the Celebrity Xcel series, first six
+destinations, 4K 25p." The agent pulls the stops from a source, plans the route
+and camera, shows the user a preview, applies their changes, and renders a
+layered clip with an FCPXML file.
+
+### Success criteria
+
+1. An agent can go from a request to a rendered clip using only Mapper's MCP
+   tools, with no hand-written project JSON.
+2. The user can open a local preview, scrub it, and drag points, signs and
+   camera shots, and the agent sees those edits.
+3. Opening the exported FCPXML in Final Cut Pro gives a compound clip with
+   map, route and signs on separate lanes, with a marker at each arrival.
+4. The preview and the final render come from the same code and match.
+5. Nothing is hosted. Everything runs on the user's machine.
+
+### Non-goals
+
+- Hosting, accounts, analytics.
+- A full manual editor. The studio does preview plus light tweaks only.
+- Editable Final Cut titles and render-to-exact-length (possible later).
+- Photo signs and stats overlays such as speed and elevation (possible later).
+- Browser-side video encoding. Rendering uses headless Chrome and ffmpeg.
+
+## Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Agent interface | MCP server (stdio) plus a CLI with the same commands, plus an agent skill | Works in every MCP client; scripts can use the CLI |
+| Source of truth | One project file per map, on disk | Agent and human edit the same thing; easy to version |
+| Rendering | Headless Chrome runs the studio page in render mode; frames go to ffmpeg | Preview and render share code |
+| Output | ProRes layers plus FCPXML, with optional H.264 preview | What Final Cut handles best |
+| Defaults | 3840×2160, 25 fps, 16:9 | The user's usual Final Cut format |
+| Coordinates | `[lng, lat]` in WGS84 (GeoJSON order) | Agents and data sources speak lat/lng; Mercator maths stays internal |
+| Private data | External source plugins loaded from local config | The public repo knows nothing about private sources |
+
+## Architecture
+
+One npm package with a single `mapper` binary. Internal modules with one job each:
+
+```
+src/
+├── core/      Schema, geometry, routing, timeline, camera. Pure TS: no DOM, no fs, no network.
+├── studio/    Vite + React + MapLibre page. Modes: edit, render.
+├── server/    Local HTTP + WebSocket server: serves studio, reads/writes project, tile cache.
+├── render/    Playwright + Chrome frame loop, ffmpeg encoding, FCPXML writer.
+├── sources/   Source plugin interface, built-in sources, plugin loader.
+├── mcp/       MCP server exposing the tools below.
+└── cli/       `mapper` commands: mcp, studio, render, doctor, and one per tool.
+skills/mapper/SKILL.md   Agent workflow guide.
+```
+
+Dependency direction: `core` ← `sources`, `studio`, `server` ← `render` ← `mcp`, `cli`.
+`core` imports nothing else from the package.
+
+### Runtime requirements
+
+- Node 22.18 or newer (TypeScript type stripping, used to load `.ts` plugins).
+- Google Chrome, or Playwright's Chromium as a fallback.
+- ffmpeg with `prores_ks` (for ProRes 4444 with alpha).
+- macOS is the primary target. Linux should work for everything except the
+  Final Cut checks.
+
+`mapper doctor` checks each of these, plus WebGL in headless Chrome, free
+disk space and configured sources. For anything missing it prints the fix.
+
+## Project file
+
+A project is a folder:
+
+```
+celebrity-xcel/
+├── mapper.json         The project
+├── renders/<timestamp>/  One folder per render
+└── .mapper/            Cache (computed paths, preview frames); safe to delete
+```
+
+`mapper.json`, schema version 1 (validated with Zod; unknown keys rejected):
+
+```ts
+type LngLat = [number, number]
+
+interface Project {
+  schemaVersion: 1
+  id: string                      // UUID
+  name: string
+  createdAt: string               // ISO 8601
+  updatedAt: string
+  output: {
+    aspect: '16:9' | '9:16' | '1:1' | '4:5'
+    height: 1080 | 1440 | 2160    // width derived from aspect
+    fps: { num: number; den: number } // 25/1, 24000/1001, 30000/1001, 30/1, 50/1, 60/1 …
+  }
+  timing: {
+    holdStart: number             // seconds before the line starts
+    travel: number                // seconds of line drawing, excluding pauses
+    holdEnd: number               // seconds after the line finishes
+  }
+  stops: Stop[]                   // in travel order, at least 2
+  legs: Leg[]                     // stops.length - 1, leg i joins stop i and i+1
+  look: Look
+  camera: Camera
+  credit: 'burned' | 'description' // map data credit placement
+}
+
+interface Stop {
+  id: string
+  name: string                    // e.g. "Santorini"
+  at: LngLat
+  label?: string                  // sign text if different from name, e.g. "Day 3 · Santorini"
+  pause: number                   // seconds the line waits here (0 for none)
+  sign: 'always' | 'on-arrival' | 'none'
+  terminal?: boolean              // start/end port styling
+  source?: { source: string; collection: string; item: string; day?: number }
+}
+
+interface Leg {
+  mode: 'sea' | 'air' | 'land' | 'line'
+  via: LngLat[]                   // manual waypoints, in order (may be empty)
+  symbol?: SymbolKind             // overrides look.symbol for this leg
+}
+
+interface Look {
+  theme: string                   // built-in theme id
+  labels: 'local' | 'en'
+  terrain: boolean
+  line: { color: string; width: number; dash: 'solid' | 'dashed' | 'dotted'; outline: boolean; glow: boolean }
+  symbol: SymbolKind              // 'none' | 'dot' | 'arrow' | 'ship' | 'plane' | 'car' | 'train' | 'walk'
+  signStyle: string               // built-in sign style id
+}
+
+interface Shot { center: LngLat; zoom: number; bearing: number; pitch: number }
+
+interface Camera {
+  mode: 'fixed' | 'glide' | 'follow'
+  start?: Shot                    // fixed uses start; glide uses start → end
+  end?: Shot
+  follow?: { zoom: number; orient: 'north' | 'heading'; lookAhead: number; smoothing: number }
+  easing: 'linear' | 'smooth'
+}
+```
+
+When `start`/`end` shots are missing, they are fitted to the route bounds
+for the output aspect.
+
+Computed leg paths are cached in `.mapper/paths.json`, keyed by a hash of
+the leg inputs. They are never stored in `mapper.json`.
+
+Writes are atomic (write to a temp file, then rename) and bump `updatedAt`.
+The server and the MCP tools both go through the same `core` load, patch and
+save functions.
+
+## Core
+
+### Routing
+
+Each leg becomes a polyline in `[lng, lat]`:
+
+- **line**: a smooth curve (centripetal Catmull-Rom) through stop → via → stop.
+- **air**: a great-circle arc. If `via` is given, arcs between each pair.
+- **sea**: the shortest path over water. Natural Earth 1:10m land polygons
+  (public domain) are rasterised once into a water grid around the leg's
+  bounds. A* finds a path, which is then simplified and smoothed with a
+  check that the smoothed line still stays off land. `via` points are forced
+  waypoints. If no path is found the leg falls back to `line`, and
+  `validate_project` reports it.
+- **land**: same as `line` for now. Road snapping is out of scope.
+
+### Timeline
+
+Times are whole frames at `output.fps`.
+
+- Total frames = `round((holdStart + travel + Σ pauses + holdEnd) × fps)`.
+- `travel` is split across legs in proportion to each leg's length in
+  Mercator units, with a minimum of 0.5 s per leg.
+- Within a leg, progress follows the camera easing curve.
+- The timeline gives, for any frame: line progress (distance along the whole
+  route), symbol position and heading, which signs are visible, and the
+  arrival frame of each stop. Arrival frames become the FCPXML markers.
+
+### Camera
+
+- **fixed**: `start` for every frame.
+- **glide**: interpolates `start` → `end` across the travel section, using
+  the van Wijk–Nuij zoom-and-pan curve so zoom and pan feel natural. Holds at
+  each end.
+- **follow**: centres ahead of the symbol by `lookAhead` route-distance.
+  Bearing comes from the route heading when `orient = 'heading'`. Critically
+  damped smoothing (`smoothing` from 0 to 1) is precomputed over the whole
+  timeline, so any frame can be rendered on its own.
+
+Every camera state is a pure function of the frame number. This is what
+makes frame-by-frame rendering, resuming and golden tests possible.
+
+### Validation
+
+`validateProject(project)` returns `{ errors, warnings }`. Errors block a
+render; warnings don't. It checks:
+
+- Schema errors.
+- A sea leg crossing land (sampled against the water grid).
+- A sea leg that fell back to `line`.
+- Sign labels overlapping at their arrival frames (estimated from text size
+  at the shot zoom).
+- Camera zoom above the tile source's maximum zoom.
+- Durations under one second per leg.
+- Fewer than two stops.
+
+## Sources
+
+```ts
+interface MapperSource {
+  id: string                       // 'gpx', 'places', or a plugin id
+  label: string
+  listCollections(query?: string): Promise<CollectionSummary[]>
+  getCollection(id: string, options?: { limit?: number }): Promise<Collection>
+}
+
+interface CollectionSummary { id: string; title: string; subtitle?: string; stopCount?: number }
+
+interface Collection {
+  id: string
+  title: string
+  routeType: 'sea' | 'air' | 'land' | 'mixed'
+  stops: SourceStop[]              // in travel order, already de-duplicated
+}
+
+interface SourceStop {
+  item: string                     // the source's own id
+  name: string
+  at: LngLat
+  day?: number
+  terminal?: boolean
+  legMode?: Leg['mode']            // for 'mixed' collections
+}
+```
+
+Built-in sources:
+
+- **gpx**: `getCollection(path)` reads a GPX file. Tracks and routes become
+  stops, either from named waypoints or from start and end only, plus a
+  `via` path.
+- **places**: `listCollections(query)` searches Photon. Each result is a
+  one-stop collection, so the agent can look up a place name.
+
+External plugins are listed in `~/.config/mapper/config.json`:
+
+```json
+{
+  "sources": [
+    { "id": "example", "module": "/absolute/path/to/plugin/index.ts", "options": {} }
+  ]
+}
+```
+
+A plugin module's default export is `(options) => MapperSource`. Plugins are
+trusted local code, loaded with dynamic `import()`. A failing plugin is
+reported by `mapper doctor` and `list_sources`. It never stops Mapper from
+starting.
+
+`import_collection` maps a `Collection` onto the project. It creates stops
+with `source` refs and creates legs from `routeType` (`sea` → sea legs, and so
+on). `limit` keeps the first N stops.
+
+## MCP tools
+
+Every tool takes absolute paths. Every result has a short plain-text summary
+plus structured content. Errors are returned as tool errors with a suggested
+fix.
+
+| Tool | Input | Result |
+|---|---|---|
+| `list_sources` | — | Sources with status |
+| `list_collections` | `source`, `query?` | Collection summaries |
+| `get_collection` | `source`, `id`, `limit?` | Collection with stops |
+| `create_project` | `folder`, `name`, `output?` | Project summary |
+| `get_project` | `folder` | Full project and the timeline summary (duration, arrival times) |
+| `import_collection` | `folder`, `source`, `id`, `limit?`, `replace?` | Project summary |
+| `update_project` | `folder`, `set?` (JSON Merge Patch over every top-level field except `stops` and `legs`), `ops?` (array ops below) | Project summary and validation |
+| `validate_project` | `folder` | Errors and warnings |
+| `preview_frame` | `folder`, `at` (exactly one of `{ seconds }`, `{ frame }`, `{ progress }` where progress is 0–1), `width?` | PNG image |
+| `preview_contact_sheet` | `folder`, `count?` (default 9), `width?` | One PNG grid with timestamps |
+| `open_studio` | `folder` | Local URL |
+| `render` | `folder`, `layers?`, `codec?`, `range?` | Job id |
+| `render_status` | `jobId` | Progress, ETA, output paths, or error |
+| `cancel_render` | `jobId` | Final status |
+
+`update_project` array ops:
+`{ op: 'insert_stop', index, stop }`, `{ op: 'update_stop', id, changes }`,
+`{ op: 'remove_stop', id }`, `{ op: 'move_stop', id, index }`,
+`{ op: 'update_leg', index, changes }`. Legs are kept in step with stops
+automatically. A patch is applied in full or not at all, and the result must
+pass schema validation.
+
+Preview tools use the same headless page as rendering, at a reduced width
+(default 960 px). The page is kept warm between calls.
+
+## Studio and server
+
+`mapper studio <folder>` (or `open_studio`) starts one local server per
+Mapper process. It serves several projects.
+
+- **Security**: binds `127.0.0.1` on a random free port. It rejects requests
+  whose `Host` isn't `127.0.0.1:<port>` or `localhost:<port>`, which blocks
+  DNS rebinding. Every URL carries a random session token, so other local web
+  pages can't call it. Reads and writes are limited to registered project
+  folders.
+- **Sync**: the server watches `mapper.json`. When the file changes (from the
+  agent or the CLI), connected studios reload the project over WebSocket.
+  Edits made in the studio are sent to the server, which applies them as a
+  patch through `core`. The last write wins, and `updatedAt` shows which
+  write that was.
+- **Tile cache**: map tiles, styles, fonts and terrain go through the server
+  to a disk cache in `~/.cache/mapper/tiles`. Repeat previews and renders
+  don't hit the upstream services again. Requests are throttled to stay
+  within fair use.
+
+Studio edit mode:
+
+- The map preview is sized to the output aspect, with a play/scrub bar and
+  arrival ticks.
+- Drag stops and `via` points; click a leg to add a `via` point.
+- Drag a sign to offset it.
+- "Use this view as start/end shot" buttons, and a camera mode switcher.
+- No other editing UI. Anything else goes through the agent.
+
+Studio render mode (`?mode=render&layer=map|route|signs|all`):
+
+- No UI chrome. Sets `window.mapper = { ready, renderFrame(n), frameCount }`.
+- `renderFrame(n)` applies the timeline state for frame `n`. It resolves
+  once MapLibre reports `loaded()` with every tile loaded and the frame
+  painted.
+
+## Rendering
+
+1. Load and validate the project. Errors stop the render.
+2. Start (or reuse) the server, and launch Chrome through Playwright
+   (`channel: 'chrome'`, falling back to bundled Chromium). Set the viewport
+   to the output size and the device scale factor to 1.
+3. For each layer, open render mode with that layer and spawn ffmpeg reading
+   raw RGBA from stdin. For each frame, call `renderFrame(n)`, read the
+   pixels in the page, and stream them over the server's WebSocket to
+   ffmpeg's stdin.
+4. Layers:
+   - **map**: basemap, terrain and labels, plus the map credit when
+     `credit = 'burned'`. Encoded as ProRes 422 HQ (`prores_ks -profile:v 3`).
+   - **route**: a transparent background with every basemap layer hidden.
+     Terrain stays loaded but invisible, so the line drapes correctly. Holds
+     the line, symbol and start dot. Encoded as ProRes 4444
+     (`-profile:v 4 -pix_fmt yuva444p10le`).
+   - **signs**: a transparent canvas overlay with the signs and labels.
+     Encoded as ProRes 4444.
+   - **preview** (optional): every layer composited. Encoded as H.264
+     (`h264_videotoolbox`, falling back to `libx264`).
+5. Every output is tagged Rec.709 (`-color_primaries bt709 -color_trc bt709
+   -colorspace bt709`), with a frame rate of exactly `num/den`.
+6. Write the FCPXML and `manifest.json` (project hash, settings, durations,
+   credit text, Mapper version).
+
+**Resilience**
+
+- Frames are deterministic. If the WebGL context is lost, or a tile fails
+  after 3 retries with backoff, the page reloads and the render continues
+  from the failed frame into a new segment. Segments are joined losslessly
+  with ffmpeg's concat demuxer.
+- Cancelling stops the job and keeps any finished layers.
+- Free disk space is checked first, from an estimate of the ProRes bitrate.
+
+**Output folder**: `renders/<YYYY-MM-DD-HHmmss>/` containing `map.mov`,
+`route.mov`, `signs.mov`, `preview.mp4` (if requested), `<name>.fcpxml` and
+`manifest.json`.
+
+## FCPXML
+
+- FCPXML version 1.11, which also opens in older Final Cut versions. Tests
+  validate against `FCPXMLv1_11.dtd` from the installed Final Cut Pro bundle
+  (skipped when Final Cut isn't installed).
+- One `<format>` matching the output size and `frameDuration`
+  (`den/num s`, e.g. `1/25s`, `1001/24000s`).
+- Three `<asset>`s pointing at the `.mov` files with `file://` URLs. The
+  route and signs assets carry alpha.
+- An event named `Mapper`. A compound clip (`<media>` with a `<sequence>`)
+  named after the project: map on the spine, route on lane 1, signs on lane 2.
+- Video roles: `Map.Base`, `Map.Route`, `Map.Signs`.
+- `<marker>`s at each stop's arrival frame, using the stop label or
+  `Day N · Name`.
+- When `credit = 'description'`, the credit text goes in the compound clip's
+  notes.
+
+## Agent skill
+
+`skills/mapper/SKILL.md` covers:
+
+- The workflow: sources → create → import → validate → contact sheet →
+  tweak → studio link for the user → render → report output paths.
+- Rules: always look at a contact sheet before rendering. Fix validation
+  warnings or explain them. Never edit `mapper.json` by hand. Tell the user
+  which credit is required.
+- Setup for Claude Code, Claude Desktop, Codex and Cursor
+  (`mapper mcp` as a stdio server).
+
+## Error handling summary
+
+| Failure | Behaviour |
+|---|---|
+| Chrome, ffmpeg or ProRes missing | `doctor` and the render say what's missing and how to install it |
+| Plugin fails to load | Listed as unavailable with the error; other sources keep working |
+| Invalid patch | Tool error with the Zod path and message; project unchanged |
+| Sea routing fails | Falls back to `line`; warning |
+| Tile or WebGL failure mid-render | Retry, reload, resume from the failed frame |
+| Port in use | Pick another free port |
+| Project changed during render | Render uses the snapshot it started with; the manifest records the hash |
+
+## Testing
+
+- **core** (Vitest): schema round trips and rejections, patch ops, timeline
+  frame maths at 25 and 23.976 fps, camera determinism (frame `n` is the
+  same however it's reached), great-circle arcs, sea routing fixtures
+  (Athens → Mykonos and Barcelona → Marseille stay at sea; a path between
+  two landlocked points fails cleanly).
+- **sources**: GPX fixtures; the plugin loader with a fixture plugin,
+  including a broken one.
+- **server**: Host and token checks, folder confinement, file-watch sync.
+- **render**:
+  - Golden frames: chosen frames of fixture projects compared with stored
+    PNGs using pixelmatch, with a tolerance. These run on macOS, and
+    `--update` refreshes them.
+  - ffprobe checks on the outputs: codec, profile, alpha, fps, colour tags,
+    frame count.
+- **FCPXML**: `xmllint --dtdvalid` against the bundled DTD, plus structural
+  assertions (lanes, roles, marker times).
+- **mcp**: an end-to-end test with the MCP SDK client against a fixture
+  project: create → import (fixture source) → validate → preview → render a
+  2-second clip.
+
+## Build stages
+
+Each stage gets its own implementation plan.
+
+1. **Agent-driven MVP**: core (schema, `line` legs, timeline, glide and
+   fixed camera), studio (preview, scrub, drag stops, set shots), server,
+   MCP tools and CLI, doctor, skill, and a flattened render (ProRes 422 HQ or
+   H.264). One built-in theme.
+2. **Final Cut export**: layer passes, ProRes 4444 with alpha, FCPXML with
+   lanes, roles and markers, DTD validation.
+3. **Routes**: sea routing, `air` arcs, follow camera, GPX and places sources,
+   `validate_project` warnings.
+4. **Private source plugin**: designed and built outside this repo. It
+   implements the `MapperSource` interface above.
+5. **Look**: more themes, sign styles, transport symbols, terrain and tilt.
+
+## Risks
+
+| Risk | Mitigation |
+|---|---|
+| Headless Chrome WebGL is slow or falls back to software on some Macs | `doctor` reports the WebGL renderer; offer 1080p; measure frames per second in stage 1 |
+| Reading 4K pixels per frame is slow | Measure in stage 1; if needed, capture with CDP screencast or use PBO-style async reads |
+| Tile fair use during long 4K renders | Disk tile cache and throttling; self-hosted PMTiles as a later option |
+| Sea routing quality near complex coastlines | Grid resolution scales with leg length; `via` points let the agent or user correct it |
+| Route layer misaligned with the map layer | Same timeline and camera per frame; a golden test composites the layers and compares them against the `all` layer |

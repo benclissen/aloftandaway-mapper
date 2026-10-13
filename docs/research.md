@@ -3,6 +3,11 @@
 Date: 2026-10-13
 Subject: <https://mapanimator.baldinger.se/>, the production bundle live on that date
 
+> **Update, 2026-10-13:** Mapper will run locally and be driven by an agent,
+> not hosted. Rendering uses headless Chrome and ffmpeg instead of browser
+> WebCodecs. See the [design spec](superpowers/specs/2026-10-13-mapper-local-agent-design.md).
+> This document still describes how Map Animator works.
+
 ## Verdict
 
 We can build it. Map Animator is a single-page app that does all its real work

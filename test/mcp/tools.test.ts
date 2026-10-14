@@ -6,7 +6,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { createMcpServer } from '../../src/mcp/server.js'
-import { TOOLS } from '../../src/mcp/tools.js'
+import { doneSummary, leftover, TOOLS } from '../../src/mcp/tools.js'
 
 const STOPS = [
   { name: 'Piraeus', at: [23.6466, 37.942] },
@@ -279,5 +279,61 @@ describe('tools', () => {
     const result = await call('nope', {})
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('Fix: Use one of: create_project')
+  })
+})
+
+describe('render summaries', () => {
+  const output = (request: string, layer: string, file: string) => ({ request, layer, path: `/r/${file}` }) as never
+
+  test('leftover labels outputs by what was requested', async () => {
+    const lines = await leftover({
+      dir: '/nonexistent/render',
+      outputs: [output('preview', 'all', 'preview.mp4'), output('all', 'all', 'all.mov'), output('route', 'route', 'route.mov')],
+    })
+    expect(lines.slice(0, 4)).toEqual([
+      'Finished outputs kept:',
+      '- preview: /r/preview.mp4',
+      '- clip: /r/all.mov',
+      '- route: /r/route.mov',
+    ])
+    expect(lines).toContain('Folder: /nonexistent/render')
+    expect(lines.at(-1)).toMatch(/^Credit required: /)
+  })
+
+  test('leftover says so when nothing finished, and omits the folder before one exists', async () => {
+    expect(await leftover({ outputs: [], dir: '/nonexistent/render' })).toEqual([
+      'No outputs were finished.',
+      'Folder: /nonexistent/render',
+      expect.stringMatching(/^Credit required: /),
+    ])
+    expect(await leftover({})).toEqual(['No outputs were finished.'])
+  })
+
+  test('doneSummary words a skipped FCPXML validation', async () => {
+    const text = await doneSummary({
+      dir: '/nonexistent/render',
+      manifest: '/nonexistent/render/manifest.json',
+      frames: 50,
+      renderFps: 10,
+      outputs: [],
+      fcpxml: '/nonexistent/render/trip.fcpxml',
+      fcpxmlValidation: 'skipped-no-fcp',
+    } as never)
+    expect(text).toContain('FCPXML: /nonexistent/render/trip.fcpxml')
+    expect(text).toContain('FCPXML validation was skipped: Final Cut Pro is not installed, so the DTD is unavailable.')
+    expect(text).not.toContain('validated against')
+  })
+
+  test('doneSummary says a passed FCPXML was validated', async () => {
+    const text = await doneSummary({
+      dir: '/d',
+      manifest: '/d/manifest.json',
+      frames: 50,
+      renderFps: 10,
+      outputs: [],
+      fcpxml: '/d/trip.fcpxml',
+      fcpxmlValidation: 'passed',
+    } as never)
+    expect(text).toContain('FCPXML validated against the Final Cut Pro DTD.')
   })
 })

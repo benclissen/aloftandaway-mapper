@@ -4,11 +4,11 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
-import { renderProject, type RenderResult } from '../render/render.js'
+import { renderProject, type CompletedOutput, type RenderResult } from '../render/render.js'
 import { getServer } from '../server/server.js'
 import { assertAbsolute } from '../server/store.js'
 import { exitAfterDrain, installShutdown, runStdio } from '../mcp/server.js'
-import { callTool, doneSummary, errorText, etaText, LayersSchema, TOOLS, type ToolDef } from '../mcp/tools.js'
+import { callTool, doneSummary, errorText, etaText, LayersSchema, leftover, TOOLS, type ToolDef } from '../mcp/tools.js'
 import { doctorExitCode, formatChecks, runDoctor } from './doctor.js'
 
 /** Exit code for bad commands and flags. */
@@ -190,10 +190,14 @@ async function renderCommand(args: string[]): Promise<number> {
 
   const controller = new AbortController()
   let rendering: Promise<unknown> = Promise.resolve()
+  let renderDir: string | undefined
+  const finished: CompletedOutput[] = []
   const shutdown = installShutdown(async () => {
     controller.abort()
     // renderProject writes the cancelled manifest and stops ffmpeg and Chrome before it settles.
     await rendering.catch(() => undefined)
+    // The signal handler exits right after this, so what the render left behind is reported here, to stderr.
+    console.error(['Cancelled.', ...(await leftover({ outputs: finished, dir: renderDir }))].join('\n'))
   }, SIGNAL_EXIT)
 
   let lastProgress = 0
@@ -206,6 +210,12 @@ async function renderCommand(args: string[]): Promise<number> {
       layers,
       range,
       signal: controller.signal,
+      onStart: ({ dir }) => {
+        renderDir = dir
+      },
+      onOutput: (output) => {
+        finished.push(output)
+      },
       onProgress: (p) => {
         const now = Date.now()
         if (now - lastProgress < PROGRESS_INTERVAL_MS) return
@@ -215,9 +225,10 @@ async function renderCommand(args: string[]): Promise<number> {
     })
     result = (await rendering) as RenderResult
   } catch (e) {
-    // A signal is shutting down; let it finish and exit 130.
+    // A signal is shutting down and reports the cancellation itself; let it finish and exit 130.
     if (controller.signal.aborted) return exit(shutdown, SIGNAL_EXIT)
-    console.error(errorText(e, 'render'))
+    // What the render left behind goes to stderr, as the MCP render_status reports it. stdout stays empty.
+    console.error([errorText(e, 'render'), ...(await leftover({ outputs: finished, dir: renderDir }))].join('\n'))
     return exit(shutdown, 1)
   }
   console.log(JSON.stringify(result, null, 2))

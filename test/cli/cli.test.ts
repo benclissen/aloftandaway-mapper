@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -9,7 +9,7 @@ import { promisify } from 'node:util'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 
 // These tests spawn the compiled CLI. beforeAll compiles it (tsc only, under a second), so `npm test` needs no
-// separate build step. None of them start Chrome.
+// separate build step. Only the cancelled-render test starts Chrome.
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const MAIN = path.join(ROOT, 'dist', 'cli', 'main.js')
 
@@ -174,3 +174,30 @@ test('render --help documents --layers', async () => {
   const { stdout } = await mapper('render', '--help')
   expect(stdout).toContain('--layers map,route,signs[,preview]')
 })
+
+test('a cancelled render reports its folder and the map credit on stderr and exits 130', async () => {
+  const folder = path.join(tmp, 'cancelled')
+  await mapper('create-project', '--json', JSON.stringify({ folder, name: 'Cancelled' }))
+  await mapper('set-stops', '--json', JSON.stringify({ ...STOPS, folder }))
+  const child = spawn(process.execPath, [MAIN, 'render', folder], {
+    env: { ...(process.env as Record<string, string>), MAPPER_CACHE_DIR: path.join(tmp, 'cache') },
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.on('data', (d: Buffer) => (stdout += d))
+  child.stderr.on('data', (d: Buffer) => (stderr += d))
+  const closed = new Promise<number | null>((resolve) => child.on('close', resolve))
+  // The render folder appears before Chrome starts, so a signal now cancels a render that has a folder.
+  const renders = path.join(folder, 'renders')
+  for (let i = 0; i < 300 && !(existsSync(renders) && readdirSync(renders).length > 0); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  child.kill('SIGINT')
+  const code = await closed
+  expect(code).toBe(130)
+  expect(stdout).toBe('')
+  expect(stderr).toContain('Cancelled.')
+  expect(stderr).toContain('No outputs were finished.')
+  expect(stderr).toContain(`Folder: ${path.join(renders, readdirSync(renders)[0]!)}`)
+  expect(stderr).toContain('Credit required: ')
+}, 60_000)

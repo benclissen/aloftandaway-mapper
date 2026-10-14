@@ -248,10 +248,11 @@ export async function doneSummary(r: RenderResult): Promise<string> {
   ].join('\n')
 }
 
-/** What a failed or cancelled render left behind. */
-async function leftover(status: RenderStatus): Promise<string[]> {
+/** What a failed or cancelled render left behind. The CLI prints the same text. */
+export async function leftover(status: Pick<RenderStatus, 'outputs' | 'dir'>): Promise<string[]> {
+  const label = (o: NonNullable<RenderStatus['outputs']>[number]) => (o.request === 'preview' ? 'preview' : o.request === 'all' ? 'clip' : o.layer)
   return [
-    ...(status.outputs?.length ? ['Finished outputs kept:', ...status.outputs.map((o) => `- ${o.layer === 'all' ? 'clip' : o.layer}: ${o.path}`)] : ['No outputs were finished.']),
+    ...(status.outputs?.length ? ['Finished outputs kept:', ...status.outputs.map((o) => `- ${label(o)}: ${o.path}`)] : ['No outputs were finished.']),
     ...(status.dir ? [`Folder: ${status.dir}`, await creditLine(path.join(status.dir, 'manifest.json'))] : []),
   ]
 }

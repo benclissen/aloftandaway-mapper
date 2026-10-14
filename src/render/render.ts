@@ -25,8 +25,12 @@ import { errorMessage, renderPass, throwIfAborted } from './render-pass.js'
 
 /** Progress fps is averaged over this many frames. */
 const FPS_WINDOW = 25
-/** Estimated bytes per pixel per frame, before the safety margin. 4444 with 16-bit alpha is a conservative guess. */
-const BYTES_PER_PIXEL: Record<MediaKind, number> = { 'prores-hq': 0.45, 'prores-4444': 2, h264: 0.03 }
+/**
+ * Estimated bytes per pixel per frame, before the safety margin. Apple's published ProRes 4444 rate at 4096×2160 24p
+ * is about 1131 Mb/s without alpha, roughly 0.67 B/px; 1.0 leaves headroom for the alpha channel. The 4K acceptance
+ * outputs measured 0.016–0.028 B/px, since flat map layers compress far below the nominal rate.
+ */
+const BYTES_PER_PIXEL: Record<MediaKind, number> = { 'prores-hq': 0.45, 'prores-4444': 1, h264: 0.03 }
 const DISK_MARGIN = 1.5
 const GB = 1e9
 const RENDERS_DIR = 'renders'
@@ -283,11 +287,15 @@ const round2 = (n: number) => Math.round(n * 100) / 100
  * Fails unless there is room for every output, plus the largest one again: joining segments writes a whole new
  * file before the segments are deleted.
  */
-async function checkDisk(folder: string, passes: RenderPass[], size: { width: number; height: number }): Promise<void> {
+export function estimateDiskBytes(passes: RenderPass[], size: { width: number; height: number }): { bytes: number[]; neededBytes: number } {
   const bytes = passes.map(
     (pass) => (pass.toFrame - pass.fromFrame) * size.width * size.height * BYTES_PER_PIXEL[pass.kind] * DISK_MARGIN,
   )
-  const neededBytes = bytes.reduce((sum, b) => sum + b, 0) + Math.max(...bytes)
+  return { bytes, neededBytes: bytes.reduce((sum, b) => sum + b, 0) + Math.max(...bytes) }
+}
+
+async function checkDisk(folder: string, passes: RenderPass[], size: { width: number; height: number }): Promise<void> {
+  const { neededBytes } = estimateDiskBytes(passes, size)
   const stats = await statfs(folder)
   const free = Number(stats.bavail) * Number(stats.bsize)
   if (free >= neededBytes) return

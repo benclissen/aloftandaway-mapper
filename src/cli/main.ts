@@ -56,7 +56,7 @@ const firstSentence = (text: string) => text.split(/(?<=\.)\s/)[0] ?? text
 const OWN_COMMANDS: [usage: string, summary: string][] = [
   ['mcp', 'Serve MCP on stdin and stdout, for an AI agent'],
   ['studio <folder>', 'Open the studio for a project and keep it running until Ctrl-C (--no-open skips the browser)'],
-  ['render <folder>', 'Render the clip and wait for it. Options: --codec prores|h264, --layers map,route,signs[,preview], --from <s> --to <s>'],
+  ['render <folder>', 'Render the clip and wait for it. Default is a flattened H.264 MP4. Options: --codec prores|h264, --layers map,route,signs[,preview], --from <s> --to <s>'],
   ['doctor', 'Check this machine and print a fix for anything missing'],
 ]
 
@@ -94,7 +94,7 @@ const OWN_HELP: Record<string, string> = {
   studio:
     'Usage: mapper studio <folder> [--no-open]\n\nRegisters the project, prints the studio URL on stdout and opens it (macOS) unless --no-open.\nKeeps running until Ctrl-C.',
   render:
-    'Usage: mapper render <folder> [--codec prores|h264] [--layers map,route,signs[,preview]] [--from <s> --to <s>]\n\nRenders and waits. --layers takes comma-separated names from map, route, signs, all and preview;\nmap, route and signs together also write a Final Cut Pro FCPXML. Progress goes to stderr, the result as JSON to stdout.\nCtrl-C cancels the render cleanly (exit 130).',
+    'Usage: mapper render <folder> [--codec prores|h264] [--layers map,route,signs[,preview]] [--from <s> --to <s>]\n\nRenders and waits. The default is one flattened H.264 MP4 (all.mp4); --codec prores makes a ProRes master (all.mov). --layers takes comma-separated names from map, route, signs, all and preview;\nmap, route and signs (always ProRes) together make the layered Final Cut Pro export and also write an FCPXML. Progress goes to stderr, the result as JSON to stdout.\nCtrl-C cancels the render cleanly (exit 130).',
   doctor: 'Usage: mapper doctor\n\nChecks Node, ffmpeg and its encoders, Chrome and WebGL, and free disk space. Exit code 1 if something required is missing.',
 }
 

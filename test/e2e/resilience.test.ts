@@ -57,7 +57,7 @@ async function videoFramePng(video: string, n: number): Promise<Buffer> {
 let baseline: Promise<string> | undefined
 /** The video of a 2-second render with no fault, to compare recovered renders against. */
 function baselineVideo(): Promise<string> {
-  baseline ??= writeFolder(greekIslands()).then(async (folder) => (await renderProject({ folder, range: { from: 0, to: 2 } })).video!)
+  baseline ??= writeFolder(greekIslands()).then(async (folder) => (await renderProject({ folder, codec: 'prores', range: { from: 0, to: 2 } })).video!)
   return baseline
 }
 
@@ -72,7 +72,7 @@ async function expectSameFrames(video: string, frames: number[]): Promise<void> 
 
 test('recovers from a lost WebGL context', async () => {
   const folder = await writeFolder(greekIslands())
-  const result = await renderProject({ folder, range: { from: 0, to: 2 }, faultAtFrame: 20 })
+  const result = await renderProject({ folder, codec: 'prores', range: { from: 0, to: 2 }, faultAtFrame: 20 })
   expect(result.frames).toBe(50)
   expect(Number((await probe(result.video!)).nb_read_frames)).toBe(50)
   const manifest = JSON.parse(readFileSync(result.manifest, 'utf8')) as Record<string, unknown>
@@ -86,7 +86,7 @@ test('recovers from a lost WebGL context', async () => {
 
 test('does not keep a frame captured after the context was lost', async () => {
   const folder = await writeFolder(greekIslands())
-  const result = await renderProject({ folder, range: { from: 0, to: 2 }, faultAfterRenderFrame: 20 })
+  const result = await renderProject({ folder, codec: 'prores', range: { from: 0, to: 2 }, faultAfterRenderFrame: 20 })
   expect(Number((await probe(result.video!)).nb_read_frames)).toBe(50)
   const manifest = JSON.parse(readFileSync(result.manifest, 'utf8')) as Record<string, unknown>
   expect(manifest.segments).toBe(2)
@@ -97,7 +97,7 @@ test('does not keep a frame captured after the context was lost', async () => {
 
 test('a render without a fault is a single segment', async () => {
   const folder = await writeFolder(greekIslands())
-  const result = await renderProject({ folder, range: { from: 0, to: 1 } })
+  const result = await renderProject({ folder, codec: 'prores', range: { from: 0, to: 1 } })
   const manifest = JSON.parse(readFileSync(result.manifest, 'utf8')) as Record<string, unknown>
   expect(manifest.segments).toBe(1)
   expect(manifest.recoveries).toBe(0)

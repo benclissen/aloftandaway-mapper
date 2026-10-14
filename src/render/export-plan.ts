@@ -25,19 +25,20 @@ const ORDER: LayerRequest[] = ['map', 'route', 'signs', 'all', 'preview']
 
 export function planExport(project: Project, args: {
   layers?: LayerRequest[]
+  /** Codec of the flattened `all` clip. Unset means H.264; isolated layers are always ProRes. */
   codec?: Codec
   range?: { from: number; to: number }
 }): ExportPlan {
   const layers = args.layers ?? ['all']
   const invalid = (message: string): never => {
-    throw new RenderError(message, 'Request unique layers from map, route, signs, all or preview. Isolated layers require ProRes; all and preview cannot be combined.')
+    throw new RenderError(message, 'Request unique layers from map, route, signs, all or preview. The codec option applies only to the flattened all clip; all and preview cannot be combined.')
   }
   if (layers.length === 0) invalid('Request at least one layer.')
   if (layers.some(layer => !ORDER.includes(layer))) invalid('Unknown render layer.')
   if (new Set(layers).size !== layers.length) invalid('Each layer may be requested only once.')
   if (layers.includes('all') && layers.includes('preview')) invalid('Do not combine all and preview.')
   if (args.codec === 'h264' && layers.some(layer => layer === 'map' || layer === 'route' || layer === 'signs')) {
-    invalid('Isolated layers require ProRes.')
+    invalid('Isolated layers are always ProRes, so the h264 codec only applies to the flattened clip.')
   }
 
   const scene = adaptV1Scene(project)
@@ -47,7 +48,7 @@ export function planExport(project: Project, args: {
   const directory = `01-${slug(project.name)}`
   const passes = ORDER.filter(layer => layers.includes(layer)).map(request => {
     const layer = request === 'preview' ? 'all' : request
-    const kind = request === 'preview' || (request === 'all' && args.codec === 'h264')
+    const kind = request === 'preview' || (request === 'all' && args.codec !== 'prores')
       ? 'h264' : request === 'route' || request === 'signs' ? 'prores-4444' : 'prores-hq'
     const path = request === 'preview' ? 'preview.mp4'
       : request === 'all' ? `all.${kind === 'h264' ? 'mp4' : 'mov'}` : `${directory}/${request}.mov`

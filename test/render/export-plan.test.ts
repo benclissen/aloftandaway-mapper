@@ -25,7 +25,9 @@ test('adapts a v1 project without changing its schema', () => {
 })
 
 test.each([
-  [undefined, undefined, [['all', 'prores-hq', 'all.mov']], false],
+  [undefined, undefined, [['all', 'h264', 'all.mp4']], false],
+  [['all'], undefined, [['all', 'h264', 'all.mp4']], false],
+  [undefined, 'prores', [['all', 'prores-hq', 'all.mov']], false],
   [['all'], 'h264', [['all', 'h264', 'all.mp4']], false],
   [['preview'], undefined, [['all', 'h264', 'preview.mp4']], false],
   [['signs', 'preview', 'map', 'route'], undefined, [
@@ -35,7 +37,8 @@ test.each([
     ['all', 'h264', 'preview.mp4'],
   ], true],
   [['route'], undefined, [['route', 'prores-4444', '01-greek-islands/route.mov']], false],
-  [['all', 'map'], undefined, [['map', 'prores-hq', '01-greek-islands/map.mov'], ['all', 'prores-hq', 'all.mov']], false],
+  [['all', 'map'], undefined, [['map', 'prores-hq', '01-greek-islands/map.mov'], ['all', 'h264', 'all.mp4']], false],
+  [['all', 'map'], 'prores', [['map', 'prores-hq', '01-greek-islands/map.mov'], ['all', 'prores-hq', 'all.mov']], false],
 ] as const)('plans layers %j with codec %s', (layers, codec, expected, fcpxml) => {
   const plan = planExport(greekIslands(), { layers: layers ? [...layers] : undefined, codec })
   expect(plan.passes.map(p => [p.layer, p.kind, p.path])).toEqual(expected)
@@ -48,7 +51,7 @@ test.each([[], ['map', 'map'], ['future'], ['all', 'preview']].map(layers => ({ 
 })
 
 test.each(['map', 'route', 'signs'] as const)('rejects H.264 for %s', layer => {
-  expect(() => planExport(greekIslands(), { layers: [layer], codec: 'h264' })).toThrow(/ProRes/i)
+  expect(() => planExport(greekIslands(), { layers: [layer], codec: 'h264' })).toThrow(/only applies to the flattened/i)
 })
 
 test.each([

@@ -78,7 +78,7 @@ test('agent flow end to end', async () => {
     const { url } = studio.structuredContent as { url: string }
     expect((await fetch(url)).status).toBe(200)
 
-    const started = await call('render', { folder, codec: 'h264', range: { from: 0, to: 2 } })
+    const started = await call('render', { folder, range: { from: 0, to: 2 } })
     const { jobId, dir } = started.structuredContent as { jobId: string; dir?: string }
     expect(dir).toContain(path.join(folder, 'renders'))
 

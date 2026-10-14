@@ -99,12 +99,12 @@ test('software WebGL is a warning and the exit code stays 0', async () => {
   expect(formatChecks(checks)).toContain('! WebGL')
 })
 
-test('low disk is a warning that names the cost of 4K ProRes', async () => {
+test('low disk is a warning that names the cost of H.264, ProRes and layers', async () => {
   const checks = await runDoctor({ ...healthy(), freeBytes: async () => 10e9 })
   expect(find(checks, 'Disk')).toMatchObject({
     ok: false,
     level: 'warn',
-    fix: '4K ProRes needs about 8.5 GB per minute of video.',
+    fix: expect.stringMatching(/H\.264.*ProRes.*4\.4 GB per minute/s),
   })
   expect(doctorExitCode(checks)).toBe(0)
 })

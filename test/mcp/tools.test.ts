@@ -256,7 +256,7 @@ describe('tools', () => {
     await call('set_stops', { folder, stops: STOPS })
     for (const [args, message] of [
       [{ layers: ['all', 'preview'] }, 'Do not combine all and preview'],
-      [{ layers: ['map', 'route'], codec: 'h264' }, 'Isolated layers require ProRes'],
+      [{ layers: ['map', 'route'], codec: 'h264' }, 'only applies to the flattened'],
     ] as const) {
       const result = await call('render', { folder, ...args })
       expect(result.isError, message).toBe(true)
@@ -282,8 +282,29 @@ describe('tools', () => {
   })
 })
 
+describe('render tool description', () => {
+  test('says H.264 MP4 is the default and where ProRes and layers fit', () => {
+    const description = TOOLS.find((tool) => tool.name === 'render')!.description
+    expect(description).toMatch(/default[^.]*H\.264 MP4/i)
+    expect(description).toContain("codec: 'prores'")
+    expect(description).toContain('layers')
+    expect(description).not.toMatch(/'prores' \(default\)/)
+  })
+
+  test('a layers-only render with no codec is accepted by the planner', async () => {
+    const { planExport } = await import('../../src/render/export-plan.js')
+    const { greekIslands } = await import('../fixtures/projects.js')
+    expect(() => planExport(greekIslands(), { layers: ['map', 'route', 'signs'] })).not.toThrow()
+  })
+})
+
 describe('render summaries', () => {
   const output = (request: string, layer: string, file: string) => ({ request, layer, path: `/r/${file}` }) as never
+
+  test('the done summary names the default MP4 as the video', async () => {
+    const summary = await doneSummary({ video: '/r/all.mp4', outputs: [], frames: 25, renderFps: 10, manifest: '/nonexistent/manifest.json', dir: '/r' } as never)
+    expect(summary).toContain('Video: /r/all.mp4')
+  })
 
   test('leftover labels outputs by what was requested', async () => {
     const lines = await leftover({

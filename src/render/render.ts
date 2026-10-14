@@ -106,7 +106,7 @@ export { joinParts } from './render-pass.js'
 
 /**
  * Renders the project in `folder` to `renders/<YYYY-MM-DD-HHmmss>/`, one pass per requested layer, with a
- * `manifest.json`. With no `layers`, that is the flattened `all.mov` (ProRes 422 HQ) or `all.mp4` (H.264). Isolated
+ * `manifest.json`. With no `layers`, that is the flattened `all.mp4` (H.264, the default) or, with `codec: 'prores'`, `all.mov` (ProRes 422 HQ). Isolated
  * layers go to `01-<project>/map.mov` (422 HQ), `route.mov` and `signs.mov` (4444 with alpha); `preview` is
  * `preview.mp4`. Every pass covers the same frames.
  *
@@ -116,14 +116,15 @@ export { joinParts } from './render-pass.js'
  */
 export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   const { folder, signal } = args
-  const codec = args.codec ?? 'prores'
+  // Only the flattened clip has a codec choice; planExport sees the raw option so isolated layers aren't read as h264.
+  const codec = args.codec ?? 'h264'
   assertAbsolute(folder)
   throwIfAborted(signal)
 
   const snapshot = await loadProject(folder)
   const hash = projectHash(snapshot)
   assertRenderable(snapshot)
-  const plan = planExport(snapshot, { layers: args.layers, codec, range: args.range })
+  const plan = planExport(snapshot, { layers: args.layers, codec: args.codec, range: args.range })
   const { fromFrame, toFrame } = plan.passes[0]!
   const frames = toFrame - fromFrame
   const size = frameSize(snapshot.output)
@@ -301,13 +302,14 @@ async function checkDisk(folder: string, passes: RenderPass[], size: { width: nu
   const free = Number(stats.bavail) * Number(stats.bsize)
   if (free >= neededBytes) return
   const gb = (bytes: number) => (bytes / GB).toFixed(1)
-  // H.264 has no alpha, so it is no substitute for the transparent layers.
+  // H.264 has no alpha, so it is no substitute for the transparent layers. A pass that is already H.264 has no cheaper codec.
   const isolated = passes.some((pass) => pass.layer !== 'all')
+  const hasProResClip = passes.some((pass) => pass.layer === 'all' && pass.kind !== 'h264')
   throw new RenderError(
     `Not enough disk space: the render needs about ${gb(neededBytes)} GB and ${gb(free)} GB is free.`,
-    isolated
+    isolated || !hasProResClip
       ? 'Free up disk space, render a shorter range, or lower the output resolution.'
-      : "Free up disk space, render a shorter range, lower the output resolution, or use codec: 'h264', which needs far less space.",
+      : "Free up disk space, render a shorter range, lower the output resolution, or use codec: 'h264' (the default), which needs far less space.",
   )
 }
 

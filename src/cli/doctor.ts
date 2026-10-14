@@ -183,7 +183,7 @@ export async function runDoctor(probes: Probes = realProbes): Promise<Check[]> {
     ok: diskOk,
     level: 'warn',
     detail: free === null ? `could not read free space for ${dir}` : `${gb(free)} free in ${dir}`,
-    ...(diskOk ? {} : { fix: '4K ProRes needs about 8.5 GB per minute of video.' }),
+    ...(diskOk ? {} : { fix: 'The default 4K H.264 MP4 needs well under 1 GB per minute. 4K ProRes and Final Cut layers need far more: the map layer alone is about 4.4 GB per minute at 25 fps.' }),
   })
 
   // FCPXML validation: optional, since flattened rendering works without Final Cut.

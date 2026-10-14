@@ -217,7 +217,7 @@ test('a DTD failure keeps the videos and the .tmp XML but publishes no final XML
 
 test('a render without layers is the legacy flattened clip', async () => {
   const folder = await writeFolder(greekIslands())
-  const result = await renderProject({ folder, range: { from: 0, to: 1 } })
+  const result = await renderProject({ folder, codec: 'prores', range: { from: 0, to: 1 } })
   expect(result.video).toBe(path.join(result.dir, 'all.mov'))
   expect(result.frames).toBe(25)
   expect(readdirSync(result.dir).sort()).toEqual(['all.mov', 'manifest.json'])

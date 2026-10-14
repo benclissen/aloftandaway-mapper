@@ -73,7 +73,7 @@ async function waitFor(jobId: string, done: (s: RenderStatus) => boolean, timeou
 
 test('renders a 2-second ProRes clip', async () => {
   const folder = await writeFolder(greekIslands())
-  const result = await renderProject({ folder, range: { from: 0, to: 2 } })
+  const result = await renderProject({ folder, codec: 'prores', range: { from: 0, to: 2 } })
   expect(result.dir.startsWith(path.join(folder, 'renders') + path.sep)).toBe(true)
   expect(path.basename(result.dir)).toMatch(/^\d{4}-\d{2}-\d{2}-\d{6}$/)
   expect(result.video).toBe(path.join(result.dir, 'all.mov'))
@@ -106,6 +106,14 @@ test('renders a 2-second ProRes clip', async () => {
     { sceneId: expect.any(String), request: 'all', layer: 'all', kind: 'prores-hq', path: 'all.mov', fromFrame: 0, toFrame: 50, frames: 50, segments: 1, recoveries: 0 },
   ])
   expect(result.outputs.map((o) => o.path)).toEqual([result.video])
+})
+
+test('renders a flattened H.264 MP4 by default', async () => {
+  const folder = await writeFolder(greekIslands())
+  const result = await renderProject({ folder, range: { from: 0, to: 1 } })
+  expect(result.video).toBe(path.join(result.dir, 'all.mp4'))
+  expect((await ffprobe(result.video!)).codec_name).toBe('h264')
+  expect(readManifest(result.manifest)).toMatchObject({ codec: 'h264', status: 'done' })
 })
 
 test('renders H.264', async () => {

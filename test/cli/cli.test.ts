@@ -175,6 +175,12 @@ test('render --help documents --layers', async () => {
   expect(stdout).toContain('--layers map,route,signs[,preview]')
 })
 
+test('render --help says H.264 MP4 is the default', async () => {
+  const { stdout } = await mapper('render', '--help')
+  expect(stdout).toMatch(/default[^\n]*H\.264 MP4/i)
+  expect(stdout).toContain('--codec prores')
+})
+
 test('a failed render prints the error and what it left behind once, with no cancellation', async () => {
   const folder = path.join(tmp, 'failed')
   await mapper('create-project', '--json', JSON.stringify({ folder, name: 'Failed' }))

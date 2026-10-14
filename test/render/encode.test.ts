@@ -217,6 +217,17 @@ test('a failed join leaves nothing under the final name and no temporary file', 
   expect(readdirSync(dir)).toEqual([])
 })
 
+test('a missing segment fails the join and leaves nothing under the final name', async () => {
+  const dir = path.join(tempDir, 'missing-part')
+  await mkdir(dir)
+  const parts = [path.join(dir, 'all.part1.mov'), path.join(dir, 'all.part2.mov')]
+  await encode({ codec: 'prores', fps: { num: 25, den: 1 }, frames: 7, out: parts[0]! })
+  const out = path.join(dir, 'all.mov')
+  await expect(joinSegments({ parts, out, codec: 'prores' })).rejects.toThrow(/Could not join/)
+  expect(existsSync(out)).toBe(false)
+  expect(readdirSync(dir)).toEqual(['all.part1.mov'])
+})
+
 /** Decodes the first frame of `file` to 8-bit RGBA with the inverse of the encoder's BT.709 conversion. */
 async function decodeRgba(file: string): Promise<Buffer> {
   const { stdout } = await run(

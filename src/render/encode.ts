@@ -108,6 +108,7 @@ export async function joinSegments(args: { parts: string[]; out: string; codec: 
       '-nostats',
       '-loglevel',
       'error',
+      '-xerror',
       '-y',
       '-f',
       'concat',

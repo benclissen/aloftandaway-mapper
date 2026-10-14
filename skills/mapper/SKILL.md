@@ -107,8 +107,8 @@ clip, the default) and `preview` (an H.264 check clip). From a shell:
   label or `Day N · name`. With `range`, times count from the range start, and
   frames run from `floor(from × fps)` to `ceil(to × fps)`.
 - No FCPXML unless `map`, `route` and `signs` are all requested. They need
-  ProRes, so `codec: "h264"` with them is an error (`codec` only applies to
-  the flattened `all` clip, which is H.264 unless you pass `codec: "prores"`).
+  ProRes. `codec` only applies to the flattened `all` clip, which is H.264
+  unless you pass `codec: "prores"`, so `codec: "h264"` without `all` is an error.
   They need far more disk than the default MP4: the map layer is about 4.4 GB
   per minute at 4K25. `all` and `preview` can't
   be combined.

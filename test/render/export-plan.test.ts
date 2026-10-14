@@ -54,6 +54,14 @@ test.each(['map', 'route', 'signs'] as const)('rejects H.264 for %s', layer => {
   expect(() => planExport(greekIslands(), { layers: [layer], codec: 'h264' })).toThrow(/only applies to the flattened/i)
 })
 
+test('accepts H.264 for the flattened clip alongside layers', () => {
+  const plan = planExport(greekIslands(), { layers: ['map', 'route', 'signs', 'all'], codec: 'h264' })
+  expect(plan.passes.map(p => [p.request, p.kind])).toEqual([
+    ['map', 'prores-hq'], ['route', 'prores-4444'], ['signs', 'prores-4444'], ['all', 'h264'],
+  ])
+  expect(plan.fcpxml).toBe(true)
+})
+
 test.each([
   ['../../Crème & Cruise / <2026>', 'creme-cruise-2026'],
   ['日本語', 'project'],

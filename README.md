@@ -85,8 +85,8 @@ if you move the render folder, Final Cut asks you to relink.
   `description`, it also goes in the compound's notes, but put it in the video
   description too.
 - Without all of `map`, `route` and `signs` there is no FCPXML. The layers are
-  always ProRes, so `--codec h264` with them is an error; `--codec` only
-  applies to the flattened clip.
+  always ProRes; `--codec` only applies to the flattened clip, so
+  `--codec h264` is an error unless `all` is requested too.
 - Layers need far more disk than the default: the map layer is about 4.4 GB
   per minute at 4K25.
 - Cancelling or a failure keeps the layers that finished, and the manifest

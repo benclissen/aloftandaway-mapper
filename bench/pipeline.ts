@@ -42,6 +42,8 @@ async function pass(label: string, folder: string): Promise<Pass> {
   const result = await renderProject({
     folder,
     range: CLIP,
+    // Pinned: the default is now H.264, and the baseline and report are ProRes 422 HQ.
+    codec: 'prores',
     onProgress: (p) => {
       if (p.frame - lastLog >= 50 || p.frame === p.totalFrames) {
         lastLog = p.frame

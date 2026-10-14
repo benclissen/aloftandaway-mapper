@@ -101,12 +101,12 @@ or `Day N · name`, or its name. A marker is one frame long, on the map clip.
 - With Final Cut Pro installed, `xmllint` must be on the PATH. A render
   checks for it first and stops before it starts Chrome or creates a render
   folder.
-- Disk space: before it starts, a render estimates what it needs (about 1 byte
+- Disk space: before it starts, a render estimates what it needs (about 0.2 bytes
   per pixel per frame for ProRes 4444, 0.45 for 422 HQ, 0.03 for the default
   H.264, with a 1.5 margin) plus room to join the largest file. Measured
   sizes for 3 s of 4K25: 222 MB map, 10 MB route and 18 MB signs. A busy map
   layer runs to about 4.4 GB per minute at 4K25, so the estimate is the safe
-  number to plan around: a 30 s 4K25 layered export needs about 32 GB free.
+  number to plan around: a 30 s 4K25 layered export needs about 12 GB free.
 
 ## Acceptance record
 

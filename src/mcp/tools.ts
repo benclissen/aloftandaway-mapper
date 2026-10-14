@@ -399,7 +399,7 @@ export const TOOLS: ToolDef<any>[] = [
       folder,
       codec: z.enum(['prores', 'h264']).optional().describe("Codec of the flattened clip: h264 (default) or prores. Isolated layers are always ProRes"),
       range: z.strictObject({ from: z.number().min(0), to: z.number().min(0) }).optional(),
-      layers: LayersSchema.optional().describe("Any of map, route, signs, all (the flattened clip, default) or preview (H.264 check clip). All can't join preview; map, route and signs are always ProRes, so don't pair them with codec h264"),
+      layers: LayersSchema.optional().describe("Any of map, route, signs, all (the flattened clip, default) or preview (H.264 check clip). All can't join preview; map, route and signs are always ProRes, so codec h264 needs all alongside them"),
     }),
     async run({ folder, codec, range, layers }) {
       const id = startRenderJob({ folder, codec, range, layers })

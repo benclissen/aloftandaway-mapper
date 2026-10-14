@@ -12,12 +12,12 @@ const pass = (layer: 'map' | 'route' | 'signs', kind: RenderPass['kind']): Rende
   toFrame: 750,
 })
 
-test('a 30 s 4K25 map+route+signs export is estimated near 32 GB, not 60 GB', () => {
+test('a 30 s 4K25 map+route+signs export is estimated near 12 GB', () => {
   const passes = [pass('map', 'prores-hq'), pass('route', 'prores-4444'), pass('signs', 'prores-4444')]
   const { bytes, neededBytes } = estimateDiskBytes(passes, { width: 3840, height: 2160 })
   const px = 750 * 3840 * 2160
-  expect(bytes[1]).toBeCloseTo(px * 1.0 * 1.5, -3)
+  expect(bytes[1]).toBeCloseTo(px * 0.2 * 1.5, -3)
   // Every pass again for the margin is not counted; only the largest one, for the join.
-  expect(neededBytes / 1e9).toBeGreaterThan(30)
-  expect(neededBytes / 1e9).toBeLessThan(35)
+  expect(neededBytes / 1e9).toBeGreaterThan(11)
+  expect(neededBytes / 1e9).toBeLessThan(13)
 })

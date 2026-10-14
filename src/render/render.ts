@@ -27,11 +27,11 @@ import { errorMessage, renderPass, throwIfAborted } from './render-pass.js'
 /** Progress fps is averaged over this many frames. */
 const FPS_WINDOW = 25
 /**
- * Estimated bytes per pixel per frame, before the safety margin. Apple's published ProRes 4444 rate at 4096×2160 24p
- * is about 1131 Mb/s without alpha, roughly 0.67 B/px; 1.0 leaves headroom for the alpha channel. The 4K acceptance
- * outputs measured 0.016–0.028 B/px, since flat map layers compress far below the nominal rate.
+ * Estimated bytes per pixel per frame, before the safety margin. Route and signs are the only ProRes 4444 layers, and
+ * they are mostly transparent: the 4K acceptance outputs measured 0.016–0.028 B/px, far below Apple's nominal rate
+ * (about 0.67 B/px at 4096×2160 24p). 0.2 leaves about seven times the busiest measured layer.
  */
-const BYTES_PER_PIXEL: Record<MediaKind, number> = { 'prores-hq': 0.45, 'prores-4444': 1, h264: 0.03 }
+const BYTES_PER_PIXEL: Record<MediaKind, number> = { 'prores-hq': 0.45, 'prores-4444': 0.2, h264: 0.03 }
 const DISK_MARGIN = 1.5
 const GB = 1e9
 const RENDERS_DIR = 'renders'

@@ -37,7 +37,7 @@ export function planExport(project: Project, args: {
   if (layers.some(layer => !ORDER.includes(layer))) invalid('Unknown render layer.')
   if (new Set(layers).size !== layers.length) invalid('Each layer may be requested only once.')
   if (layers.includes('all') && layers.includes('preview')) invalid('Do not combine all and preview.')
-  if (args.codec === 'h264' && layers.some(layer => layer === 'map' || layer === 'route' || layer === 'signs')) {
+  if (args.codec === 'h264' && !layers.includes('all') && layers.some(layer => layer === 'map' || layer === 'route' || layer === 'signs')) {
     invalid('Isolated layers are always ProRes, so the h264 codec only applies to the flattened clip.')
   }
 

@@ -17,6 +17,7 @@ import {
   type Look,
   type Project,
   type Route,
+  type RenderLayer,
   type Timeline,
 } from '../../core/index.js'
 import { CREDIT_FONT, drawOverlay, SIGN_FONT, signText } from './overlay.js'
@@ -26,6 +27,7 @@ import { buildStyle } from './themes.js'
 setWorkerUrl(workerUrl)
 
 export interface MapStageOptions {
+  layer?: RenderLayer
   /** Device px per layout px. */
   pixelRatio: number
   interactive: boolean
@@ -118,6 +120,7 @@ export class MapStage {
   private readonly opts: MapStageOptions
   private loaded: Loaded | undefined
   private styleKey: string | undefined
+  private baseVisibility = new Map<string, NonNullable<NonNullable<LayerSpecification['layout']>['visibility']>>()
   private routeLayerIds: string[] = []
   /** The first map error since the last frame: a tile, TileJSON or glyph request that failed. */
   private mapError: Error | undefined
@@ -159,6 +162,7 @@ export class MapStage {
     this.map.on('error', ({ error }) => {
       this.mapError ??= error instanceof Error ? error : new Error(String(error))
     })
+    if (opts.layer === 'signs') this.map.getCanvas().style.visibility = 'hidden'
     this.sizeOverlay()
   }
 
@@ -190,6 +194,9 @@ export class MapStage {
           diff: false,
         })
         await styled
+        this.baseVisibility = new Map(
+          this.map.getStyle().layers.map((layer) => [layer.id, layer.layout?.visibility ?? 'visible']),
+        )
         this.styleKey = styleKey
         this.map.addSource(ROUTE_SOURCE, { type: 'geojson', data: emptyCollection() })
         this.map.addSource(HEAD_SOURCE, { type: 'geojson', data: emptyCollection() })
@@ -199,6 +206,7 @@ export class MapStage {
       const layers = routeLayers(project.look)
       for (const layer of layers) this.map.addLayer(layer)
       this.routeLayerIds = layers.map((l) => l.id)
+      this.applyLayerVisibility()
 
       await this.loadFonts(project)
       this.loaded = { project, route, timeline }
@@ -247,7 +255,7 @@ export class MapStage {
     if (!ctx) throw new Error('The browser could not create a 2D canvas.')
     // The WebGL drawing buffer is only readable during the task that drew it, so draw now.
     this.map.redraw()
-    ctx.drawImage(mapCanvas, 0, 0)
+    if (this.opts.layer !== 'signs') ctx.drawImage(mapCanvas, 0, 0)
     ctx.drawImage(this.overlay, 0, 0, out.width, out.height)
     return out
   }
@@ -255,6 +263,16 @@ export class MapStage {
   destroy(): void {
     this.map.remove()
     this.container.replaceChildren()
+  }
+
+  private applyLayerVisibility(): void {
+    const layer = this.opts.layer ?? 'all'
+    for (const [id, visibility] of this.baseVisibility) {
+      this.map.setLayoutProperty(id, 'visibility', layer === 'map' || layer === 'all' ? visibility : 'none')
+    }
+    for (const id of this.routeLayerIds) {
+      this.map.setLayoutProperty(id, 'visibility', layer === 'route' || layer === 'all' ? 'visible' : 'none')
+    }
   }
 
   private require(): Loaded {
@@ -329,6 +347,7 @@ export class MapStage {
         return [p.x, p.y]
       },
       pixelRatio: this.opts.pixelRatio,
+      layer: this.opts.layer,
     })
   }
 

@@ -1,4 +1,4 @@
-import { parseProject, type Project } from '../core/index.js'
+import { parseProject, type Project, type RenderLayer, type RenderPageOptions } from '../core/index.js'
 import { CREDIT_FONT, SIGN_FONT } from './stage/overlay.js'
 import { MapStage } from './stage/MapStage.js'
 
@@ -13,7 +13,7 @@ export interface MapperPage {
    */
   load(
     project: Project,
-    opts: { pixelRatio: number; faultAtFrame?: number; faultAfterRenderFrame?: number },
+    opts: { pixelRatio: number } & RenderPageOptions,
   ): Promise<{ frameCount: number }>
   /** 0 until a project is loaded. */
   readonly frameCount: number
@@ -57,6 +57,7 @@ export function startRenderMode(root: HTMLElement): void {
   const ready = fontsReady()
   let stage: MapStage | undefined
   let stageRatio = 0
+  let stageLayer: RenderLayer = 'all'
   // Destroying a stage loses its WebGL context on purpose; only an unexpected loss is a crash.
   let stopWatchingContext: (() => void) | undefined
   let faultAtFrame: number | undefined
@@ -67,15 +68,16 @@ export function startRenderMode(root: HTMLElement): void {
     get frameCount() {
       return stage ? stage.frameCount : 0
     },
-    async load(input, { pixelRatio, faultAtFrame: fault, faultAfterRenderFrame: faultAfter }) {
+    async load(input, { pixelRatio, layer = 'all', faultAtFrame: fault, faultAfterRenderFrame: faultAfter }) {
       if (!(pixelRatio > 0)) throw new RangeError(`pixelRatio must be positive, got ${pixelRatio}`)
       const project = parseProject(input)
       await ready
-      if (!stage || stageRatio !== pixelRatio) {
+      if (!stage || stageRatio !== pixelRatio || stageLayer !== layer) {
         stopWatchingContext?.()
         stage?.destroy()
-        stage = new MapStage(root, { pixelRatio, interactive: false, tileBase })
+        stage = new MapStage(root, { pixelRatio, interactive: false, tileBase, layer })
         stageRatio = pixelRatio
+        stageLayer = layer
         const canvas = stage.map.getCanvas()
         const onLost = () => window.__mapperContextLost?.()
         canvas.addEventListener('webglcontextlost', onLost)

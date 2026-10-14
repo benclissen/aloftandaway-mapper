@@ -1,4 +1,4 @@
-import { MAP_CREDIT, type FrameState, type LngLat, type Project, type Stop } from '../../core/index.js'
+import { MAP_CREDIT, type FrameState, type LngLat, type Project, type Stop, type RenderLayer } from '../../core/index.js'
 
 /** Fonts the overlay draws with. Callers load them before drawing so text never falls back mid-render. */
 export const SIGN_FONT = '600 26px Inter'
@@ -24,6 +24,7 @@ const TAG = {
 const CREDIT = { margin: 16, fill: 'rgba(255, 255, 255, 0.92)', halo: 'rgba(20, 24, 32, 0.7)', haloWidth: 3 }
 
 export interface OverlayArgs {
+  layer?: RenderLayer
   project: Project
   state: FrameState
   /** Layout-px position of a coordinate on the current map view. */
@@ -44,19 +45,27 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, args: OverlayArgs): v
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height)
   ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
 
+  const layer = args.layer ?? 'all'
+  const dots = layer === 'route' || layer === 'all'
+  const signs = layer === 'signs' || layer === 'all'
+  const credit = layer === 'map' || layer === 'all'
   const color = project.look.line.color
-  for (const stop of project.stops) {
-    drawDot(ctx, project2px(stop.at), stop.terminal ? DOT_RADIUS * TERMINAL_SCALE : DOT_RADIUS, color)
+  if (dots) {
+    for (const stop of project.stops) {
+      drawDot(ctx, project2px(stop.at), stop.terminal ? DOT_RADIUS * TERMINAL_SCALE : DOT_RADIUS, color)
+    }
   }
 
   const stops = new Map(project.stops.map((s) => [s.id, s]))
-  for (const sign of state.signs) {
-    const stop = stops.get(sign.stopId)
-    if (!stop || sign.opacity <= 0) continue
-    drawTag(ctx, project2px(stop.at), signText(stop), sign.opacity)
+  if (signs) {
+    for (const sign of state.signs) {
+      const stop = stops.get(sign.stopId)
+      if (!stop || sign.opacity <= 0) continue
+      drawTag(ctx, project2px(stop.at), signText(stop), sign.opacity)
+    }
   }
 
-  if (project.credit === 'burned') drawCredit(ctx, width, height)
+  if (credit && project.credit === 'burned') drawCredit(ctx, width, height)
 }
 
 function drawDot(ctx: CanvasRenderingContext2D, [x, y]: [number, number], radius: number, color: string): void {

@@ -1,5 +1,5 @@
 import type { Browser, BrowserContext, Page } from 'playwright'
-import { layoutSize, MAP_DATA_ERROR, type Aspect, type Project } from '../core/index.js'
+import { layoutSize, MAP_DATA_ERROR, type Aspect, type Project, type RenderPageOptions } from '../core/index.js'
 import { EnvironmentError } from '../server/errors.js'
 import { getServer } from '../server/server.js'
 import { capturePng } from './capture.js'
@@ -27,7 +27,7 @@ interface MapperHandle {
   ready: Promise<void>
   load(
     project: Project,
-    opts: { pixelRatio: number; faultAtFrame?: number; faultAfterRenderFrame?: number },
+    opts: { pixelRatio: number } & RenderPageOptions,
   ): Promise<{ frameCount: number }>
   renderFrame(n: number): Promise<void>
   contextLost(): boolean
@@ -45,6 +45,7 @@ export class RenderPage {
   private readonly crashHandlers: (() => void)[] = []
   private pixelRatio: number | undefined
   private closed = false
+  private transparent = false
 
   private constructor(args: { aspect: Aspect; context: BrowserContext; page: Page }) {
     this.aspect = args.aspect
@@ -78,19 +79,20 @@ export class RenderPage {
   async load(
     project: Project,
     pixelRatio: number,
-    opts: { faultAtFrame?: number; faultAfterRenderFrame?: number } = {},
+    opts: RenderPageOptions = {},
   ): Promise<number> {
     const { frameCount } = await this.page
       .evaluate(
-        async ([input, ratio, fault, faultAfter]) => {
+        async ([input, ratio, options]) => {
           const mapper = (globalThis as unknown as { mapper: MapperHandle }).mapper
           await mapper.ready
-          return mapper.load(input, { pixelRatio: ratio, faultAtFrame: fault, faultAfterRenderFrame: faultAfter })
+          return mapper.load(input, { pixelRatio: ratio, ...options })
         },
-        [project, pixelRatio, opts.faultAtFrame, opts.faultAfterRenderFrame] as const,
+        [project, pixelRatio, opts] as const,
       )
       .catch(rethrowTyped)
     this.pixelRatio = pixelRatio
+    this.transparent = opts.layer === 'route' || opts.layer === 'signs'
     return frameCount
   }
 
@@ -109,7 +111,7 @@ export class RenderPage {
   /** The current frame as a PNG at the pixel ratio of the last `load`. */
   async capturePng(): Promise<Buffer> {
     if (this.pixelRatio === undefined) throw new Error('Call load() before capturePng().')
-    return capturePng(this.page, { ...layoutSize(this.aspect), pixelRatio: this.pixelRatio })
+    return capturePng(this.page, { ...layoutSize(this.aspect), pixelRatio: this.pixelRatio, transparent: this.transparent })
   }
 
   /** Calls `cb` when the page crashes or its WebGL context is lost. */

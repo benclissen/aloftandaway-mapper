@@ -9,6 +9,13 @@ grows to about 20 and the map styles to 9. Projects gain scenes. These need
 project file version 2, which upgrades version 1 files on load. The build
 stages were reordered to fit.
 
+**Revision, 2026-10-14 (output):** the default render is a flattened H.264 MP4
+(`all.mp4`). Layered ProRes plus FCPXML for Final Cut Pro is optional, asked for
+with `layers`; a flattened ProRes master is `codec: 'prores'`. `codec` applies
+only to the flattened clip. The layers are always ProRes, and an explicit
+`h264` codec with them is an error. The rendering and output sections below
+describe the layered export unless they say otherwise.
+
 ## Purpose
 
 Mapper turns a trip into an animated map clip for a travel film. An AI agent
@@ -56,7 +63,7 @@ layered clip with an FCPXML file.
 | Agent interface | MCP server (stdio) plus a CLI with the same commands, plus an agent skill | Works in every MCP client; scripts can use the CLI |
 | Source of truth | One project file per map, on disk | Agent and human edit the same thing; easy to version |
 | Rendering | Headless Chrome runs the studio page in render mode; frames go to ffmpeg | Preview and render share code |
-| Output | ProRes layers plus FCPXML, with optional H.264 preview | What Final Cut handles best |
+| Output | Flattened H.264 MP4 by default; optional ProRes layers plus FCPXML, and an optional H.264 preview | One simple file by default; layers are what Final Cut handles best |
 | Defaults | 3840×2160, 25 fps, 16:9 | The user's usual Final Cut format |
 | Coordinates | `[lng, lat]` in WGS84 (GeoJSON order) | Agents and data sources speak lat/lng; Mercator maths stays internal |
 | Trip data | Supplied by the agent as stops, or read from a GPX file | Mapper knows no data sources; the agent fetches data from wherever the user points it |
@@ -432,9 +439,10 @@ Studio render mode (`?mode=render&scene=<id>&layer=map|route|signs|all`):
   from the failed frame into a new segment. Segments are joined losslessly
   with ffmpeg's concat demuxer.
 - Cancelling stops the job and keeps any finished layers.
-- Free disk space is checked first, from an estimate of the ProRes bitrate.
+- Free disk space is checked first, from an estimate of the bitrate of each output (H.264 for the default MP4, ProRes for layers).
 
-**Output folder**: `renders/<YYYY-MM-DD-HHmmss>/` containing one folder per
+**Output folder**: `renders/<YYYY-MM-DD-HHmmss>/`. By default it holds `all.mp4`
+(or `all.mov` with `codec: 'prores'`) and `manifest.json`. A layered export has one folder per
 scene (`01-<scene-slug>/map.mov`, `route.mov`, `signs.mov`), plus
 `preview.mp4` (if requested; every rendered scene joined), `<name>.fcpxml`
 and `manifest.json`. A one-scene project still gets one scene folder.

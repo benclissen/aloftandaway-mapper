@@ -2,7 +2,7 @@
 
 Animated map videos of Aloft & Away trips, built by your AI agent. Ask Claude
 (or any MCP-capable agent) for a map. It plans the route and camera, shows you
-a local preview to tweak, and renders a clip you can drop into Final Cut Pro.
+a local preview to tweak, and renders an H.264 MP4, or optional layers for Final Cut Pro.
 Everything runs on your machine; nothing is hosted.
 
 Mapper is an independent build. It takes its feature set from
@@ -19,11 +19,13 @@ Stage 1 (agent-driven MVP) built. What works today:
 - A local studio for scrubbing the preview, dragging stops and setting start
   and end shots.
 - Contact sheets and single-frame previews, so the agent can check its work.
-- Renders at 3840×2160 and 25 fps by default, as flattened ProRes 422 HQ or
-  H.264, with the map credit burned in.
-- Stage 2 (Final Cut export, built, not yet accepted in Final Cut Pro):
-  renders the map, route and signs as separate ProRes layers, with an
-  FCPXML that rebuilds them in Final Cut Pro. See below.
+- Renders at 3840×2160 and 25 fps by default, as one flattened H.264 MP4
+  (`all.mp4`) with the map credit burned in. `--codec prores` makes a
+  flattened ProRes 422 HQ master instead.
+- Stage 2 (optional Final Cut export): renders the map, route and signs as
+  separate ProRes layers, with an FCPXML that rebuilds them in Final Cut Pro.
+  The default MP4 path is done; the Final Cut import check is still
+  outstanding for the layered export only. See below.
 - Not yet: sea and air routing (those legs draw as straight lines), the follow
   camera, terrain, vehicle symbols, GPX import.
 
@@ -50,7 +52,10 @@ Register Mapper as an MCP server (`mapper mcp`), then ask your agent for a map.
 workflow, the rules, and setup for Claude Code, Claude Desktop, Codex and
 Cursor.
 
-## Final Cut Pro export
+## Final Cut Pro export (optional)
+
+A plain `mapper render <folder>` writes `all.mp4`. Ask for layers only when you
+want to rebuild the clip in Final Cut Pro.
 
 ```bash
 mapper render /absolute/path/to/project --layers map,route,signs
@@ -79,8 +84,11 @@ if you move the render folder, Final Cut asks you to relink.
 - The map credit is still required. If the project's `credit` is
   `description`, it also goes in the compound's notes, but put it in the video
   description too.
-- Without all of `map`, `route` and `signs` there is no FCPXML. `h264` can't
-  make the isolated layers.
+- Without all of `map`, `route` and `signs` there is no FCPXML. The layers are
+  always ProRes, so `--codec h264` with them is an error; `--codec` only
+  applies to the flattened clip.
+- Layers need far more disk than the default: the map layer is about 4.4 GB
+  per minute at 4K25.
 - Cancelling or a failure keeps the layers that finished, and the manifest
   lists them.
 - One scene per project for now.
@@ -97,8 +105,8 @@ Details, tool versions and the manual import checklist are in
 | Map rendering | [MapLibre GL JS](https://maplibre.org/) |
 | Vector tiles | [OpenFreeMap](https://openfreemap.org/) (OpenStreetMap data) |
 | Rendering | Headless Chrome driven over CDP (Playwright), screenshots piped into ffmpeg |
-| Output, stage 1 | One flattened clip: ProRes 422 HQ or H.264 |
-| Output, stage 2 | ProRes layers (map, route and signs with alpha) and FCPXML for Final Cut Pro |
+| Output, default | One flattened H.264 MP4 (ProRes 422 HQ with `--codec prores`) |
+| Output, optional | ProRes layers (map, route and signs with alpha) and FCPXML for Final Cut Pro |
 | Satellite (later) | [EOxCloudless 2016](https://cloudless.eox.at/) (CC BY 4.0) |
 | Elevation (later) | [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) |
 | Storage | A project folder on disk |

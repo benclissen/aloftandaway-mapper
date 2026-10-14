@@ -25,9 +25,11 @@ page.
    stops and set start and end shots. It doesn't open a browser itself.
 8. When the user says they're done, call `get_project` and look at the contact
    sheet again, because their edits are now in the project.
-9. `render` returns a `jobId`. For Final Cut Pro, pass
-   `layers: ["map","route","signs"]` (see "Final Cut Pro export"). Poll
-   `render_status` every few seconds.
+9. `render` returns a `jobId`. Render the default flattened H.264 MP4 unless
+   the user asks for Final Cut layers or a ProRes master. For layers, pass
+   `layers: ["map","route","signs"]` (see "Final Cut Pro export"); for a
+   flattened ProRes master, pass `codec: "prores"`. Poll `render_status` every
+   few seconds.
 10. Report the output paths and the required credit.
 
 `get_project` reads the current state at any point.
@@ -71,16 +73,16 @@ page.
 Each render gets its own folder under the project:
 
 ```
-<project>/renders/<timestamp>/all.mov   (ProRes 422 HQ, the default)
-<project>/renders/<timestamp>/all.mp4   (when codec is 'h264')
+<project>/renders/<timestamp>/all.mp4   (H.264, the default)
+<project>/renders/<timestamp>/all.mov   (when codec is 'prores': ProRes 422 HQ)
 <project>/renders/<timestamp>/manifest.json
 ```
 
 The manifest records the settings and where the credit went.
 
-## Final Cut Pro export
+## Final Cut Pro export (optional)
 
-Pass `layers` to `render`: any of `map`, `route`, `signs`, `all` (the flattened
+Only when the user asks for it. Pass `layers` to `render`: any of `map`, `route`, `signs`, `all` (the flattened
 clip, the default) and `preview` (an H.264 check clip). From a shell:
 `mapper render <folder> --layers map,route,signs,preview --from 2 --to 4`.
 
@@ -105,7 +107,10 @@ clip, the default) and `preview` (an H.264 check clip). From a shell:
   label or `Day N · name`. With `range`, times count from the range start, and
   frames run from `floor(from × fps)` to `ceil(to × fps)`.
 - No FCPXML unless `map`, `route` and `signs` are all requested. They need
-  ProRes, so `codec: "h264"` with them is an error. `all` and `preview` can't
+  ProRes, so `codec: "h264"` with them is an error (`codec` only applies to
+  the flattened `all` clip, which is H.264 unless you pass `codec: "prores"`).
+  They need far more disk than the default MP4: the map layer is about 4.4 GB
+  per minute at 4K25. `all` and `preview` can't
   be combined.
 - A cancelled or failed render keeps the layers that finished. The status
   lists them and the manifest records them. There is no FCPXML.

@@ -1,7 +1,8 @@
 # Final Cut export
 
-Mapper can render a clip as separate layers and write an FCPXML that rebuilds
-them in Final Cut Pro. This page covers the commands, what lands on disk, how
+This is the optional layered export. By default `mapper render` writes one
+flattened H.264 MP4 (`all.mp4`); use the options here only when you want
+separate layers and an FCPXML that rebuilds them in Final Cut Pro. This page covers the commands, what lands on disk, how
 the FCPXML is laid out, and what has and hasn't been verified.
 
 ## Render layers
@@ -10,7 +11,8 @@ the FCPXML is laid out, and what has and hasn't been verified.
 mapper render /absolute/path/to/project --layers map,route,signs
 mapper render /absolute/path/to/project --layers map,route,signs,preview
 mapper render /absolute/path/to/project --layers map,route,signs --from 2 --to 4
-mapper render /absolute/path/to/project --codec h264      # flattened H.264, no layers
+mapper render /absolute/path/to/project                   # default: flattened H.264 all.mp4
+mapper render /absolute/path/to/project --codec prores    # flattened ProRes 422 HQ all.mov
 ```
 
 The MCP `render` tool takes the same options:
@@ -21,10 +23,11 @@ The MCP `render` tool takes the same options:
 
 `layers` takes any of `map`, `route`, `signs`, `all` and `preview`, each once.
 
-- `all` is the flattened clip, and the default when `layers` is left out.
+- `all` is the flattened clip, and the default when `layers` is left out. It
+  is H.264 (`all.mp4`) unless you pass `codec: prores` (`all.mov`).
 - `preview` is a flattened H.264 check clip. Don't combine it with `all`.
-- `map`, `route` and `signs` need ProRes. Asking for them with `--codec h264`
-  is an error.
+- `map`, `route` and `signs` are always ProRes, and need no codec. Asking for
+  them with `--codec h264` is an error: `codec` only applies to `all`.
 - The FCPXML is written only when `map`, `route` and `signs` are all
   requested. Any smaller set renders just those files.
 
@@ -99,10 +102,11 @@ or `Day N · name`, or its name. A marker is one frame long, on the map clip.
   checks for it first and stops before it starts Chrome or creates a render
   folder.
 - Disk space: before it starts, a render estimates what it needs (about 1 byte
-  per pixel per frame for ProRes 4444, 0.45 for 422 HQ, with a 1.5 margin) plus
-  room to join the largest file. Flat map layers come out much smaller than the
-  estimate. For example, a 30 s 4K25 map, route and signs export needs about
-  32 GB free.
+  per pixel per frame for ProRes 4444, 0.45 for 422 HQ, 0.03 for the default
+  H.264, with a 1.5 margin) plus room to join the largest file. Measured
+  sizes for 3 s of 4K25: 222 MB map, 10 MB route and 18 MB signs. A busy map
+  layer runs to about 4.4 GB per minute at 4K25, so the estimate is the safe
+  number to plan around: a 30 s 4K25 layered export needs about 32 GB free.
 
 ## Acceptance record
 
@@ -231,8 +235,9 @@ frames 0 and 58, Scene Two one at frame 72, and scene two starts at
 ### Outstanding manual acceptance
 
 Final Cut Pro was not launched, so none of the following has been checked.
-DTD success does not stand in for it. Stage 2 stays open in
-[plan.md](plan.md) until these pass. Use a disposable library.
+DTD success does not stand in for it. This checklist applies only to the
+optional layered export; the default MP4 path doesn't depend on it, and it
+doesn't block Stage 2 (see [plan.md](plan.md)). Use a disposable library.
 
 1. Import `$T/proj-a/renders/<timestamp>/synthetic-isles.fcpxml` (File > Import > XML). Check the
    `Mapper` event holds a compound clip and a project, and the media isn't

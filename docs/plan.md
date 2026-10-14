@@ -8,11 +8,17 @@ something that works.
 | # | Stage | Done when |
 |---|---|---|
 | 1 | **Agent-driven MVP** (built): schema, timeline, preview studio, local server, MCP tools and CLI, `mapper doctor`, flattened render | An agent creates a project from typed-in stops, checks a contact sheet, the user tweaks it in the studio, and it renders a 4K 25p clip |
-| 2 | **Final Cut export**: layer passes, ProRes 4444 with alpha, FCPXML with lanes, roles and markers | Double-clicking the FCPXML gives a three-layer compound clip with arrival markers |
+| 2 | **Final Cut export** (optional; the default render is a flattened H.264 MP4): layer passes, ProRes 4444 with alpha, FCPXML with lanes, roles and markers | Double-clicking the FCPXML gives a three-layer compound clip with arrival markers |
 | 3 | **Route editing**: project file v2 (scenes in the format, curved/sharp points), studio waypoints, curved/sharp toggle, legs panel with transport picker, style picker, undo | The user can reshape a route by hand in the studio, and the agent sees the result |
 | 4 | **Routes**: sea routing around land, flight arcs, follow camera, GPX import, validation warnings | A cruise route stays at sea |
 | 5 | **Look**: about 20 transports (motorcycle, ferry, cruise ship, campervan…), nine map styles including the Aloft & Away theme, sign styles, terrain and tilt | Videos look on-brand, with the right vehicle on each leg |
 | 6 | **Scenes**: several scenes per project, studio scene tabs, renders per scene or joined, a compound clip per scene in FCPXML | A two-scene project imports into Final Cut as two clips on one timeline |
+
+**Decision, 2026-10-14:** the default render is one flattened H.264 MP4
+(`all.mp4`). Layered ProRes plus FCPXML stays as an option (`layers`), and a
+flattened ProRes master is `codec: 'prores'`. Stage 2 is complete for the
+default path. The Final Cut import check is an outstanding acceptance item for
+the optional layered export only, and does not block later stages.
 
 Out of scope for now: connecting to trip-data APIs (the agent fetches the
 data and passes stops in), hosting, a full manual editor, editable Final Cut titles,

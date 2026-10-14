@@ -1,8 +1,9 @@
 # Agent instructions
 
 Mapper makes animated map clips for travel films. It runs locally and an AI
-agent drives it through MCP. It renders layered ProRes and FCPXML for Final
-Cut Pro. Nothing is hosted.
+agent drives it through MCP. By default it renders a
+flattened H.264 MP4. A layered ProRes and FCPXML export for Final Cut Pro is
+optional. Nothing is hosted.
 
 Read before working:
 

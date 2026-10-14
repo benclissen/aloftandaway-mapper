@@ -44,7 +44,7 @@ export class RenderPage {
   private readonly page: Page
   private readonly crashHandlers: (() => void)[] = []
   private pixelRatio: number | undefined
-  private closed = false
+  private closing: Promise<void> | undefined
   private transparent = false
 
   private constructor(args: { aspect: Aspect; context: BrowserContext; page: Page }) {
@@ -119,10 +119,10 @@ export class RenderPage {
     this.crashHandlers.push(cb)
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return
-    this.closed = true
-    await this.context.close().catch(() => undefined)
+  /** Closes the page's browser context. Every call resolves once it is closed, also when a close is already under way. */
+  close(): Promise<void> {
+    this.closing ??= this.context.close().catch(() => undefined)
+    return this.closing
   }
 
   private crashed(): void {

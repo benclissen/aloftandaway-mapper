@@ -35,6 +35,7 @@ export interface PassPage {
   capturePng(): Promise<Buffer>
   contextLost(): Promise<boolean>
   onCrash(cb: () => void): void
+  /** Resolves once the page is closed, also when a close is already under way. */
   close(): Promise<void>
 }
 
@@ -103,20 +104,26 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
   let recoveries = 0
   let encoder: PassEncoder | undefined
   let page: PassPage | undefined
+  /** A page that is open but still loading. */
+  let loading: PassPage | undefined
   /** Rejects when `page` crashes or loses its WebGL context, so a step fails at once instead of timing out. */
   let pageFailed: Promise<never> = new Promise<never>(() => undefined)
 
-  // Cancelling stops ffmpeg and closes the page at once; the pending step then rejects.
+  // Cancelling stops ffmpeg and closes the page at once; the pending step then rejects. The caller closes the browser
+  // only after this pass has settled, which is after the page has finished closing.
   const onAbort = () => {
     encoder?.kill()
     void page?.close().catch(() => undefined)
+    void loading?.close().catch(() => undefined)
   }
   signal?.addEventListener('abort', onAbort, { once: true })
 
   /** Opens a page, loads the scene's layer into it and arms `pageFailed`. */
   const openPage = async (faults: { faultAtFrame?: number; faultAfterRenderFrame?: number } = {}) => {
     const opened = await deps.openPage({ browser, aspect: scene.output.aspect })
+    loading = opened
     try {
+      throwIfAborted(signal)
       const frameCount = await opened.load(project, outputScale(scene.output), { layer: pass.layer, ...faults })
       if (frameCount !== timeline.totalFrames) {
         throw new Error(`The render page counted ${frameCount} frames, but the timeline has ${timeline.totalFrames}.`)
@@ -124,6 +131,8 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
     } catch (e) {
       await opened.close()
       throw e
+    } finally {
+      loading = undefined
     }
     const failed = new Promise<never>((_, reject) => {
       opened.onCrash(() => reject(new Error('the render page crashed or lost its WebGL context')))

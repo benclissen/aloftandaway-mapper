@@ -189,9 +189,9 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   await writeManifest(manifestFile, makeManifest('running'))
   args.onStart?.({ dir })
 
-  // Cancelling closes Chrome at once; the active pass stops its own ffmpeg, and its pending step then rejects.
-  const onAbort = () => void launched?.browser.close().catch(() => undefined)
-  signal?.addEventListener('abort', onAbort, { once: true })
+  // Cancelling is up to the active pass: it stops its ffmpeg and closes its page, and its pending step then rejects.
+  // Chrome is closed in `finally`, once the pass has closed its page. Closing Chrome while a page's context is still
+  // being closed can leave Chrome stuck in shutdown, and Playwright only kills it after 30 s.
   try {
     launched = await launchBrowser()
     throwIfAborted(signal)
@@ -241,7 +241,6 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     await writeManifest(manifestFile, makeManifest('failed', { error: errorMessage(e) })).catch(() => undefined)
     throw e
   } finally {
-    signal?.removeEventListener('abort', onAbort)
     await launched?.browser.close().catch(() => undefined)
   }
 }

@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { rm, writeFile } from 'node:fs/promises'
+import { rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Writable } from 'node:stream'
 import { promisify } from 'node:util'
@@ -92,11 +92,15 @@ export function concatList(files: string[]): string {
 }
 
 /**
- * Joins `parts` into `out` without re-encoding, using ffmpeg's concat demuxer. The list file is `list`, or
- * `concat.txt` next to `out`, and is deleted afterwards. The parts are left for the caller to delete.
+ * Joins `parts` into `out` without re-encoding, using ffmpeg's concat demuxer. The join is written to
+ * `<stem>.joining<ext>` and renamed to `out` on success, so a failed join leaves nothing under the final name. The
+ * list file is `list`, or `concat.txt` next to `out`, and is deleted afterwards. The parts are left for the caller
+ * to delete.
  */
 export async function joinSegments(args: { parts: string[]; out: string; codec: Codec; list?: string }): Promise<void> {
   const list = args.list ?? path.join(path.dirname(args.out), 'concat.txt')
+  const ext = path.extname(args.out)
+  const joining = `${args.out.slice(0, args.out.length - ext.length)}.joining${ext}`
   await writeFile(list, concatList(args.parts))
   try {
     await promisify(execFile)('ffmpeg', [
@@ -114,9 +118,11 @@ export async function joinSegments(args: { parts: string[]; out: string; codec: 
       '-c',
       'copy',
       ...(args.codec === 'h264' ? ['-movflags', '+faststart'] : []),
-      args.out,
+      joining,
     ])
+    await rename(joining, args.out)
   } catch (e) {
+    await rm(joining, { force: true })
     const stderr = (e as { stderr?: string }).stderr?.trim()
     throw new Error(`Could not join the render's segments${stderr ? `:\n${stderr}` : '.'}`, { cause: e })
   } finally {

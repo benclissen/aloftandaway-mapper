@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { existsSync, readdirSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -195,6 +195,26 @@ test.each(['prores', 'h264'] as const)('joins segments in a folder with a space 
   expect((await ffprobe(out)).color_space).toBe('bt709')
   // The list file is a scratch file; nothing is left behind but the parts and the output.
   expect(existsSync(path.join(dir, 'concat.txt'))).toBe(false)
+})
+
+test('a failed join leaves nothing under the final name and no temporary file', async () => {
+  const dir = path.join(tempDir, 'failed-join')
+  const bin = path.join(tempDir, 'fake-bin')
+  await mkdir(dir)
+  await mkdir(bin)
+  // An ffmpeg that writes a partial output to its last argument, then fails.
+  await writeFile(path.join(bin, 'ffmpeg'), '#!/bin/sh\nfor last; do :; done\necho partial > "$last"\necho boom >&2\nexit 1\n', { mode: 0o755 })
+  const parts = [path.join(dir, 'all.part1.mov'), path.join(dir, 'all.part2.mov')]
+  const out = path.join(dir, 'all.mov')
+  const savedPath = process.env.PATH
+  process.env.PATH = `${bin}${path.delimiter}${savedPath}`
+  try {
+    await expect(joinSegments({ parts, out, codec: 'prores' })).rejects.toThrow(/Could not join[\s\S]*boom/)
+  } finally {
+    process.env.PATH = savedPath
+  }
+  expect(existsSync(out)).toBe(false)
+  expect(readdirSync(dir)).toEqual([])
 })
 
 /** Decodes the first frame of `file` to 8-bit RGBA with the inverse of the encoder's BT.709 conversion. */

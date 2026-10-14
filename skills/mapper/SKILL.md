@@ -26,7 +26,8 @@ page.
 8. When the user says they're done, call `get_project` and look at the contact
    sheet again, because their edits are now in the project.
 9. `render` returns a `jobId`. For Final Cut Pro, pass
-   `layers: ["map","route","signs"]` (see "Final Cut Pro export"). Poll `render_status` every few seconds.
+   `layers: ["map","route","signs"]` (see "Final Cut Pro export"). Poll
+   `render_status` every few seconds.
 10. Report the output paths and the required credit.
 
 `get_project` reads the current state at any point.
@@ -92,7 +93,7 @@ clip, the default) and `preview` (an H.264 check clip). From a shell:
   01-<project>/map.mov      ProRes 422 HQ
   01-<project>/route.mov    ProRes 4444, alpha
   01-<project>/signs.mov    ProRes 4444, alpha
-  <project>.fcpxml          FCPXML 1.11, validated against Final Cut's DTD
+  <project>.fcpxml          FCPXML 1.11, validated against Final Cut's DTD if installed
   preview.mp4
   manifest.json
 ```
@@ -110,8 +111,9 @@ clip, the default) and `preview` (an H.264 check clip). From a shell:
   lists them and the manifest records them. There is no FCPXML.
 - The FCPXML uses absolute paths. If the user moves the render folder, Final
   Cut needs the media relinked.
-- `render_status` says whether the FCPXML was validated or skipped because
-  Final Cut Pro isn't installed.
+- The FCPXML is validated against Final Cut's DTD when Final Cut Pro is
+  installed; otherwise validation is skipped and recorded as `skipped-no-fcp`.
+  `render_status` says which happened.
 - Final Cut import hasn't been checked by hand yet. See
   `docs/final-cut-export.md`.
 

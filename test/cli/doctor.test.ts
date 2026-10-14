@@ -136,6 +136,7 @@ test('no Final Cut DTD is a warning that says validation will be skipped', async
   const check = find(checks, 'FCPXML validation')
   expect(check).toMatchObject({ ok: false, level: 'warn' })
   expect(check.detail).toMatch(/skipped/)
+  expect(check.detail).toContain('FCPXML 1.11 DTD (Final Cut Pro) not found')
   expect(doctorExitCode(checks)).toBe(0)
 })
 

@@ -21,8 +21,8 @@ Stage 1 (agent-driven MVP) built. What works today:
 - Contact sheets and single-frame previews, so the agent can check its work.
 - Renders at 3840×2160 and 25 fps by default, as flattened ProRes 422 HQ or
   H.264, with the map credit burned in.
-- Stage 2 (Final Cut export, built; import into Final Cut still to be checked
-  by hand): renders the map, route and signs as separate ProRes layers, with an
+- Stage 2 (Final Cut export, built, not yet accepted in Final Cut Pro):
+  renders the map, route and signs as separate ProRes layers, with an
   FCPXML that rebuilds them in Final Cut Pro. See below.
 - Not yet: sea and air routing (those legs draw as straight lines), the follow
   camera, terrain, vehicle symbols, GPX import.
@@ -65,7 +65,7 @@ Each render gets a folder under the project:
   01-<project>/map.mov      ProRes 422 HQ
   01-<project>/route.mov    ProRes 4444, alpha
   01-<project>/signs.mov    ProRes 4444, alpha
-  <project>.fcpxml          FCPXML 1.11, checked against Final Cut's own DTD
+  <project>.fcpxml          FCPXML 1.11, checked against Final Cut's DTD when installed
   preview.mp4               H.264 check clip, with `preview`
   manifest.json
 ```

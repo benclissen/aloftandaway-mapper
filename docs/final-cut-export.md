@@ -92,6 +92,17 @@ or `Day N · name`, or its name. A marker is one frame long, on the map clip.
 - If Final Cut Pro isn't installed, the FCPXML can't be checked against its
   DTD. It is still written, and the manifest says `fcpxmlValidation:
   "skipped-no-fcp"`.
+- If validation fails, the render fails and the rejected document is left as
+  `<slug>.fcpxml.tmp` in the render folder for diagnosis. There is no
+  `.fcpxml`.
+- With Final Cut Pro installed, `xmllint` must be on the PATH. A render
+  checks for it first and stops before it starts Chrome or creates a render
+  folder.
+- Disk space: before it starts, a render estimates what it needs (about 1 byte
+  per pixel per frame for ProRes 4444, 0.45 for 422 HQ, with a 1.5 margin) plus
+  room to join the largest file. Flat map layers come out much smaller than the
+  estimate. For example, a 30 s 4K25 map, route and signs export needs about
+  32 GB free.
 
 ## Acceptance record
 
@@ -145,15 +156,77 @@ FCPXML text match the table above.
 
 ### Fixtures
 
-The renders and a two-scene FCPXML are kept in `/tmp/mapper-accept.rb2RTZ`
-(temporary; copy them if you need them to last).
+The acceptance renders are kept in `/tmp`, so recreate them when you need them.
+All stop data is made up. Run these from the repo root after `npm run build`,
+with `mapper` meaning `node dist/cli/main.js` (or use `npm link`). `T` is a
+scratch folder of your choice.
 
-- `proj-a/renders/2026-10-14-200910/`: render A
-- `proj-b/renders/2026-10-14-200944/`: render B
-- `two-scene/two-scene-fixture.fcpxml`: two scenes (`Scene One`, with markers
-  at frames 0 and 58, and `Scene Two`, with a marker at frame 72), both reading
-  render B's media, written with `writeFcpxml` and DTD-valid. Resource ids are
-  unique, and scene two starts at `73073/24000s`.
+```bash
+T=$(mktemp -d)
+mapper() { node dist/cli/main.js "$@"; }
+STOPS='[{"name":"Alpha Harbour","at":[10,45],"pause":1,"sign":"always"},
+        {"name":"Beta Bay","at":[11.5,44.2],"pause":1,"sign":"always"},
+        {"name":"Gamma Cove","at":[13,43.8],"pause":0,"sign":"always"}]'
+```
+
+Project A, 4K 25p, credit in the description:
+
+```bash
+mapper create-project --json "{\"folder\":\"$T/proj-a\",\"name\":\"Synthetic Isles\"}"
+mapper set-stops --json "{\"folder\":\"$T/proj-a\",\"stops\":$STOPS}"
+mapper update-project --json "{\"folder\":\"$T/proj-a\",\"set\":{\"credit\":\"description\",\"timing\":{\"holdStart\":1,\"travel\":10,\"holdEnd\":2}}}"
+mapper render "$T/proj-a" --layers map,route,signs,preview --from 0 --to 3
+```
+
+Project B, 1080p at 24000/1001, credit burned in:
+
+```bash
+mapper create-project --json "{\"folder\":\"$T/proj-b\",\"name\":\"Synthetic Coast\"}"
+mapper set-stops --json "{\"folder\":\"$T/proj-b\",\"stops\":$STOPS}"
+mapper update-project --json "{\"folder\":\"$T/proj-b\",\"set\":{\"credit\":\"burned\",\"output\":{\"height\":1080,\"fps\":{\"num\":24000,\"den\":1001}},\"timing\":{\"holdStart\":1,\"travel\":10,\"holdEnd\":2}}}"
+mapper render "$T/proj-b" --layers map,route,signs,preview --from 5 --to 8
+```
+
+The renders land in `$T/proj-a/renders/` and `$T/proj-b/renders/`. The same
+steps work through the MCP tools (`create_project`, `set_stops`,
+`update_project`, `render`) with the same JSON.
+
+Two-scene fixture. Projects don't expose scenes yet, so this calls the FCPXML
+writer directly. It reads render B's media for both scenes and writes
+`$T/two-scene-fixture.fcpxml`, then validates it:
+
+```bash
+RENDER_B=$(ls -d "$T"/proj-b/renders/*/ | tail -1)
+RENDER_B=${RENDER_B%/} T=$T REPO=$PWD node --input-type=module <<'EOF'
+import { readFile, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+const load = (file) => import(pathToFileURL(path.join(process.env.REPO, 'dist/render', file)).href)
+const { writeFcpxml } = await load('fcpxml.js')
+const { validateFcpxml } = await load('fcpxml-validation.js')
+const dir = process.env.RENDER_B
+const manifest = JSON.parse(await readFile(path.join(dir, 'manifest.json'), 'utf8'))
+const media = path.join(dir, '01-synthetic-coast')
+const layers = { map: `${media}/map.mov`, route: `${media}/route.mov`, signs: `${media}/signs.mov` }
+const scene = (id, name, markers) => ({ id, name, frames: 73, sourceRange: { fromFrame: 119, toFrame: 192 }, layers, markers })
+const xml = writeFcpxml({
+  projectName: 'Two Scene Fixture',
+  output: manifest.output,
+  credit: 'description',
+  scenes: [
+    scene('s1', 'Scene One', [{ frame: 0, value: 'First frame' }, { frame: 58, value: 'Beta Bay' }]),
+    scene('s2', 'Scene Two', [{ frame: 72, value: 'Last frame' }]),
+  ],
+})
+const out = path.join(process.env.T, 'two-scene-fixture.fcpxml')
+await writeFile(out, xml)
+console.log(out, await validateFcpxml(out))
+EOF
+```
+
+Expect `passed` when Final Cut Pro is installed. Scene One has markers at
+frames 0 and 58, Scene Two one at frame 72, and scene two starts at
+`73073/24000s`.
 
 ### Outstanding manual acceptance
 
@@ -161,7 +234,7 @@ Final Cut Pro was not launched, so none of the following has been checked.
 DTD success does not stand in for it. Stage 2 stays open in
 [plan.md](plan.md) until these pass. Use a disposable library.
 
-1. Import `proj-a/.../synthetic-isles.fcpxml` (File > Import > XML). Check the
+1. Import `$T/proj-a/renders/<timestamp>/synthetic-isles.fcpxml` (File > Import > XML). Check the
    `Mapper` event holds a compound clip and a project, and the media isn't
    offline.
 2. Open the compound (right-click > Open in Timeline). Map is on the primary
@@ -179,7 +252,7 @@ DTD success does not stand in for it. Stage 2 stays open in
    the last frame, and the timeline frame rate is 23.976.
 8. In render A, open the compound's notes (Inspector > Info) and find the
    credit. In render B there should be none.
-9. Import `two-scene/two-scene-fixture.fcpxml`. The project should hold two
+9. Import `$T/two-scene-fixture.fcpxml`. The project should hold two
    compound clips back to back, with no overlap or gap. Both scenes read the
    same media files, which is expected for this fixture.
 10. Move a copy of a render folder and import its FCPXML to confirm the

@@ -193,7 +193,7 @@ export async function runDoctor(probes: Probes = realProbes): Promise<Check[]> {
       name: 'FCPXML validation',
       ok: false,
       level: 'warn',
-      detail: 'Final Cut Pro 1.11 DTD not found, so FCPXML validation will be skipped and exports will not be checked',
+      detail: 'FCPXML 1.11 DTD (Final Cut Pro) not found, so FCPXML validation will be skipped and exports will not be checked',
       fix: 'Install Final Cut Pro to validate FCPXML exports. Flattened rendering works without it.',
     })
   } else {

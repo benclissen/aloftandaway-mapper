@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -137,6 +138,10 @@ test.each([
   ['render without a folder', ['render']],
   ['render with a bad codec', ['render', '/tmp/x', '--codec', 'gif']],
   ['render with --from alone', ['render', '/tmp/x', '--from', '2']],
+  ['render with an empty layer entry', ['render', '/tmp/x', '--layers', 'map,,route']],
+  ['render with an empty --layers', ['render', '/tmp/x', '--layers', '']],
+  ['render with an unknown layer', ['render', '/tmp/x', '--layers', 'map,depth']],
+  ['render with a duplicate layer', ['render', '/tmp/x', '--layers', 'map, map']],
   ['render with a non-number --to', ['render', '/tmp/x', '--from', '1', '--to', 'soon']],
   ['studio without a folder', ['studio']],
   ['doctor with a stray argument', ['doctor', 'extra']],
@@ -152,4 +157,20 @@ test('a command takes --help', async () => {
   expect(code).toBe(0)
   expect(stdout).toContain('mapper set-stops')
   expect(stdout).toContain('--json-file')
+})
+
+test('render --layers all,preview fails before any render folder exists', async () => {
+  const folder = path.join(tmp, 'combo')
+  await mapper('create-project', '--json', JSON.stringify({ folder, name: 'Combo' }))
+  await mapper('set-stops', '--json', JSON.stringify({ ...STOPS, folder }))
+  const { code, stdout, stderr } = await mapper('render', folder, '--layers', ' all , preview ')
+  expect(code).toBe(1)
+  expect(stdout).toBe('')
+  expect(stderr).toContain('Do not combine all and preview')
+  expect(existsSync(path.join(folder, 'renders'))).toBe(false)
+})
+
+test('render --help documents --layers', async () => {
+  const { stdout } = await mapper('render', '--help')
+  expect(stdout).toContain('--layers map,route,signs[,preview]')
 })

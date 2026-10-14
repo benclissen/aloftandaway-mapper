@@ -103,7 +103,7 @@ test('renders a 2-second ProRes clip', async () => {
   expect(manifest.manifestVersion).toBe(2)
   expect(manifest.status).toBe('done')
   expect(manifest.outputs).toEqual([
-    { sceneId: expect.any(String), layer: 'all', kind: 'prores-hq', path: 'all.mov', fromFrame: 0, toFrame: 50, frames: 50, segments: 1, recoveries: 0 },
+    { sceneId: expect.any(String), request: 'all', layer: 'all', kind: 'prores-hq', path: 'all.mov', fromFrame: 0, toFrame: 50, frames: 50, segments: 1, recoveries: 0 },
   ])
   expect(result.outputs.map((o) => o.path)).toEqual([result.video])
 })

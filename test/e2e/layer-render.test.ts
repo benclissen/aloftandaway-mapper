@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { PNG } from 'pngjs'
 import { afterAll, beforeAll, expect, test } from 'vitest'
@@ -118,7 +119,8 @@ test('exports map, route and signs as aligned ProRes layers', async () => {
   expect(result.projectHash).toBe(hash)
   expect(result.frames).toBe(50)
   expect(result.video).toBeUndefined()
-  expect(readdirSync(result.dir).sort()).toEqual([SLUG_DIR, 'manifest.json'])
+  expect(readdirSync(result.dir).sort()).toEqual([SLUG_DIR, 'greek-islands.fcpxml', 'manifest.json'])
+  expect(result.fcpxml).toBe(path.join(result.dir, 'greek-islands.fcpxml'))
   expect(readdirSync(path.join(result.dir, SLUG_DIR)).sort()).toEqual(['map.mov', 'route.mov', 'signs.mov'])
   expect(existsSync(path.join(result.dir, 'all.mov'))).toBe(false)
 
@@ -150,7 +152,9 @@ test('exports map, route and signs as aligned ProRes layers', async () => {
     [`${SLUG_DIR}/route.mov`, 'prores-4444', 0, 50],
     [`${SLUG_DIR}/signs.mov`, 'prores-4444', 0, 50],
   ])
-  expect(manifest.fcpxml).toBeUndefined()
+  expect(manifest.fcpxml).toBe('greek-islands.fcpxml')
+  expect(manifest.fcpxmlValidation).toBe(result.fcpxmlValidation)
+  expect(['passed', 'skipped-no-fcp']).toContain(result.fcpxmlValidation)
 
   expect(progress.at(-1)).toMatchObject({ frame: 150, totalFrames: 150 })
   expect(progress.every((p) => p.totalFrames === 150)).toBe(true)
@@ -167,6 +171,50 @@ test('exports map, route and signs as aligned ProRes layers', async () => {
   })
 })
 
+test('the FCPXML references the three finished layers, a range starting after frame zero, notes and a preview', async () => {
+  const folder = await writeFolder(greekIslands({ credit: 'description' }))
+  // Frames [12, 50): the Piraeus arrival at frame 25 lands at clip-local frame 13.
+  const result = await renderProject({ folder, range: { from: 0.5, to: 2 }, layers: [...LAYERS, 'preview'] })
+  expect(result.frames).toBe(38)
+  expect(result.outputs.map((o) => o.request)).toEqual(['map', 'route', 'signs', 'preview'])
+  expect(result.video).toBeUndefined()
+  expect(result.preview).toBe(path.join(result.dir, 'preview.mp4'))
+  expect(readdirSync(result.dir).sort()).toEqual([SLUG_DIR, 'greek-islands.fcpxml', 'manifest.json', 'preview.mp4'])
+  for (const output of result.outputs) {
+    const stream = await probe(output.path)
+    expect(Number(stream.nb_read_frames), output.path).toBe(38)
+    expect(stream.r_frame_rate, output.path).toBe('25/1')
+  }
+  expect((await probe(result.preview!)).codec_name).toBe('h264')
+
+  const xml = readFileSync(result.fcpxml!, 'utf8')
+  for (const layer of LAYERS) expect(xml).toContain(pathToFileURL(path.join(result.dir, SLUG_DIR, `${layer}.mov`)).href)
+  expect(xml).not.toContain('preview.mp4')
+  expect(xml).toContain('<note>© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap</note>')
+  expect(xml).toContain('<marker start="13/25s" duration="1/25s" value="Piraeus"/>')
+  expect(xml).toContain('duration="38/25s"')
+  expect(result.scenes[0]).toMatchObject({ frames: 38, sourceRange: { fromFrame: 12, toFrame: 50 } })
+  const manifest = readManifest(result.manifest)
+  expect(manifest.status).toBe('done')
+  expect(manifest.fcpxml).toBe('greek-islands.fcpxml')
+})
+
+test('a DTD failure keeps the videos and the .tmp XML but publishes no final XML', async () => {
+  const folder = await writeFolder(greekIslands())
+  let dir = ''
+  const missingDtd = path.join(tempDir, 'missing.dtd')
+  await expect(
+    renderProject({ folder, range: { from: 0, to: 1 }, layers: [...LAYERS], fcpxmlDtdPath: missingDtd, onStart: (info) => (dir = info.dir) }),
+  ).rejects.toThrow(/DTD is missing/)
+  expect(readdirSync(dir).sort()).toEqual([SLUG_DIR, 'greek-islands.fcpxml.tmp', 'manifest.json'])
+  expect(readdirSync(path.join(dir, SLUG_DIR)).sort()).toEqual(['map.mov', 'route.mov', 'signs.mov'])
+  const manifest = readManifest(path.join(dir, 'manifest.json'))
+  expect(manifest.status).toBe('failed')
+  expect(manifest.error).toMatch(/DTD is missing/)
+  expect(manifest.fcpxml).toBeUndefined()
+  expect((manifest.outputs as unknown[]).length).toBe(3)
+})
+
 test('a render without layers is the legacy flattened clip', async () => {
   const folder = await writeFolder(greekIslands())
   const result = await renderProject({ folder, range: { from: 0, to: 1 } })
@@ -174,7 +222,7 @@ test('a render without layers is the legacy flattened clip', async () => {
   expect(result.frames).toBe(25)
   expect(readdirSync(result.dir).sort()).toEqual(['all.mov', 'manifest.json'])
   expect(result.outputs).toEqual([
-    { sceneId: expect.any(String), layer: 'all', kind: 'prores-hq', path: result.video, fromFrame: 0, toFrame: 25, frames: 25, segments: 1, recoveries: 0 },
+    { sceneId: expect.any(String), request: 'all', layer: 'all', kind: 'prores-hq', path: result.video, fromFrame: 0, toFrame: 25, frames: 25, segments: 1, recoveries: 0 },
   ])
   expect(result.scenes).toEqual([])
   expect(result.preview).toBeUndefined()

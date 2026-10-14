@@ -8,7 +8,7 @@ import { renderProject, type RenderResult } from '../render/render.js'
 import { getServer } from '../server/server.js'
 import { assertAbsolute } from '../server/store.js'
 import { exitAfterDrain, installShutdown, runStdio } from '../mcp/server.js'
-import { callTool, creditLine, errorText, etaText, TOOLS, type ToolDef } from '../mcp/tools.js'
+import { callTool, doneSummary, errorText, etaText, LayersSchema, TOOLS, type ToolDef } from '../mcp/tools.js'
 import { doctorExitCode, formatChecks, runDoctor } from './doctor.js'
 
 /** Exit code for bad commands and flags. */
@@ -56,7 +56,7 @@ const firstSentence = (text: string) => text.split(/(?<=\.)\s/)[0] ?? text
 const OWN_COMMANDS: [usage: string, summary: string][] = [
   ['mcp', 'Serve MCP on stdin and stdout, for an AI agent'],
   ['studio <folder>', 'Open the studio for a project and keep it running until Ctrl-C (--no-open skips the browser)'],
-  ['render <folder>', 'Render the clip and wait for it. Options: --codec prores|h264, --from <s> --to <s>'],
+  ['render <folder>', 'Render the clip and wait for it. Options: --codec prores|h264, --layers map,route,signs[,preview], --from <s> --to <s>'],
   ['doctor', 'Check this machine and print a fix for anything missing'],
 ]
 
@@ -94,7 +94,7 @@ const OWN_HELP: Record<string, string> = {
   studio:
     'Usage: mapper studio <folder> [--no-open]\n\nRegisters the project, prints the studio URL on stdout and opens it (macOS) unless --no-open.\nKeeps running until Ctrl-C.',
   render:
-    'Usage: mapper render <folder> [--codec prores|h264] [--from <s> --to <s>]\n\nRenders and waits. Progress goes to stderr, the result as JSON to stdout.\nCtrl-C cancels the render cleanly (exit 130).',
+    'Usage: mapper render <folder> [--codec prores|h264] [--layers map,route,signs[,preview]] [--from <s> --to <s>]\n\nRenders and waits. --layers takes comma-separated names from map, route, signs, all and preview;\nmap, route and signs together also write a Final Cut Pro FCPXML. Progress goes to stderr, the result as JSON to stdout.\nCtrl-C cancels the render cleanly (exit 130).',
   doctor: 'Usage: mapper doctor\n\nChecks Node, ffmpeg and its encoders, Chrome and WebGL, and free disk space. Exit code 1 if something required is missing.',
 }
 
@@ -160,13 +160,22 @@ async function toolCommand(command: ToolCommand, args: string[]): Promise<number
 // mapper render
 
 async function renderCommand(args: string[]): Promise<number> {
-  const { values, positionals } = parse(args, { codec: { type: 'string' }, from: { type: 'string' }, to: { type: 'string' } }, true)
+  const { values, positionals } = parse(args, { codec: { type: 'string' }, layers: { type: 'string' }, from: { type: 'string' }, to: { type: 'string' } }, true)
   if (values.help) return help('render')
   const [folder, ...extra] = positionals
-  if (!folder || extra.length) throw new UsageError('render takes one project folder.', 'Usage: mapper render <folder> [--codec prores|h264] [--from s --to s]')
+  if (!folder || extra.length) throw new UsageError('render takes one project folder.', 'Usage: mapper render <folder> [--codec prores|h264] [--layers map,route,signs[,preview]] [--from s --to s]')
   const codec = values.codec
   if (codec !== undefined && codec !== 'prores' && codec !== 'h264') {
     throw new UsageError(`--codec must be prores or h264, not '${codec}'.`, 'Use --codec prores or --codec h264.')
+  }
+  let layers: z.infer<typeof LayersSchema> | undefined
+  if (values.layers !== undefined) {
+    const names = values.layers.split(',').map((name) => name.trim())
+    const bad = 'Pass comma-separated names from map, route, signs, all and preview, for example --layers map,route,signs,preview.'
+    if (names.some((name) => name === '')) throw new UsageError('--layers has an empty entry.', bad)
+    const parsed = LayersSchema.safeParse(names)
+    if (!parsed.success) throw new UsageError(`--layers: ${parsed.error.issues[0]?.message ?? 'invalid'}.`, bad)
+    layers = parsed.data
   }
   if ((values.from === undefined) !== (values.to === undefined)) {
     throw new UsageError('--from and --to go together.', 'Give both, in seconds, or neither to render the whole clip.')
@@ -194,13 +203,14 @@ async function renderCommand(args: string[]): Promise<number> {
     rendering = renderProject({
       folder,
       codec,
+      layers,
       range,
       signal: controller.signal,
       onProgress: (p) => {
         const now = Date.now()
         if (now - lastProgress < PROGRESS_INTERVAL_MS) return
         lastProgress = now
-        console.error(`Frame ${p.frame}/${p.totalFrames} · ${p.fps.toFixed(1)} fps · ${etaText(p.etaSeconds)}`)
+        console.error(`Frame ${p.frame}/${p.totalFrames} · ${p.fps.toFixed(1)} fps · ${etaText(p.etaSeconds)}${p.layer ? ` · ${p.layer}` : ''}`)
       },
     })
     result = (await rendering) as RenderResult
@@ -211,7 +221,7 @@ async function renderCommand(args: string[]): Promise<number> {
     return exit(shutdown, 1)
   }
   console.log(JSON.stringify(result, null, 2))
-  console.error(await creditLine(result.manifest))
+  console.error(await doneSummary(result))
   return exit(shutdown, 0)
 }
 

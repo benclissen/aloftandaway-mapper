@@ -26,6 +26,8 @@ export interface SceneExport {
 
 export interface RenderPass {
   sceneId: string
+  /** What was asked for. `layer` is `all` for both the flattened clip and the preview; this tells them apart. */
+  request: LayerRequest
   layer: RenderLayer
   kind: MediaKind
   /** Relative to the render directory. */

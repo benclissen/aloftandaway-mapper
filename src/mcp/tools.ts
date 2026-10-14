@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import {
@@ -24,6 +25,7 @@ import {
 } from '../core/index.js'
 import { contactSheet, PreviewAtSchema, previewFrame } from '../render/preview.js'
 import { cancelRender, renderStatus, startRenderJob, type RenderStatus } from '../render/jobs.js'
+import type { RenderResult } from '../render/render.js'
 import { fixOf } from '../server/errors.js'
 import { getServer } from '../server/server.js'
 import { assertAbsolute, createProject, loadProject, mutateProject } from '../server/store.js'
@@ -182,6 +184,12 @@ const jobId = z.string().describe('The jobId that render returned')
 
 // Render
 
+/** The layers a render can be asked for. Which combinations are allowed is up to `planExport`. */
+export const LayersSchema = z
+  .array(z.enum(['map', 'route', 'signs', 'all', 'preview']))
+  .min(1)
+  .refine((xs) => new Set(xs).size === xs.length, 'Each layer may be requested only once')
+
 /** How long `render` waits for the job to start or fail before it reports the job as queued. */
 const START_WAIT_MS = 10_000
 const START_POLL_MS = 100
@@ -217,27 +225,50 @@ export async function creditLine(manifestPath: string): Promise<string> {
   return `Credit required: ${MAP_CREDIT}${where}`
 }
 
+
+/** The finished render: every file it wrote, the folder and the required map credit. */
+export async function doneSummary(r: RenderResult): Promise<string> {
+  const layers = r.outputs.filter((o) => o.request !== 'all' && o.request !== 'preview')
+  return [
+    `Done. ${plural(r.frames, 'frame')} at ${r.renderFps.toFixed(1)} fps.`,
+    ...(r.fcpxml
+      ? [
+          `FCPXML: ${r.fcpxml}`,
+          r.fcpxmlValidation === 'passed'
+            ? 'FCPXML validated against the Final Cut Pro DTD.'
+            : 'FCPXML validation was skipped: Final Cut Pro is not installed, so the DTD is unavailable.',
+        ]
+      : []),
+    ...(r.video ? [`Video: ${r.video}`] : []),
+    ...layers.map((o) => `Layer ${o.layer}: ${o.path}`),
+    ...(r.preview ? [`Preview: ${r.preview}`] : []),
+    `Manifest: ${r.manifest}`,
+    `Folder: ${r.dir}`,
+    await creditLine(r.manifest),
+  ].join('\n')
+}
+
+/** What a failed or cancelled render left behind. */
+async function leftover(status: RenderStatus): Promise<string[]> {
+  return [
+    ...(status.outputs?.length ? ['Finished outputs kept:', ...status.outputs.map((o) => `- ${o.layer === 'all' ? 'clip' : o.layer}: ${o.path}`)] : ['No outputs were finished.']),
+    ...(status.dir ? [`Folder: ${status.dir}`, await creditLine(path.join(status.dir, 'manifest.json'))] : []),
+  ]
+}
+
 async function statusSummary(status: RenderStatus): Promise<string> {
   switch (status.state) {
     case 'running': {
       const p = status.progress
-      if (p) return `Frame ${p.frame} of ${p.totalFrames} · ${p.fps.toFixed(1)} fps · ${etaText(p.etaSeconds)}`
+      if (p) return `Frame ${p.frame} of ${p.totalFrames} · ${p.fps.toFixed(1)} fps · ${etaText(p.etaSeconds)}${p.layer ? ` · ${p.layer}` : ''}`
       return status.dir ? 'Starting. The render folder exists; no frames yet.' : 'Queued behind another render. No frames yet.'
     }
-    case 'done': {
-      const r = status.result!
-      return [
-        `Done. ${plural(r.frames, 'frame')} at ${r.renderFps.toFixed(1)} fps.`,
-        ...(r.video ? [`Video: ${r.video}`] : []),
-        `Manifest: ${r.manifest}`,
-        `Folder: ${r.dir}`,
-        await creditLine(r.manifest),
-      ].join('\n')
-    }
+    case 'done':
+      return doneSummary(status.result!)
     case 'failed':
-      return `Failed. ${status.error ?? 'No error was recorded.'}\nFix: ${status.fix ?? BUG_FIX}`
+      return [`Failed. ${status.error ?? 'No error was recorded.'}\nFix: ${status.fix ?? BUG_FIX}`, ...(await leftover(status))].join('\n')
     case 'cancelled':
-      return 'Cancelled.'
+      return ['Cancelled.', ...(await leftover(status))].join('\n')
   }
 }
 
@@ -362,14 +393,15 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'render',
     description:
-      "Render the clip to video: codec 'prores' (default) or 'h264', optionally only range { from, to } in seconds. Look at a contact sheet before rendering. Returns a jobId; poll render_status. Fails at once if the project has errors. The folder must be absolute.",
+      "Render the clip to video: codec 'prores' (default) or 'h264', optionally only range { from, to } in seconds. Look at a contact sheet before rendering. Returns a jobId; poll render_status. Fails at once if the project has errors. The folder must be absolute. For Final Cut Pro, pass layers ['map','route','signs'] (ProRes) to get the three layers plus an FCPXML.",
     input: z.strictObject({
       folder,
       codec: z.enum(['prores', 'h264']).optional(),
       range: z.strictObject({ from: z.number().min(0), to: z.number().min(0) }).optional(),
+      layers: LayersSchema.optional().describe("Any of map, route, signs, all (the flattened clip, default) or preview (H.264 check clip). All can't join preview; map, route and signs need prores"),
     }),
-    async run({ folder, codec, range }) {
-      const id = startRenderJob({ folder, codec, range })
+    async run({ folder, codec, range, layers }) {
+      const id = startRenderJob({ folder, codec, range, layers })
       const deadline = Date.now() + START_WAIT_MS
       for (;;) {
         const status = statusOf(id)

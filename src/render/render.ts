@@ -20,6 +20,7 @@ import { RenderError, RenderCancelled } from './errors.js'
 import { planExport, sceneMarkers, toPageProject } from './export-plan.js'
 import type { CompletedPass, LayerRequest, MediaKind, RenderPass, SceneExport, SceneRenderInput } from './export-types.js'
 import { writeManifest, type ExportManifest } from './manifest.js'
+import { publishFcpxml, type PublishedFcpxml } from './publish.js'
 import { errorMessage, renderPass, throwIfAborted } from './render-pass.js'
 
 /** Progress fps is averaged over this many frames. */
@@ -64,6 +65,8 @@ export interface RenderResult {
   /** Scenes whose map, route and signs layers all finished. */
   scenes: SceneExport[]
   fcpxml?: string
+  /** How the FCPXML was checked: `skipped-no-fcp` when Final Cut Pro's DTD isn't installed. */
+  fcpxmlValidation?: 'passed' | 'skipped-no-fcp'
   /** The H.264 preview, when it was requested. */
   preview?: string
 }
@@ -88,6 +91,8 @@ export interface RenderArgs {
   faultAfterRenderFrame?: number
   /** Test hook: the layer whose first page gets the faults above. Defaults to the first layer rendered. */
   faultLayer?: RenderLayer
+  /** Test hook: validates the FCPXML against this DTD instead of the installed Final Cut Pro one. */
+  fcpxmlDtdPath?: string
 }
 
 export { RenderError, RenderCancelled } from './errors.js'
@@ -132,6 +137,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   const completed: CompletedPass[] = []
   let completedWork = 0
   let active: RenderPass | undefined
+  let published: PublishedFcpxml | undefined
   let loopStart = performance.now()
   const elapsedFps = () => completedWork / Math.max((performance.now() - loopStart) / 1000, 1e-9)
   /** Started with the first pass, so Chrome's launch doesn't count against the fps. */
@@ -169,6 +175,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
           ...(status === 'cancelled' && { cancelled: true, framesDone: completedWork }),
         }
       : {}),
+    ...(published && { fcpxml: published.name, fcpxmlValidation: published.validation }),
     ...extra,
   })
   const absolute = (pass: CompletedPass): CompletedOutput => ({ ...pass, path: path.join(dir, pass.path) })
@@ -198,11 +205,15 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
       args.onOutput?.(absolute(done))
     }
     throwIfAborted(signal)
+    const scenes = sceneExports(plan.scenes, completed, dir)
+    if (plan.fcpxml) {
+      published = await publishFcpxml({ dir, project: snapshot, scenes, signal, dtdPath: args.fcpxmlDtdPath })
+    }
     const outputs = completed.map(absolute)
     const renderFps = round2(elapsedFps())
     await writeManifest(manifestFile, makeManifest('done', { renderFps }))
-    const flattened = completed.find((pass) => pass.layer === 'all' && pass.path !== PREVIEW_FILE)
-    const preview = completed.find((pass) => pass.path === PREVIEW_FILE)
+    const flattened = completed.find((pass) => pass.request === 'all')
+    const preview = completed.find((pass) => pass.request === 'preview')
     return {
       dir,
       video: flattened && path.join(dir, flattened.path),
@@ -211,7 +222,9 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
       renderFps,
       projectHash: hash,
       outputs,
-      scenes: sceneExports(plan.scenes, completed, dir),
+      scenes,
+      fcpxml: published && path.join(dir, published.name),
+      fcpxmlValidation: published?.validation,
       preview: preview && path.join(dir, preview.path),
     }
   } catch (e) {
@@ -226,9 +239,6 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     await launched?.browser.close().catch(() => undefined)
   }
 }
-
-/** The preview's path in the render folder, as `planExport` names it. */
-const PREVIEW_FILE = 'preview.mp4'
 
 /** The frames the scene's passes cover. Every pass of a scene shares one range. */
 function sceneRange(passes: RenderPass[], sceneId: string): { fromFrame: number; toFrame: number } {

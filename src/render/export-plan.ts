@@ -51,7 +51,7 @@ export function planExport(project: Project, args: {
       ? 'h264' : request === 'route' || request === 'signs' ? 'prores-4444' : 'prores-hq'
     const path = request === 'preview' ? 'preview.mp4'
       : request === 'all' ? `all.${kind === 'h264' ? 'mp4' : 'mov'}` : `${directory}/${request}.mov`
-    return { sceneId: scene.id, layer, kind, path, ...range } as const
+    return { sceneId: scene.id, request, layer, kind, path, ...range } as const
   })
   return { scenes: [scene], passes, fcpxml: ['map', 'route', 'signs'].every(layer => layers.includes(layer as LayerRequest)) }
 }

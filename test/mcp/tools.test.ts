@@ -237,6 +237,35 @@ describe('tools', () => {
     expect(text(result)).toContain('range.from')
   })
 
+  test.each([
+    ['an unknown layer', { layers: ['map', 'depth'] }, 'layers.1'],
+    ['a duplicate layer', { layers: ['map', 'map'] }, 'Each layer may be requested only once'],
+    ['an empty list', { layers: [] }, 'layers'],
+    ['a future scenes input', { scenes: [{ id: 'a' }] }, 'scenes'],
+  ])('render rejects %s', async (_name, extra, expected) => {
+    const folder = path.join(tmp, 'p')
+    const result = await call('render', { folder, ...extra })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain(expected)
+    expect(text(result)).toContain('Fix: ')
+  })
+
+  test('render rejects layer combinations before creating a render folder', async () => {
+    const folder = path.join(tmp, 'combo')
+    await call('create_project', { folder, name: 'Combo' })
+    await call('set_stops', { folder, stops: STOPS })
+    for (const [args, message] of [
+      [{ layers: ['all', 'preview'] }, 'Do not combine all and preview'],
+      [{ layers: ['map', 'route'], codec: 'h264' }, 'Isolated layers require ProRes'],
+    ] as const) {
+      const result = await call('render', { folder, ...args })
+      expect(result.isError, message).toBe(true)
+      expect(text(result)).toContain(message)
+      expect(text(result)).toContain('Fix: ')
+    }
+    await expect(readFile(path.join(folder, 'renders'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   test('render_status and cancel_render reject an unknown job', async () => {
     for (const name of ['render_status', 'cancel_render']) {
       const result = await call(name, { jobId: 'missing' })

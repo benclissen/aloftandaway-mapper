@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -100,6 +100,56 @@ test('agent flow end to end', async () => {
     const { stdout } = await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_streams', '-of', 'json', video])
     const stream = (JSON.parse(stdout) as { streams: Record<string, string>[] }).streams[0]!
     expect(Number(stream.nb_frames)).toBe(50)
+  } finally {
+    await client.close()
+  }
+})
+
+test('a layered render returns the FCPXML and three layers', async () => {
+  const client = new Client({ name: 'e2e', version: '0.0.0' })
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [MAIN, 'mcp'], env: childEnv(), stderr: 'inherit' }))
+  const call = async (name: string, args: Record<string, unknown>): Promise<CallToolResult> => {
+    const result = (await client.callTool({ name, arguments: args })) as CallToolResult
+    expect(result.isError, `${name}: ${textOf(result)}`).toBeFalsy()
+    return result
+  }
+  try {
+    const folder = path.join(tmp, 'Layered')
+    await call('create_project', { folder, name: 'Layered' })
+    await call('set_stops', { folder, stops: STOPS })
+    await call('update_project', { folder, set: { look: { theme: 'blank' }, output: { height: 1080 } } })
+
+    const bad = (await client.callTool({ name: 'render', arguments: { folder, layers: ['all', 'preview'] } })) as CallToolResult
+    expect(bad.isError).toBe(true)
+    expect(existsSync(path.join(folder, 'renders'))).toBe(false)
+
+    const started = await call('render', { folder, layers: ['map', 'route', 'signs'], range: { from: 0, to: 2 } })
+    const { jobId } = started.structuredContent as { jobId: string }
+    const deadline = Date.now() + 180_000
+    let status: CallToolResult
+    for (;;) {
+      status = await call('render_status', { jobId })
+      const state = (status.structuredContent as { state: string }).state
+      if (state === 'done') break
+      expect(state, textOf(status)).toBe('running')
+      expect(Date.now(), 'render did not finish in time').toBeLessThan(deadline)
+      await sleep(500)
+    }
+    const text = textOf(status)
+    expect(text).toContain('Credit required: © OpenStreetMap contributors · OpenMapTiles · OpenFreeMap (burned in)')
+    expect(text).not.toContain('undefined')
+    const result = (status.structuredContent as { result: { video?: string; fcpxml: string; fcpxmlValidation: string; outputs: { layer: string; path: string }[] } }).result
+    expect(result.video).toBeUndefined()
+    expect(text).toContain(`FCPXML: ${result.fcpxml}`)
+    expect(text).toContain(result.fcpxmlValidation === 'passed' ? 'validated against the Final Cut Pro DTD' : 'validation was skipped')
+    expect(result.outputs.map((o) => o.layer)).toEqual(['map', 'route', 'signs'])
+    const xml = await readFile(result.fcpxml, 'utf8')
+    for (const output of result.outputs) {
+      expect(text).toContain(output.path)
+      expect(xml).toContain(pathToFileURL(output.path).href)
+      const { stdout } = await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_streams', '-of', 'json', output.path])
+      expect(Number((JSON.parse(stdout) as { streams: Record<string, string>[] }).streams[0]!.nb_read_frames)).toBe(50)
+    }
   } finally {
     await client.close()
   }

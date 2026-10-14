@@ -25,7 +25,8 @@ page.
    stops and set start and end shots. It doesn't open a browser itself.
 8. When the user says they're done, call `get_project` and look at the contact
    sheet again, because their edits are now in the project.
-9. `render` returns a `jobId`. Poll `render_status` every few seconds.
+9. `render` returns a `jobId`. For Final Cut Pro, pass
+   `layers: ["map","route","signs"]` (see "Final Cut Pro export"). Poll `render_status` every few seconds.
 10. Report the output paths and the required credit.
 
 `get_project` reads the current state at any point.
@@ -44,15 +45,14 @@ page.
 - Every `folder` must be an absolute path. Relative paths are rejected.
 - Tell the user which map credit is required (see below).
 
-## What stage 1 can't do
+## What Mapper can't do yet
 
 - Sea and air legs are drawn as straight lines, with a warning. Add `via`
   points through `update_project` to steer a leg, or use `line`.
 - The `follow` camera acts as `glide`, with a warning.
 - Terrain isn't available, and neither is any symbol other than `dot` or
   `none` (ship, plane, car, train, walk and arrow). They warn too.
-- Output is one flattened video. Stage 2 adds layered ProRes and FCPXML for
-  Final Cut Pro.
+- One scene per project.
 
 ## Reading `render_status`
 
@@ -77,6 +77,44 @@ Each render gets its own folder under the project:
 
 The manifest records the settings and where the credit went.
 
+## Final Cut Pro export
+
+Pass `layers` to `render`: any of `map`, `route`, `signs`, `all` (the flattened
+clip, the default) and `preview` (an H.264 check clip). From a shell:
+`mapper render <folder> --layers map,route,signs,preview --from 2 --to 4`.
+
+```json
+{"folder":"/abs/path","layers":["map","route","signs","preview"],"range":{"from":0,"to":2}}
+```
+
+```
+<project>/renders/<timestamp>/
+  01-<project>/map.mov      ProRes 422 HQ
+  01-<project>/route.mov    ProRes 4444, alpha
+  01-<project>/signs.mov    ProRes 4444, alpha
+  <project>.fcpxml          FCPXML 1.11, validated against Final Cut's DTD
+  preview.mp4
+  manifest.json
+```
+
+- Tell the user to import the `.fcpxml`. The `Mapper` event holds a compound
+  clip with map on the primary storyline, route on lane 1 and signs on lane 2
+  (roles `Map.Base`, `Map.Route`, `Map.Signs`).
+- There is a marker at each stop arrival in the range, named with the stop's
+  label or `Day N · name`. With `range`, times count from the range start, and
+  frames run from `floor(from × fps)` to `ceil(to × fps)`.
+- No FCPXML unless `map`, `route` and `signs` are all requested. They need
+  ProRes, so `codec: "h264"` with them is an error. `all` and `preview` can't
+  be combined.
+- A cancelled or failed render keeps the layers that finished. The status
+  lists them and the manifest records them. There is no FCPXML.
+- The FCPXML uses absolute paths. If the user moves the render folder, Final
+  Cut needs the media relinked.
+- `render_status` says whether the FCPXML was validated or skipped because
+  Final Cut Pro isn't installed.
+- Final Cut import hasn't been checked by hand yet. See
+  `docs/final-cut-export.md`.
+
 ## Credit
 
 Every render needs this map credit, exactly as written:
@@ -85,6 +123,8 @@ Every render needs this map credit, exactly as written:
 
 By default it's burned into the bottom-right of the video. If the project's
 `credit` is `description`, tell the user to put it in the video description.
+The FCPXML repeats it in the compound's notes, but the description still needs
+it.
 `render_status` repeats the credit when the render is done.
 
 ## Example

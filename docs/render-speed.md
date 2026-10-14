@@ -102,3 +102,20 @@ Warm `renderFps` against Task 1's 9.29 fps CDP end-to-end figure: +7%.
 ffprobe of the warm output: codec `prores`, profile `HQ`, pix_fmt `yuv422p10le`, 3840×2160, r_frame_rate `25/1`, nb_frames 250, color_space `bt709`, color_transfer `bt709`, color_primaries `bt709`, color_range `tv`.
 
 Frame at 5 s extracted to `test-output/bench/pipeline-frame.png` (not committed).
+
+## Acceptance (Task 18)
+
+- Date: 2026-10-14
+- Run: a fresh Claude Code session drove Mapper over MCP. Stops were typed in: Piraeus, Mykonos (2 s pause), Santorini (2 s pause), Rhodes, as plain lines on the `paper` theme. The default timing gave a 17 s clip.
+- Path: `render` MCP tool, ProRes 422 HQ at the default 3840×2160 and 25 fps. Two contact sheets beforehand had already fetched the tiles.
+- `renderFps` comes from the manifest. Wall time runs from the `render` call to the manifest's `renderedAt`.
+
+| Frames | Clip length | renderFps | Wall time | Wall ÷ clip length | Recoveries |
+|---|---|---|---|---|---|
+| 425 | 17.0 s | 9.77 fps | about 46 s | 2.7× | 0 |
+
+ffprobe: codec `prores`, profile `HQ`, pix_fmt `yuv422p10le`, 3840×2160, r_frame_rate `25/1`, nb_frames 425, color_space `bt709`, color_transfer `bt709`, color_primaries `bt709`, color_range `tv`. The file is 931 MB, and the credit is burned in at the bottom right.
+
+The user opened the studio but made no edits; the studio re-saved the project unchanged. Studio drags and shots are covered by `test/e2e/studio.test.ts`.
+
+The run found a bug: Claude Code shows only a tool's `structuredContent`, so the agent never saw the text summaries, which include the credit line in `render_status`. Each summary is now in `structuredContent` as well.

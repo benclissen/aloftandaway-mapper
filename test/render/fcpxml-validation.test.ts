@@ -8,7 +8,7 @@ type Callback = (error: Error | null, stdout?: string, stderr?: string) => void
 const execFileMock = vi.fn<(cmd: string, args: string[], opts: unknown, cb: Callback) => void>()
 vi.mock('node:child_process', () => ({ execFile: (...a: [string, string[], unknown, Callback]) => execFileMock(...a) }))
 
-const { findFcpxmlDtd, validateFcpxml } = await import('../../src/render/fcpxml-validation.js')
+const { assertCanValidateFcpxml, findFcpxmlDtd, validateFcpxml } = await import('../../src/render/fcpxml-validation.js')
 const { EnvironmentError } = await import('../../src/server/errors.js')
 
 let dir: string
@@ -81,4 +81,21 @@ test('validateFcpxml: missing xmllint is an EnvironmentError with a fix', async 
   expect(error).toBeInstanceOf(EnvironmentError)
   expect(error.fix).toMatch(/libxml2/)
   expect(error.fix).toMatch(/PATH/)
+})
+
+test('assertCanValidateFcpxml: missing xmllint with a DTD installed is the same EnvironmentError', async () => {
+  const { app } = await fakeApp('Versions/A/Resources')
+  execFileMock.mockImplementation((_c, _a, _o, cb) => cb(Object.assign(new Error('spawn xmllint ENOENT'), { code: 'ENOENT' })))
+  const error = await assertCanValidateFcpxml({ appPath: app }).catch((e) => e)
+  expect(error).toBeInstanceOf(EnvironmentError)
+  expect(error.fix).toMatch(/libxml2/)
+})
+
+test('assertCanValidateFcpxml: passes when xmllint exists, and does not look for it when no DTD is installed', async () => {
+  const { app } = await fakeApp('Versions/A/Resources')
+  execFileMock.mockImplementation((_c, _a, _o, cb) => cb(null, '', ''))
+  await expect(assertCanValidateFcpxml({ appPath: app })).resolves.toBeUndefined()
+  execFileMock.mockReset()
+  await expect(assertCanValidateFcpxml({ appPath: path.join(dir, 'Nope.app') })).resolves.toBeUndefined()
+  expect(execFileMock).not.toHaveBeenCalled()
 })

@@ -15,6 +15,7 @@ import {
 import { packageRoot } from '../server/server.js'
 import { assertAbsolute, loadProject, projectHash } from '../server/store.js'
 import { launchBrowser, type LaunchedBrowser } from './chrome.js'
+import { assertCanValidateFcpxml } from './fcpxml-validation.js'
 import { pickH264Encoder, type Codec } from './encode.js'
 import { RenderError, RenderCancelled } from './errors.js'
 import { planExport, sceneMarkers, toPageProject } from './export-plan.js'
@@ -127,6 +128,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   const frames = toFrame - fromFrame
   const size = frameSize(snapshot.output)
   const totalWork = plan.passes.reduce((sum, pass) => sum + pass.toFrame - pass.fromFrame, 0)
+  if (plan.fcpxml) await assertCanValidateFcpxml({ dtdPath: args.fcpxmlDtdPath })
   await checkDisk(folder, plan.passes, size)
   const h264Encoder = plan.passes.some((pass) => pass.kind === 'h264') ? await pickH264Encoder() : undefined
   throwIfAborted(signal)

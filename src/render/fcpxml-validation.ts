@@ -37,6 +37,23 @@ function xmllint(args: string[]): Promise<XmllintResult> {
   })
 }
 
+function noXmllint(): EnvironmentError {
+  return new EnvironmentError(
+    'xmllint is not installed, so the FCPXML cannot be validated against the Final Cut Pro DTD.',
+    'Install libxml2 (brew install libxml2) and add its bin directory to PATH, e.g. export PATH="$(brew --prefix libxml2)/bin:$PATH"',
+  )
+}
+
+/**
+ * Throws the same EnvironmentError validation would, before any rendering, when the FCPXML will be validated
+ * (a DTD is installed, or `dtdPath` is given) but xmllint is missing.
+ */
+export async function assertCanValidateFcpxml(options: { dtdPath?: string; appPath?: string } = {}): Promise<void> {
+  if (options.dtdPath === undefined && !(await findFcpxmlDtd(options.appPath))) return
+  const { error } = await xmllint(['--version'])
+  if (error?.code === 'ENOENT') throw noXmllint()
+}
+
 /**
  * Validates an FCPXML file against Apple's FCPXML 1.11 DTD from the installed Final Cut Pro.
  * `dtdPath` (tests) must exist; `appPath` (tests) replaces the default app location.
@@ -58,10 +75,7 @@ export async function validateFcpxml(
   const { error, stderr } = await xmllint(['--nonet', '--noout', '--dtdvalid', pathToFileURL(dtd).href, file])
   if (!error) return 'passed'
   if (error.code === 'ENOENT') {
-    throw new EnvironmentError(
-      'xmllint is not installed, so the FCPXML cannot be validated against the Final Cut Pro DTD.',
-      'Install libxml2 (brew install libxml2) and add its bin directory to PATH, e.g. export PATH="$(brew --prefix libxml2)/bin:$PATH"',
-    )
+    throw noXmllint()
   }
   throw new Error(`FCPXML failed validation against ${path.basename(dtd)}:\n${stderr.trim() || error.message}`)
 }

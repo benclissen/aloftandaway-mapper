@@ -10,7 +10,6 @@ import {
   MAP_CREDIT,
   outputScale,
   validateProject,
-  type Issue,
   type Project,
 } from '../core/index.js'
 import { packageRoot } from '../server/server.js'
@@ -18,6 +17,8 @@ import { assertAbsolute, loadProject, projectHash } from '../server/store.js'
 import { launchBrowser, type LaunchedBrowser } from './chrome.js'
 import { Encoder, ffmpegArgs, joinSegments, pickH264Encoder, type Codec } from './encode.js'
 import { RenderPage } from './page.js'
+import { RenderError, RenderCancelled } from './errors.js'
+import { frameRange } from './export-plan.js'
 
 /** How long one `renderFrame` or `capturePng` may take before the render fails. */
 const STEP_TIMEOUT_MS = 60_000
@@ -65,26 +66,8 @@ export interface RenderArgs {
   faultAfterRenderFrame?: number
 }
 
-/** A render that can't start or failed. `fix` tells the agent what to do. */
-export class RenderError extends Error {
-  readonly fix: string
-  readonly issues: Issue[] | undefined
-
-  constructor(message: string, fix: string, issues?: Issue[]) {
-    super(message)
-    this.name = 'RenderError'
-    this.fix = fix
-    this.issues = issues
-  }
-}
-
-/** Thrown when the render's signal aborts. */
-export class RenderCancelled extends Error {
-  constructor() {
-    super('The render was cancelled.')
-    this.name = 'AbortError'
-  }
-}
+export { RenderError, RenderCancelled } from './errors.js'
+export { frameRange } from './export-plan.js'
 
 /**
  * Renders the project in `folder` to `renders/<YYYY-MM-DD-HHmmss>/all.mov` (ProRes 422 HQ) or `all.mp4` (H.264),
@@ -301,35 +284,7 @@ function assertRenderable(project: Project): void {
   )
 }
 
-/** Frames to render: `[floor(from·fps), ceil(to·fps))`, clamped to the clip. */
-export function frameRange(
-  range: { from: number; to: number } | undefined,
-  totalFrames: number,
-  fps: number,
-): { fromFrame: number; toFrame: number } {
-  if (!range) return { fromFrame: 0, toFrame: totalFrames }
-  const { from, to } = range
-  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) {
-    throw new RenderError(
-      `range { from: ${from}, to: ${to} } is not a valid range of seconds.`,
-      'Pass range as { from, to } in seconds with to greater than from, or leave it out to render the whole clip.',
-    )
-  }
-  const clamp = (frame: number) => Math.min(Math.max(frame, 0), totalFrames)
-  // Rounding first stops float error from adding a frame, e.g. 0.28 × 25 = 7.000000000000001.
-  const fromFrame = clamp(Math.floor(round6(from * fps)))
-  const toFrame = clamp(Math.ceil(round6(to * fps)))
-  if (toFrame <= fromFrame) {
-    throw new RenderError(
-      `range { from: ${from}, to: ${to} } has no frames in the ${(totalFrames / fps).toFixed(2)}-second clip.`,
-      `Pick a range inside 0 to ${(totalFrames / fps).toFixed(2)} seconds, or leave it out to render the whole clip.`,
-    )
-  }
-  return { fromFrame, toFrame }
-}
-
 const round2 = (n: number) => Math.round(n * 100) / 100
-const round6 = (n: number) => Math.round(n * 1e6) / 1e6
 
 async function checkDisk(folder: string, neededBytes: number): Promise<void> {
   const stats = await statfs(folder)

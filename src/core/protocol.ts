@@ -9,3 +9,12 @@ export type ServerMessage = { type: 'project'; project: Project }
 
 /** A patch the studio sends to the server. */
 export interface PatchRequest extends ProjectPatch {}
+
+/** The visual content painted by a render page. */
+export type RenderLayer = 'map' | 'route' | 'signs' | 'all'
+
+export interface RenderPageOptions {
+  layer?: RenderLayer
+  faultAtFrame?: number
+  faultAfterRenderFrame?: number
+}

@@ -208,6 +208,7 @@ describe('render failures', () => {
     const result = await callTool(tool('render_status'), { jobId })
     const text = result.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n')
     expect(text).toContain(`\nFix: ${FIXES.ffmpeg}`)
+    expect((result.structuredContent as { summary: string }).summary).toBe(text)
     expectFix(await toolText('render', { folder, codec: 'h264' }), FIXES.ffmpeg)
   })
 })

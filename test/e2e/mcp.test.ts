@@ -93,6 +93,8 @@ test('agent flow end to end', async () => {
       await sleep(500)
     }
     expect(textOf(status)).toContain('Credit required: © OpenStreetMap contributors · OpenMapTiles · OpenFreeMap (burned in)')
+    // Some clients show the model only structuredContent, so the credit must be there too.
+    expect((status.structuredContent as { summary: string }).summary).toBe(textOf(status))
 
     const { video } = (status.structuredContent as { result: { video: string } }).result
     const { stdout } = await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_streams', '-of', 'json', video])

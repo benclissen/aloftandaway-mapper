@@ -42,7 +42,7 @@ export class ToolError extends Error {
 export interface ToolResult {
   /** Short plain text for the agent to read. */
   summary: string
-  /** Becomes the result's `structuredContent`. */
+  /** Becomes the result's `structuredContent`, after `summary`. */
   data: Record<string, unknown>
   /** A PNG, returned as MCP image content. */
   image?: Buffer
@@ -159,7 +159,8 @@ function toCallToolResult({ summary, data, image }: ToolResult): CallToolResult 
       { type: 'text', text: summary },
       ...(image ? [{ type: 'image' as const, data: image.toString('base64'), mimeType: 'image/png' }] : []),
     ],
-    structuredContent: data,
+    // Some clients show the model only structuredContent and drop the text, so the summary rides along.
+    structuredContent: { summary, ...data },
   }
 }
 

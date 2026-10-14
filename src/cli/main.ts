@@ -149,7 +149,9 @@ async function toolCommand(command: ToolCommand, args: string[]): Promise<number
     console.error(text)
   } else {
     // An image result's file path is in the data, so the bytes are left out.
-    console.log(JSON.stringify(result.structuredContent ?? {}, null, 2))
+    // The summary goes to stderr below; stdout stays the tool's data alone.
+    const { summary: _summary, ...data } = result.structuredContent ?? {}
+    console.log(JSON.stringify(data, null, 2))
     console.error(text)
   }
   return exit(shutdown, result.isError ? 1 : 0)

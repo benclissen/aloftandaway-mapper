@@ -162,6 +162,19 @@ describe('tools', () => {
     expect(text(result)).toContain('too-few-stops')
   })
 
+  test('every result repeats its summary in structuredContent, first', async () => {
+    const folder = path.join(tmp, 'p')
+    const created = await call('create_project', { folder, name: 'P' })
+    const results = [created, await call('get_project', { folder }), await call('validate_project', { folder })]
+    for (const result of results) {
+      const structured = result.structuredContent as Record<string, unknown>
+      expect(typeof structured.summary).toBe('string')
+      expect(structured.summary).toBe(text(result))
+      expect(Object.keys(structured)[0]).toBe('summary')
+    }
+    expect((results[2]!.structuredContent as { errors: unknown[] }).errors).toHaveLength(1)
+  })
+
   test('a missing project says how to create one', async () => {
     const result = await call('get_project', { folder: path.join(tmp, 'nothing') })
     expect(result.isError).toBe(true)

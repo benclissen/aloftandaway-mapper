@@ -192,11 +192,15 @@ async function renderCommand(args: string[]): Promise<number> {
   let rendering: Promise<unknown> = Promise.resolve()
   let renderDir: string | undefined
   const finished: CompletedOutput[] = []
+  /** Set once the command is ending by itself, so the shutdown callback knows no signal cancelled it. */
+  let ending = false
   const shutdown = installShutdown(async () => {
     controller.abort()
     // renderProject writes the cancelled manifest and stops ffmpeg and Chrome before it settles.
     await rendering.catch(() => undefined)
     // The signal handler exits right after this, so what the render left behind is reported here, to stderr.
+    // exit() runs this callback too, when the render succeeded or failed; those paths report for themselves.
+    if (ending) return
     console.error(['Cancelled.', ...(await leftover({ outputs: finished, dir: renderDir }))].join('\n'))
   }, SIGNAL_EXIT)
 
@@ -229,10 +233,12 @@ async function renderCommand(args: string[]): Promise<number> {
     if (controller.signal.aborted) return exit(shutdown, SIGNAL_EXIT)
     // What the render left behind goes to stderr, as the MCP render_status reports it. stdout stays empty.
     console.error([errorText(e, 'render'), ...(await leftover({ outputs: finished, dir: renderDir }))].join('\n'))
+    ending = true
     return exit(shutdown, 1)
   }
   console.log(JSON.stringify(result, null, 2))
   console.error(await doneSummary(result))
+  ending = true
   return exit(shutdown, 0)
 }
 

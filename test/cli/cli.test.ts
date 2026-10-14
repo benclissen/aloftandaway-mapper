@@ -175,6 +175,17 @@ test('render --help documents --layers', async () => {
   expect(stdout).toContain('--layers map,route,signs[,preview]')
 })
 
+test('a failed render prints the error and what it left behind once, with no cancellation', async () => {
+  const folder = path.join(tmp, 'failed')
+  await mapper('create-project', '--json', JSON.stringify({ folder, name: 'Failed' }))
+  const { code, stdout, stderr } = await mapper('render', folder)
+  expect(code).toBe(1)
+  expect(stdout).toBe('')
+  expect(stderr).not.toContain('Cancelled.')
+  expect(stderr.match(/Error: /g)).toHaveLength(1)
+  expect(stderr.match(/No outputs were finished\./g)).toHaveLength(1)
+})
+
 test('a cancelled render reports its folder and the map credit on stderr and exits 130', async () => {
   const folder = path.join(tmp, 'cancelled')
   await mapper('create-project', '--json', JSON.stringify({ folder, name: 'Cancelled' }))
@@ -196,7 +207,8 @@ test('a cancelled render reports its folder and the map credit on stderr and exi
   const code = await closed
   expect(code).toBe(130)
   expect(stdout).toBe('')
-  expect(stderr).toContain('Cancelled.')
+  expect(stderr.match(/Cancelled\./g)).toHaveLength(1)
+  expect(stderr.match(/No outputs were finished\./g)).toHaveLength(1)
   expect(stderr).toContain('No outputs were finished.')
   expect(stderr).toContain(`Folder: ${path.join(renders, readdirSync(renders)[0]!)}`)
   expect(stderr).toContain('Credit required: ')

@@ -1,7 +1,13 @@
 # Mapper: local, agent-driven design
 
 Date: 2026-10-13
-Status: awaiting review
+Status: approved; revised 2026-10-14
+
+**Revision, 2026-10-14:** the studio gains hands-on route editing (waypoints,
+curved/sharp points, transport per leg, map style, undo). The transport list
+grows to about 20 and the map styles to 9. Projects gain scenes. These need
+project file version 2, which upgrades version 1 files on load. The build
+stages were reordered to fit.
 
 ## Purpose
 
@@ -30,9 +36,13 @@ layered clip with an FCPXML file.
 ### Non-goals
 
 - Hosting, accounts, analytics.
-- A full manual editor. The studio does preview plus light tweaks only.
+- A full manual editor. The studio does preview plus hands-on route editing
+  (waypoints, curved/sharp points, transport per leg, map style, undo).
+  Everything else (line styling, sign text, camera tuning, timing) goes
+  through the agent.
 - Editable Final Cut titles and render-to-exact-length (possible later).
-- Photo signs and stats overlays such as speed and elevation (possible later).
+- Photos on the map (on the symbol or at a stop), photo signs, and stats
+  overlays such as speed and elevation (possible later).
 - Browser-side video encoding. Rendering uses headless Chrome and ffmpeg.
 - Connecting to any trip-data API. Mapper takes stops as input; fetching them
   is the agent's job.
@@ -91,22 +101,29 @@ celebrity-xcel/
 └── .mapper/            Cache (computed paths, preview frames); safe to delete
 ```
 
-`mapper.json`, schema version 1 (validated with Zod; unknown keys rejected):
+`mapper.json`, schema version 2 (validated with Zod; unknown keys rejected):
 
 ```ts
 type LngLat = [number, number]
 
 interface Project {
-  schemaVersion: 1
+  schemaVersion: 2
   id: string                      // UUID
   name: string
   createdAt: string               // ISO 8601
   updatedAt: string
-  output: {
+  output: {                       // shared by every scene
     aspect: '16:9' | '9:16' | '1:1' | '4:5'
     height: 1080 | 1440 | 2160    // width derived from aspect
     fps: { num: number; den: number } // 25/1, 24000/1001, 30000/1001, 30/1, 50/1, 60/1 …
   }
+  credit: 'burned' | 'description' // map data credit placement
+  scenes: Scene[]                 // at least 1, in film order
+}
+
+interface Scene {
+  id: string                      // UUID
+  name: string                    // e.g. "Drive to the port"
   timing: {
     holdStart: number             // seconds before the line starts
     travel: number                // seconds of line drawing, excluding pauses
@@ -116,7 +133,6 @@ interface Project {
   legs: Leg[]                     // stops.length - 1, leg i joins stop i and i+1
   look: Look
   camera: Camera
-  credit: 'burned' | 'description' // map data credit placement
 }
 
 interface Stop {
@@ -127,22 +143,39 @@ interface Stop {
   pause: number                   // seconds the line waits here (0 for none)
   sign: 'always' | 'on-arrival' | 'none'
   terminal?: boolean              // start/end port styling
+  sharp?: boolean                 // the line makes a corner here instead of curving through
   day?: number                    // itinerary day, used in marker names ("Day 3 · Santorini")
   ref?: string                    // free-form id the agent keeps, e.g. the source record's id
 }
 
+interface ViaPoint {
+  at: LngLat
+  sharp?: boolean                 // corner instead of curve
+}
+
 interface Leg {
   mode: 'sea' | 'air' | 'land' | 'line'
-  via: LngLat[]                   // manual waypoints, in order (may be empty)
+  via: ViaPoint[]                 // waypoints that shape the leg, in order (may be empty)
   symbol?: SymbolKind             // overrides look.symbol for this leg
 }
 
+type SymbolKind =
+  | 'none' | 'dot' | 'arrow'
+  | 'walk' | 'bike' | 'motorcycle' | 'scooter' | 'car' | 'campervan' | 'bus' | 'coach'
+  | 'train' | 'tram' | 'cable-car'
+  | 'ferry' | 'cruise-ship' | 'sailboat' | 'speedboat' | 'kayak'
+  | 'plane' | 'helicopter' | 'balloon'
+
+type ThemeId =
+  | 'aloftandaway' | 'paper' | 'light' | 'dark' | 'nautical'
+  | 'atlas' | 'outdoor' | 'satellite' | 'monochrome'
+
 interface Look {
-  theme: string                   // built-in theme id
+  theme: ThemeId
   labels: 'local' | 'en'
   terrain: boolean
   line: { color: string; width: number; dash: 'solid' | 'dashed' | 'dotted'; outline: boolean; glow: boolean }
-  symbol: SymbolKind              // 'none' | 'dot' | 'arrow' | 'ship' | 'plane' | 'car' | 'train' | 'walk'
+  symbol: SymbolKind
   signStyle: string               // built-in sign style id
 }
 
@@ -157,8 +190,23 @@ interface Camera {
 }
 ```
 
-When `start`/`end` shots are missing, they are fitted to the route bounds
-for the output aspect.
+**Version 1** (what stage 1 shipped) has the scene fields (`timing`, `stops`,
+`legs`, `look`, `camera`) directly on the project, `via` as plain `LngLat[]`,
+no `sharp` flags, and shorter symbol and theme lists. From stage 3, loading a
+version 1 file upgrades it in memory: one scene named after the project, and
+each via point becomes `{ at }`. It is saved as version 2 on the next write.
+Old symbol names map to new ones (`ship` → `cruise-ship`).
+
+Transports and themes are drawn and styled from scratch for Mapper. None
+comes from Map Animator. Each transport has a default leg mode, used when the
+studio or `set_stops` sets a transport without a mode: boats → `sea`; plane,
+helicopter and balloon → `air`; everything else → `land`; `none`, `dot` and
+`arrow` → `line`. Themes are generated by one parameterised style builder
+over OpenFreeMap's schema, so adding a theme means adding a palette and a few
+options, not a whole style file. `satellite` uses EOxCloudless 2016 only.
+
+When a scene's `start`/`end` shots are missing, they are fitted to that
+scene's route bounds for the output aspect.
 
 Computed leg paths are cached in `.mapper/paths.json`, keyed by a hash of
 the leg inputs. They are never stored in `mapper.json`.
@@ -174,18 +222,21 @@ save functions.
 Each leg becomes a polyline in `[lng, lat]`:
 
 - **line**: a smooth curve (centripetal Catmull-Rom) through stop → via → stop.
+  A `sharp` stop or via point splits the curve, so the two sides meet at a
+  corner instead of curving through.
 - **air**: a great-circle arc. If `via` is given, arcs between each pair.
 - **sea**: the shortest path over water. Natural Earth 1:10m land polygons
   (public domain) are rasterised once into a water grid around the leg's
   bounds. A* finds a path, which is then simplified and smoothed with a
   check that the smoothed line still stays off land. `via` points are forced
-  waypoints. If no path is found the leg falls back to `line`, and
+  waypoints, and smoothing never rounds off a `sharp` one. If no path is found the leg falls back to `line`, and
   `validate_project` reports it.
 - **land**: same as `line` for now. Road snapping is out of scope.
 
 ### Timeline
 
-Times are whole frames at `output.fps`.
+Times are whole frames at `output.fps`. Each scene has its own timeline
+starting at frame 0. A joined render plays the scenes back to back.
 
 - Total frames = `round((holdStart + travel + Σ pauses + holdEnd) × fps)`.
 - `travel` is split across legs in proportion to each leg's length in
@@ -221,7 +272,7 @@ render; warnings don't. It checks:
   at the shot zoom).
 - Camera zoom above the tile source's maximum zoom.
 - Durations under one second per leg.
-- Fewer than two stops.
+- Fewer than two stops in a scene.
 - Two consecutive stops at the same place (an overnight that should be one
   stop with a pause).
 
@@ -241,13 +292,14 @@ interface StopInput {
   terminal?: boolean
   ref?: string
   legMode?: Leg['mode']            // mode of the leg leaving this stop; defaults to the call's legMode
+  symbol?: SymbolKind              // transport for the leg leaving this stop; sets legMode if that's missing
 }
 ```
 
-- `set_stops({ folder, stops, legMode?, replace? })` creates or replaces the
-  stops in travel order, and creates one leg per pair (`legMode` defaults to
+- `set_stops({ folder, scene?, stops, legMode?, replace? })` creates or
+  replaces the scene's stops in travel order, and creates one leg per pair (`legMode` defaults to
   `line`). With `replace: false`, the stops are appended to the end instead.
-- `import_gpx({ folder, path, track?, stops? })` reads a local GPX file.
+- `import_gpx({ folder, scene?, path, track?, stops? })` reads a local GPX file.
   `stops: 'waypoints'` makes a stop of each named waypoint; `'ends'` (the
   default) uses the start and end only. The track between stops becomes
   `via` points, simplified.
@@ -259,29 +311,40 @@ and overnights merged. `validate_project` warns if it didn't.
 
 Every tool takes absolute paths. Every result has a short plain-text summary
 plus structured content. Errors are returned as tool errors with a suggested
-fix.
+fix. Tools that work on one scene take `scene?` (its id, or its 1-based
+position). Without it they use the first scene.
 
 | Tool | Input | Result |
 |---|---|---|
 | `create_project` | `folder`, `name`, `output?` | Project summary |
-| `get_project` | `folder` | Full project and the timeline summary (duration, arrival times) |
-| `set_stops` | `folder`, `stops`, `legMode?`, `replace?` (default true) | Project summary and validation |
-| `import_gpx` | `folder`, `path`, `track?`, `stops?` | Project summary and validation |
-| `update_project` | `folder`, `set?` (JSON Merge Patch over every top-level field except `stops` and `legs`), `ops?` (array ops below) | Project summary and validation |
-| `validate_project` | `folder` | Errors and warnings |
-| `preview_frame` | `folder`, `at` (exactly one of `{ seconds }`, `{ frame }`, `{ progress }` where progress is 0–1), `width?` | PNG image |
-| `preview_contact_sheet` | `folder`, `count?` (default 9), `width?` | One PNG grid with timestamps |
+| `get_project` | `folder` | Full project, with each scene's timeline summary (duration, arrival times) |
+| `set_stops` | `folder`, `scene?`, `stops`, `legMode?`, `replace?` (default true) | Project summary and validation |
+| `import_gpx` | `folder`, `scene?`, `path`, `track?`, `stops?` | Project summary and validation |
+| `update_project` | `folder`, `scene?`, `set?` (JSON Merge Patch over the project's `name`, `output` and `credit`), `sceneSet?` (JSON Merge Patch over the scene's `name`, `timing`, `look` and `camera`), `ops?` (ops below) | Project summary and validation |
+| `validate_project` | `folder` | Errors and warnings, per scene |
+| `preview_frame` | `folder`, `scene?`, `at` (exactly one of `{ seconds }`, `{ frame }`, `{ progress }` where progress is 0–1), `width?` | PNG image |
+| `preview_contact_sheet` | `folder`, `scene?`, `count?` (default 9), `width?` | One PNG grid with timestamps |
 | `open_studio` | `folder` | Local URL |
-| `render` | `folder`, `layers?`, `codec?`, `range?` | Job id |
+| `render` | `folder`, `scenes?` (`'joined'` (default), `'each'`, or a list of scene ids), `layers?`, `codec?`, `range?` | Job id |
 | `render_status` | `jobId` | Progress, ETA, output paths, or error |
 | `cancel_render` | `jobId` | Final status |
 
-`update_project` array ops:
-`{ op: 'insert_stop', index, stop }`, `{ op: 'update_stop', id, changes }`,
-`{ op: 'remove_stop', id }`, `{ op: 'move_stop', id, index }`,
-`{ op: 'update_leg', index, changes }`. Legs are kept in step with stops
-automatically. A patch is applied in full or not at all, and the result must
-pass schema validation.
+`update_project` ops. Stop, leg and via ops act on the selected scene:
+
+- Stops: `{ op: 'insert_stop', index, stop }`, `{ op: 'update_stop', id, changes }`,
+  `{ op: 'remove_stop', id }`, `{ op: 'move_stop', id, index }`.
+- Legs: `{ op: 'update_leg', index, changes }`. Setting `symbol` without
+  `mode` also sets the transport's default mode.
+- Via points: `{ op: 'insert_via', leg, index, point }`,
+  `{ op: 'update_via', leg, index, changes }`, `{ op: 'remove_via', leg, index }`.
+- Scenes: `{ op: 'add_scene', index?, name?, copyLookFrom? }`,
+  `{ op: 'duplicate_scene', id }`, `{ op: 'remove_scene', id }`,
+  `{ op: 'move_scene', id, index }`. A new scene starts empty, with the
+  look and camera settings of `copyLookFrom` (default: the scene before it).
+  The last scene can't be removed.
+
+Legs are kept in step with stops automatically. A patch is applied in full
+or not at all, and the result must pass schema validation.
 
 Preview tools use the same headless page as rendering, at a reduced width
 (default 960 px). The page is kept warm between calls.
@@ -310,12 +373,25 @@ Studio edit mode:
 
 - The map preview is sized to the output aspect, with a play/scrub bar and
   arrival ticks.
-- Drag stops and `via` points; click a leg to add a `via` point.
+- **Route editing** (stage 3):
+  - Drag stops. Click the line to insert a via point there, drag it to
+    reshape the leg, and remove it with Delete or its menu.
+  - Switch a stop or via point between curved and sharp from its menu
+    (or Alt-click).
+  - A legs panel lists each leg, with a transport picker and a mode
+    override (line, sea, air, land).
+  - A map style picker.
+  - Undo and redo (Cmd-Z, Shift-Cmd-Z) for studio edits. Each edit records
+    its inverse patch. A change from outside the studio (the agent or the
+    CLI) clears the undo history, so undo never overwrites the agent's work.
 - Drag a sign to offset it.
 - "Use this view as start/end shot" buttons, and a camera mode switcher.
-- No other editing UI. Anything else goes through the agent.
+- **Scene tabs** (stage 6): switch scenes; add, rename, duplicate,
+  reorder and delete them.
+- No other editing UI. Line styling, sign text, timing and camera tuning go
+  through the agent.
 
-Studio render mode (`?mode=render&layer=map|route|signs|all`):
+Studio render mode (`?mode=render&scene=<id>&layer=map|route|signs|all`):
 
 - No UI chrome. Sets `window.mapper = { ready, renderFrame(n), frameCount }`.
 - `renderFrame(n)` applies the timeline state for frame `n`. It resolves
@@ -328,7 +404,8 @@ Studio render mode (`?mode=render&layer=map|route|signs|all`):
 2. Start (or reuse) the server, and launch Chrome through Playwright
    (`channel: 'chrome'`, falling back to bundled Chromium). Set the viewport
    to the output size and the device scale factor to 1.
-3. For each layer, open render mode with that layer and spawn ffmpeg reading
+3. For each scene being rendered, and each layer, open render mode with that
+   scene and layer and spawn ffmpeg reading
    raw RGBA from stdin. For each frame, call `renderFrame(n)`, read the
    pixels in the page, and stream them over the server's WebSocket to
    ffmpeg's stdin.
@@ -357,9 +434,10 @@ Studio render mode (`?mode=render&layer=map|route|signs|all`):
 - Cancelling stops the job and keeps any finished layers.
 - Free disk space is checked first, from an estimate of the ProRes bitrate.
 
-**Output folder**: `renders/<YYYY-MM-DD-HHmmss>/` containing `map.mov`,
-`route.mov`, `signs.mov`, `preview.mp4` (if requested), `<name>.fcpxml` and
-`manifest.json`.
+**Output folder**: `renders/<YYYY-MM-DD-HHmmss>/` containing one folder per
+scene (`01-<scene-slug>/map.mov`, `route.mov`, `signs.mov`), plus
+`preview.mp4` (if requested; every rendered scene joined), `<name>.fcpxml`
+and `manifest.json`. A one-scene project still gets one scene folder.
 
 ## FCPXML
 
@@ -368,13 +446,17 @@ Studio render mode (`?mode=render&layer=map|route|signs|all`):
   (skipped when Final Cut isn't installed).
 - One `<format>` matching the output size and `frameDuration`
   (`den/num s`, e.g. `1/25s`, `1001/24000s`).
-- Three `<asset>`s pointing at the `.mov` files with `file://` URLs. The
-  route and signs assets carry alpha.
-- An event named `Mapper`. A compound clip (`<media>` with a `<sequence>`)
-  named after the project: map on the spine, route on lane 1, signs on lane 2.
+- Three `<asset>`s per scene pointing at the `.mov` files with `file://`
+  URLs. The route and signs assets carry alpha.
+- An event named `Mapper`, holding one compound clip (`<media>` with a
+  `<sequence>`) per scene, named `<project> · <scene>`: map on the spine,
+  route on lane 1, signs on lane 2.
+- With `scenes: 'joined'`, a project (timeline) named after the Mapper
+  project places the scene compound clips back to back. With `'each'`,
+  only the compound clips are created.
 - Video roles: `Map.Base`, `Map.Route`, `Map.Signs`.
-- `<marker>`s at each stop's arrival frame, using the stop label or
-  `Day N · Name`.
+- `<marker>`s inside each scene's compound clip at each stop's arrival
+  frame, using the stop label or `Day N · Name`.
 - When `credit = 'description'`, the credit text goes in the compound clip's
   notes.
 
@@ -385,6 +467,9 @@ Studio render mode (`?mode=render&layer=map|route|signs|all`):
 - The workflow: get the trip data the user points to → create → set_stops →
   validate → contact sheet →
   tweak → studio link for the user → render → report output paths.
+- Shaping routes: add via points to bend a line around something, and mark
+  them `sharp` for corners. Split a trip into scenes when the film cuts
+  away between parts of it.
 - Rules: always look at a contact sheet before rendering. Fix validation
   warnings or explain them. Never edit `mapper.json` by hand. Tell the user
   which credit is required.
@@ -404,13 +489,19 @@ Studio render mode (`?mode=render&layer=map|route|signs|all`):
 
 ## Testing
 
-- **core** (Vitest): schema round trips and rejections, patch ops, timeline
+- **core** (Vitest): schema round trips and rejections, version 1 → 2
+  upgrade, patch ops (stops, legs, via points, scenes), curves with sharp
+  points (a corner exists exactly at the sharp point), transport default
+  modes, timeline
   frame maths at 25 and 23.976 fps, camera determinism (frame `n` is the
   same however it's reached), great-circle arcs, sea routing fixtures
   (Athens → Mykonos and Barcelona → Marseille stay at sea; a path between
   two landlocked points fails cleanly).
 - **GPX**: parser fixtures (tracks, routes, named waypoints, multiple tracks).
 - **server**: Host and token checks, folder confinement, file-watch sync.
+- **studio**: Playwright tests for inserting, dragging and removing via
+  points, the curved/sharp toggle, transport and style pickers, and undo
+  and redo, including the history being cleared by an outside change.
 - **render**:
   - Golden frames: chosen frames of fixture projects compared with stored
     PNGs using pixelmatch, with a tolerance. These run on macOS, and
@@ -418,7 +509,8 @@ Studio render mode (`?mode=render&layer=map|route|signs|all`):
   - ffprobe checks on the outputs: codec, profile, alpha, fps, colour tags,
     frame count.
 - **FCPXML**: `xmllint --dtdvalid` against the bundled DTD, plus structural
-  assertions (lanes, roles, marker times).
+  assertions (a compound clip per scene, lanes, roles, marker times, the
+  joined timeline's clip order).
 - **mcp**: an end-to-end test with the MCP SDK client against a fixture
   project: create → set_stops → validate → preview → render a
   2-second clip.
@@ -427,15 +519,24 @@ Studio render mode (`?mode=render&layer=map|route|signs|all`):
 
 Each stage gets its own implementation plan.
 
-1. **Agent-driven MVP**: core (schema, `line` legs, timeline, glide and
-   fixed camera), studio (preview, scrub, drag stops, set shots), server,
-   MCP tools and CLI, doctor, skill, and a flattened render (ProRes 422 HQ or
-   H.264). One built-in theme.
+1. **Agent-driven MVP** (built): core (schema version 1, `line` legs,
+   timeline, glide and fixed camera), studio (preview, scrub, drag stops, set
+   shots), server, MCP tools and CLI, doctor, skill, and a flattened render
+   (ProRes 422 HQ or H.264). One built-in theme.
 2. **Final Cut export**: layer passes, ProRes 4444 with alpha, FCPXML with
-   lanes, roles and markers, DTD validation.
-3. **Routes**: sea routing, `air` arcs, follow camera, GPX import,
+   lanes, roles and markers, DTD validation. One scene, as in version 1.
+3. **Route editing**: project file version 2 and the version 1 upgrade
+   (scenes exist in the format, but tools and studio use one scene),
+   curved/sharp points, via point ops, the studio's route editing (via
+   points, curved/sharp, legs panel with transport picker, style picker,
+   undo and redo).
+4. **Routes**: sea routing, `air` arcs, follow camera, GPX import,
    `validate_project` warnings.
-4. **Look**: more themes, sign styles, transport symbols, terrain and tilt.
+5. **Look**: the full transport set (about 20 symbols) and the nine themes
+   from the style builder, sign styles, terrain and tilt.
+6. **Scenes**: several scenes per project, scene ops and the `scene`
+   argument on tools, studio scene tabs, renders per scene or joined, a
+   compound clip per scene in FCPXML.
 
 ## Risks
 
@@ -445,4 +546,6 @@ Each stage gets its own implementation plan.
 | Reading 4K pixels per frame is slow | Measure in stage 1; if needed, capture with CDP screencast or use PBO-style async reads |
 | Tile fair use during long 4K renders | Disk tile cache and throttling; self-hosted PMTiles as a later option |
 | Sea routing quality near complex coastlines | Grid resolution scales with leg length; `via` points let the agent or user correct it |
+| Drawing about 20 transports and nine themes is a lot of design work | One icon grid and stroke style for every transport; themes come from one parameterised style builder, so each is a palette plus a few options |
+| Undo fighting with agent edits | Outside changes clear the studio's undo history |
 | Route layer misaligned with the map layer | Same timeline and camera per frame; a golden test composites the layers and compares them against the `all` layer |

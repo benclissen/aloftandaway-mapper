@@ -92,11 +92,11 @@ export function concatList(files: string[]): string {
 }
 
 /**
- * Joins `parts` into `out` without re-encoding, using ffmpeg's concat demuxer. The list file sits next to `out` and
- * is deleted afterwards. The parts are left for the caller to delete.
+ * Joins `parts` into `out` without re-encoding, using ffmpeg's concat demuxer. The list file is `list`, or
+ * `concat.txt` next to `out`, and is deleted afterwards. The parts are left for the caller to delete.
  */
-export async function joinSegments(args: { parts: string[]; out: string; codec: Codec }): Promise<void> {
-  const list = path.join(path.dirname(args.out), 'concat.txt')
+export async function joinSegments(args: { parts: string[]; out: string; codec: Codec; list?: string }): Promise<void> {
+  const list = args.list ?? path.join(path.dirname(args.out), 'concat.txt')
   await writeFile(list, concatList(args.parts))
   try {
     await promisify(execFile)('ffmpeg', [

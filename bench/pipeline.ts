@@ -135,10 +135,12 @@ async function main(): Promise<void> {
 
     const passes = [await pass('Cold', folder), await pass('Warm', folder)]
     const warm = passes[1]!.result
-    const probe = await ffprobe(warm.video)
+    const video = warm.video
+    if (!video) throw new Error('The benchmark render made no flattened clip.')
+    const probe = await ffprobe(video)
     await mkdir(OUT_DIR, { recursive: true })
     const framePath = path.join(OUT_DIR, 'pipeline-frame.png')
-    await extractFrame(warm.video, framePath)
+    await extractFrame(video, framePath)
 
     const text = section(passes, probe, framePath)
     process.stdout.write(`${text}\n`)

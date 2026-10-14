@@ -57,7 +57,7 @@ async function videoFramePng(video: string, n: number): Promise<Buffer> {
 let baseline: Promise<string> | undefined
 /** The video of a 2-second render with no fault, to compare recovered renders against. */
 function baselineVideo(): Promise<string> {
-  baseline ??= writeFolder(greekIslands()).then(async (folder) => (await renderProject({ folder, range: { from: 0, to: 2 } })).video)
+  baseline ??= writeFolder(greekIslands()).then(async (folder) => (await renderProject({ folder, range: { from: 0, to: 2 } })).video!)
   return baseline
 }
 
@@ -74,23 +74,25 @@ test('recovers from a lost WebGL context', async () => {
   const folder = await writeFolder(greekIslands())
   const result = await renderProject({ folder, range: { from: 0, to: 2 }, faultAtFrame: 20 })
   expect(result.frames).toBe(50)
-  expect(Number((await probe(result.video)).nb_read_frames)).toBe(50)
+  expect(Number((await probe(result.video!)).nb_read_frames)).toBe(50)
   const manifest = JSON.parse(readFileSync(result.manifest, 'utf8')) as Record<string, unknown>
   expect(manifest.segments).toBe(2)
   expect(manifest.recoveries).toBe(1)
+  expect(manifest.status).toBe('done')
+  expect(result.outputs).toMatchObject([{ layer: 'all', path: result.video, segments: 2, recoveries: 1 }])
   expect(readdirSync(result.dir).sort()).toEqual(['all.mov', 'manifest.json'])
-  await expectSameFrames(result.video, [19, 20, 21])
+  await expectSameFrames(result.video!, [19, 20, 21])
 })
 
 test('does not keep a frame captured after the context was lost', async () => {
   const folder = await writeFolder(greekIslands())
   const result = await renderProject({ folder, range: { from: 0, to: 2 }, faultAfterRenderFrame: 20 })
-  expect(Number((await probe(result.video)).nb_read_frames)).toBe(50)
+  expect(Number((await probe(result.video!)).nb_read_frames)).toBe(50)
   const manifest = JSON.parse(readFileSync(result.manifest, 'utf8')) as Record<string, unknown>
   expect(manifest.segments).toBe(2)
   expect(manifest.recoveries).toBe(1)
   expect(readdirSync(result.dir).sort()).toEqual(['all.mov', 'manifest.json'])
-  await expectSameFrames(result.video, [19, 20, 21])
+  await expectSameFrames(result.video!, [19, 20, 21])
 })
 
 test('a render without a fault is a single segment', async () => {
@@ -106,7 +108,7 @@ test("joins H.264 segments in a render folder with an apostrophe", async () => {
   const folder = await writeFolder(greekIslands(), "Bob's Trip")
   const result = await renderProject({ folder, codec: 'h264', range: { from: 0, to: 1 }, faultAtFrame: 10 })
   expect(result.dir).toContain("Bob's Trip")
-  expect(Number((await probe(result.video)).nb_read_frames)).toBe(25)
+  expect(Number((await probe(result.video!)).nb_read_frames)).toBe(25)
   const manifest = JSON.parse(readFileSync(result.manifest, 'utf8')) as Record<string, unknown>
   expect(manifest.segments).toBe(2)
   expect(readdirSync(result.dir).sort()).toEqual(['all.mp4', 'manifest.json'])

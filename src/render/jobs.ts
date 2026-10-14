@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { fixOf } from '../server/errors.js'
-import { renderProject, type RenderArgs, type RenderProgress, type RenderResult } from './render.js'
+import { renderProject, type CompletedOutput, type RenderArgs, type RenderProgress, type RenderResult } from './render.js'
 
 export type JobState = 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -16,6 +16,8 @@ export interface RenderStatus {
   fix?: string
   /** The render folder, once it exists. */
   dir?: string
+  /** Layers finished so far, with absolute paths. Kept when a later layer fails or the job is cancelled. */
+  outputs?: CompletedOutput[]
 }
 
 interface Job {
@@ -33,7 +35,7 @@ const jobs = new Map<string, Job>()
 let queue: Promise<void> = Promise.resolve()
 
 /** Queues a render of the project and returns its job id at once. Poll it with `renderStatus`. */
-export function startRenderJob(args: Omit<RenderArgs, 'onProgress' | 'onStart' | 'signal'>): string {
+export function startRenderJob(args: Omit<RenderArgs, 'onProgress' | 'onStart' | 'onOutput' | 'signal'>): string {
   const jobId = randomUUID()
   let settle!: () => void
   const settled = new Promise<void>((resolve) => (settle = resolve))
@@ -43,7 +45,7 @@ export function startRenderJob(args: Omit<RenderArgs, 'onProgress' | 'onStart' |
   return jobId
 }
 
-async function runJob(job: Job, args: Omit<RenderArgs, 'onProgress' | 'onStart' | 'signal'>): Promise<void> {
+async function runJob(job: Job, args: Omit<RenderArgs, 'onProgress' | 'onStart' | 'onOutput' | 'signal'>): Promise<void> {
   // Cancelled while queued: already settled.
   if (job.controller.signal.aborted) return
   job.started = true
@@ -54,6 +56,7 @@ async function runJob(job: Job, args: Omit<RenderArgs, 'onProgress' | 'onStart' 
       signal: job.controller.signal,
       onStart: ({ dir }) => (status.dir = dir),
       onProgress: (progress) => (status.progress = progress),
+      onOutput: (output) => (status.outputs ??= []).push({ ...output }),
     })
     status.state = 'done'
   } catch (e) {

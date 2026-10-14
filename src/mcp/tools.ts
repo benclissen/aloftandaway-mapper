@@ -228,7 +228,7 @@ async function statusSummary(status: RenderStatus): Promise<string> {
       const r = status.result!
       return [
         `Done. ${plural(r.frames, 'frame')} at ${r.renderFps.toFixed(1)} fps.`,
-        `Video: ${r.video}`,
+        ...(r.video ? [`Video: ${r.video}`] : []),
         `Manifest: ${r.manifest}`,
         `Folder: ${r.dir}`,
         await creditLine(r.manifest),

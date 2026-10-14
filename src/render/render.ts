@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { mkdir, rename, rm, statfs, writeFile } from 'node:fs/promises'
+import { mkdir, statfs } from 'node:fs/promises'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
@@ -8,74 +8,101 @@ import {
   fpsValue,
   frameSize,
   MAP_CREDIT,
-  outputScale,
   validateProject,
   type Project,
+  type RenderLayer,
 } from '../core/index.js'
 import { packageRoot } from '../server/server.js'
 import { assertAbsolute, loadProject, projectHash } from '../server/store.js'
 import { launchBrowser, type LaunchedBrowser } from './chrome.js'
-import { Encoder, ffmpegArgs, joinSegments, pickH264Encoder, type Codec } from './encode.js'
-import { RenderPage } from './page.js'
+import { pickH264Encoder, type Codec } from './encode.js'
 import { RenderError, RenderCancelled } from './errors.js'
-import { frameRange } from './export-plan.js'
+import { planExport, sceneMarkers, toPageProject } from './export-plan.js'
+import type { CompletedPass, LayerRequest, MediaKind, RenderPass, SceneExport, SceneRenderInput } from './export-types.js'
+import { writeManifest, type ExportManifest } from './manifest.js'
+import { errorMessage, renderPass, throwIfAborted } from './render-pass.js'
 
-/** How long one `renderFrame` or `capturePng` may take before the render fails. */
-const STEP_TIMEOUT_MS = 60_000
-/** How many times one render may reopen the page and carry on. The next failure fails the render. */
-const MAX_RECOVERIES = 3
 /** Progress fps is averaged over this many frames. */
 const FPS_WINDOW = 25
-/** Estimated bytes per pixel per frame, before the safety margin. */
-const BYTES_PER_PIXEL: Record<Codec, number> = { prores: 0.45, h264: 0.03 }
+/** Estimated bytes per pixel per frame, before the safety margin. 4444 with 16-bit alpha is a conservative guess. */
+const BYTES_PER_PIXEL: Record<MediaKind, number> = { 'prores-hq': 0.45, 'prores-4444': 2, h264: 0.03 }
 const DISK_MARGIN = 1.5
 const GB = 1e9
 const RENDERS_DIR = 'renders'
 
 export interface RenderProgress {
-  /** Frames finished so far. */
+  /** Frames finished so far, counted over every layer of the export. */
   frame: number
+  /** Frames in the range times the number of layers. */
   totalFrames: number
   /** Rolling average over the last 25 frames. */
   fps: number
   etaSeconds: number
+  /** The scene and layer being rendered. */
+  sceneId?: string
+  layer?: RenderLayer
 }
+
+/**
+ * A finished layer as a result reports it: `path` is absolute. In a plan or manifest, `CompletedPass.path` is
+ * relative to the render folder.
+ */
+export type CompletedOutput = Omit<CompletedPass, 'path'> & { path: string }
 
 export interface RenderResult {
   /** The render folder, `<project>/renders/<YYYY-MM-DD-HHmmss>`. */
   dir: string
-  video: string
+  /** The flattened clip, `all.mov` or `all.mp4`, when it was requested. */
+  video?: string
   manifest: string
+  /** Frames in the rendered range, not multiplied by the number of layers. */
   frames: number
   renderFps: number
   projectHash: string
+  /** Every finished layer, in render order. */
+  outputs: CompletedOutput[]
+  /** Scenes whose map, route and signs layers all finished. */
+  scenes: SceneExport[]
+  fcpxml?: string
+  /** The H.264 preview, when it was requested. */
+  preview?: string
 }
 
 export interface RenderArgs {
   folder: string
+  /** Codec of the flattened `all` clip. Isolated layers are always ProRes. */
   codec?: Codec
+  /** Layers to render. Defaults to `['all']`, the flattened clip. */
+  layers?: LayerRequest[]
   /** Seconds into the clip. Frames `[floor(from·fps), ceil(to·fps))` are rendered, clamped to the clip. */
   range?: { from: number; to: number }
   onProgress?: (p: RenderProgress) => void
   /** Called once the render folder exists, before the first frame. */
   onStart?: (info: { dir: string }) => void
+  /** Called after each layer is finished and recorded in the manifest. */
+  onOutput?: (output: CompletedOutput) => void
   signal?: AbortSignal
   /** Test hook: loses the page's WebGL context the first time this frame is rendered. Only the first page gets it. */
   faultAtFrame?: number
   /** Test hook: loses the context just after this frame is painted, before it is captured. First page only. */
   faultAfterRenderFrame?: number
+  /** Test hook: the layer whose first page gets the faults above. Defaults to the first layer rendered. */
+  faultLayer?: RenderLayer
 }
 
 export { RenderError, RenderCancelled } from './errors.js'
 export { frameRange } from './export-plan.js'
+export { joinParts } from './render-pass.js'
 
 /**
- * Renders the project in `folder` to `renders/<YYYY-MM-DD-HHmmss>/all.mov` (ProRes 422 HQ) or `all.mp4` (H.264),
- * with a `manifest.json`. The project is read once, so later edits don't affect a running render.
+ * Renders the project in `folder` to `renders/<YYYY-MM-DD-HHmmss>/`, one pass per requested layer, with a
+ * `manifest.json`. With no `layers`, that is the flattened `all.mov` (ProRes 422 HQ) or `all.mp4` (H.264). Isolated
+ * layers go to `01-<project>/map.mov` (422 HQ), `route.mov` and `signs.mov` (4444 with alpha); `preview` is
+ * `preview.mp4`. Every pass covers the same frames.
  *
- * Frames are deterministic, so a render survives a crashed page, a lost WebGL context or a stuck frame: it opens a
- * fresh page and carries on from the failed frame into a new segment (`all.part<k>`), up to 3 times. The segments are
- * joined without re-encoding at the end.
+ * The project is read once, so later edits don't affect a running render. Each pass recovers from page faults on its
+ * own (see `renderPass`). Finished layers stay on disk and in the manifest when a later layer fails or the render
+ * is cancelled.
  */
 export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   const { folder, signal } = args
@@ -86,191 +113,147 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   const snapshot = await loadProject(folder)
   const hash = projectHash(snapshot)
   assertRenderable(snapshot)
-  const timeline = buildTimeline(snapshot, buildRoute(snapshot))
-  const { fromFrame, toFrame } = frameRange(args.range, timeline.totalFrames, fpsValue(snapshot.output.fps))
+  const plan = planExport(snapshot, { layers: args.layers, codec, range: args.range })
+  const { fromFrame, toFrame } = plan.passes[0]!
   const frames = toFrame - fromFrame
   const size = frameSize(snapshot.output)
-  await checkDisk(folder, frames * size.width * size.height * BYTES_PER_PIXEL[codec] * DISK_MARGIN)
-  const h264Encoder = codec === 'h264' ? await pickH264Encoder() : undefined
+  const totalWork = plan.passes.reduce((sum, pass) => sum + pass.toFrame - pass.fromFrame, 0)
+  await checkDisk(folder, plan.passes, size)
+  const h264Encoder = plan.passes.some((pass) => pass.kind === 'h264') ? await pickH264Encoder() : undefined
   throwIfAborted(signal)
 
   const dir = await makeRenderDir(folder, new Date())
-  const ext = codec === 'prores' ? 'mov' : 'mp4'
-  const video = path.join(dir, `all.${ext}`)
   const manifestFile = path.join(dir, 'manifest.json')
-  args.onStart?.({ dir })
+  /** The flattened clip alone: the manifest keeps the Stage 1 fields. */
+  const legacy = args.layers === undefined || (args.layers.length === 1 && args.layers[0] === 'all')
+  const faultPass = args.faultLayer ? plan.passes.find((pass) => pass.layer === args.faultLayer) : plan.passes[0]
 
   let launched: LaunchedBrowser | undefined
-  let encoder: Encoder | undefined
-  /** The segment files written so far, in order. */
-  const parts: string[] = []
-  let recoveries = 0
-  let framesDone = 0
+  const completed: CompletedPass[] = []
+  let completedWork = 0
+  let active: RenderPass | undefined
   let loopStart = performance.now()
-  const elapsedFps = () => framesDone / Math.max((performance.now() - loopStart) / 1000, 1e-9)
-  const manifest = (extra: object) => ({
+  const elapsedFps = () => completedWork / Math.max((performance.now() - loopStart) / 1000, 1e-9)
+  /** Started with the first pass, so Chrome's launch doesn't count against the fps. */
+  let progress: ReturnType<typeof rollingProgress> | undefined
+  /** Reports `done` frames of work across the export, naming the active scene and layer. */
+  const report = (done: number) => {
+    completedWork = done
+    progress?.(done, active && { sceneId: active.sceneId, layer: active.layer })
+  }
+  const makeManifest = (status: ExportManifest['status'], extra: Partial<ExportManifest> = {}): ExportManifest => ({
+    manifestVersion: 2,
     mapperVersion: mapperVersion(),
     projectId: snapshot.id,
     projectHash: hash,
     name: snapshot.name,
     output: snapshot.output,
     frameSize: size,
-    codec,
-    range: { fromFrame, toFrame },
-    totalFrames: frames,
-    segments: parts.length,
-    recoveries,
-    durationSeconds: frames / fpsValue(snapshot.output.fps),
     credit: MAP_CREDIT,
     creditPlacement: snapshot.credit,
+    status,
+    scenes: plan.scenes.map((scene) => ({ id: scene.id, name: scene.name, range: sceneRange(plan.passes, scene.id) })),
+    outputs: completed.map((pass) => ({ ...pass })),
+    totalFrames: frames,
+    completedWorkFrames: completedWork,
+    totalWorkFrames: totalWork,
+    durationSeconds: frames / fpsValue(snapshot.output.fps),
+    renderedAt: new Date().toISOString(),
     renderFps: round2(elapsedFps()),
     chrome: launched ? { channel: launched.channel, webgl: launched.webgl } : undefined,
-    renderedAt: new Date().toISOString(),
+    ...(legacy
+      ? {
+          codec,
+          range: { fromFrame, toFrame },
+          ...(completed[0] && { segments: completed[0].segments, recoveries: completed[0].recoveries }),
+          ...(status === 'cancelled' && { cancelled: true, framesDone: completedWork }),
+        }
+      : {}),
     ...extra,
   })
+  const absolute = (pass: CompletedPass): CompletedOutput => ({ ...pass, path: path.join(dir, pass.path) })
 
-  // Cancelling stops ffmpeg and Chrome at once; the pending step then rejects.
-  const onAbort = () => {
-    encoder?.kill()
-    void launched?.browser.close().catch(() => undefined)
-  }
+  await writeManifest(manifestFile, makeManifest('running'))
+  args.onStart?.({ dir })
+
+  // Cancelling closes Chrome at once; the active pass stops its own ffmpeg, and its pending step then rejects.
+  const onAbort = () => void launched?.browser.close().catch(() => undefined)
   signal?.addEventListener('abort', onAbort, { once: true })
   try {
     launched = await launchBrowser()
     throwIfAborted(signal)
     const { browser } = launched
-    let page: RenderPage
-    /** Rejects when `page` crashes or loses its WebGL context, so a step fails at once instead of timing out. */
-    let pageFailed: Promise<never>
-    /** Opens a page, loads the snapshot into it and arms `pageFailed`. */
-    const openPage = async (faults: { faultAtFrame?: number; faultAfterRenderFrame?: number } = {}) => {
-      const opened = await RenderPage.open({ browser, aspect: snapshot.output.aspect })
-      try {
-        const frameCount = await opened.load(snapshot, outputScale(snapshot.output), faults)
-        if (frameCount !== timeline.totalFrames) {
-          throw new Error(`The render page counted ${frameCount} frames, but the timeline has ${timeline.totalFrames}.`)
-        }
-      } catch (e) {
-        await opened.close()
-        throw e
-      }
-      const failed = new Promise<never>((_, reject) => {
-        opened.onCrash(() => reject(new Error('the render page crashed or lost its WebGL context')))
-      })
-      failed.catch(() => undefined)
-      page = opened
-      pageFailed = failed
-    }
-    await openPage({ faultAtFrame: args.faultAtFrame, faultAfterRenderFrame: args.faultAfterRenderFrame })
-    throwIfAborted(signal)
-
-    const progress = rollingProgress(frames, args.onProgress)
     loopStart = performance.now()
-    // Frame n+1 renders and captures while frame n is written, so at most one frame waits in Node.
-    let writing: Promise<void> = Promise.resolve()
-    /**
-     * Ends the current segment and opens a fresh page, after frame `n` failed because of `cause`. A new page also drops
-     * any tiles that errored, which MapLibre never refetches. Fails the render once the recoveries are used up.
-     */
-    const recover = async (n: number, cause: unknown) => {
-      // The failed frame was never written. Finish the segment with every frame before it.
-      await writing
-      await encoder?.finish()
-      encoder = undefined
-      await page.close()
-      for (let lastCause = cause; ; ) {
-        if (recoveries >= MAX_RECOVERIES) {
-          throw new RenderError(
-            `Frame ${n} failed ${MAX_RECOVERIES + 1} times, after ${MAX_RECOVERIES} recoveries. Last error: ${errorMessage(lastCause)}`,
-            'Check that Chrome has WebGL and the map tiles can load, then render again. A range starting near this frame is quicker to retry.',
-          )
-        }
-        recoveries++
-        try {
-          await openPage()
-          return
-        } catch (e) {
-          if (signal?.aborted) throw e
-          lastCause = e
-        }
-      }
+    progress = rollingProgress(totalWork, args.onProgress)
+    for (const pass of plan.passes) {
+      const scene = plan.scenes.find((s) => s.id === pass.sceneId)
+      if (!scene) throw new Error(`Missing scene ${pass.sceneId}`)
+      active = pass
+      const base = completedWork
+      const faults = pass === faultPass ? { faultAtFrame: args.faultAtFrame, faultAfterRenderFrame: args.faultAfterRenderFrame } : {}
+      const done = await renderPass({ browser, scene, pass, dir, signal, h264Encoder, ...faults, onFrame: (n) => report(base + n) })
+      completed.push(done)
+      completedWork = base + done.frames
+      await writeManifest(manifestFile, makeManifest('running'))
+      args.onOutput?.(absolute(done))
     }
-
-    let n = fromFrame
-    while (n < toFrame) {
-      let png: Buffer
-      try {
-        await step(page!.renderFrame(n), `render frame ${n}`, pageFailed!)
-        png = await step(page!.capturePng(), `capture frame ${n}`, pageFailed!)
-        // The context can go after the frame was painted. The capture may then be a correctly sized blank map, and the
-        // loss event may not have reached Node yet, so ask the page before trusting the PNG.
-        if (await step(page!.contextLost(), `check frame ${n}`, pageFailed!)) {
-          throw new Error(`Could not capture frame ${n}: the WebGL context was lost.`)
-        }
-      } catch (e) {
-        if (signal?.aborted) throw e
-        await recover(n, e)
-        continue
-      }
-      // A wrong size is a bug, not a transient fault, so it fails the render without a recovery.
-      checkPngSize(png, size, n)
-      await writing
-      if (!encoder) {
-        const part = path.join(dir, `all.part${parts.length + 1}.${ext}`)
-        parts.push(part)
-        encoder = Encoder.start(ffmpegArgs({ codec, ...size, fps: snapshot.output.fps, out: part, h264Encoder }))
-      }
-      framesDone = n - fromFrame
-      if (n > fromFrame) progress(framesDone)
-      writing = encoder.write(png)
-      // Rejections are awaited on the next frame; this stops them counting as unhandled until then.
-      writing.catch(() => undefined)
-      n++
-    }
-    await writing
-    await encoder!.finish()
-    framesDone = frames
-    progress(framesDone)
-    if (parts.length === 1) {
-      await rename(parts[0]!, video)
-    } else {
-      await joinParts({ parts, out: video, codec })
-    }
+    throwIfAborted(signal)
+    const outputs = completed.map(absolute)
     const renderFps = round2(elapsedFps())
-    await writeFile(manifestFile, `${JSON.stringify(manifest({ renderFps }), null, 2)}\n`)
-    return { dir, video, manifest: manifestFile, frames, renderFps, projectHash: hash }
+    await writeManifest(manifestFile, makeManifest('done', { renderFps }))
+    const flattened = completed.find((pass) => pass.layer === 'all' && pass.path !== PREVIEW_FILE)
+    const preview = completed.find((pass) => pass.path === PREVIEW_FILE)
+    return {
+      dir,
+      video: flattened && path.join(dir, flattened.path),
+      manifest: manifestFile,
+      frames,
+      renderFps,
+      projectHash: hash,
+      outputs,
+      scenes: sceneExports(plan.scenes, completed, dir),
+      preview: preview && path.join(dir, preview.path),
+    }
   } catch (e) {
-    if (!signal?.aborted) throw e
-    encoder?.kill()
-    await encoder?.finish().catch(() => undefined)
-    await writeFile(manifestFile, `${JSON.stringify(manifest({ cancelled: true, framesDone }), null, 2)}\n`)
-    throw new RenderCancelled()
+    if (signal?.aborted) {
+      await writeManifest(manifestFile, makeManifest('cancelled')).catch(() => undefined)
+      throw new RenderCancelled()
+    }
+    await writeManifest(manifestFile, makeManifest('failed', { error: errorMessage(e) })).catch(() => undefined)
+    throw e
   } finally {
     signal?.removeEventListener('abort', onAbort)
-    if (encoder) {
-      // A no-op after a clean finish. Otherwise wait until ffmpeg is gone.
-      encoder.kill()
-      await encoder.finish().catch(() => undefined)
-    }
     await launched?.browser.close().catch(() => undefined)
   }
 }
 
-/** Joins the segments into `out` and deletes them. If the join fails, the segments are kept and named in the fix. */
-export async function joinParts(args: { parts: string[]; out: string; codec: Codec }): Promise<void> {
-  try {
-    await joinSegments(args)
-  } catch (e) {
-    throw new RenderError(
-      errorMessage(e),
-      `Render again. The ${args.parts.length} segments rendered so far are kept: ${args.parts.join(', ')}`,
-    )
-  }
-  await Promise.all(args.parts.map((part) => rm(part, { force: true })))
+/** The preview's path in the render folder, as `planExport` names it. */
+const PREVIEW_FILE = 'preview.mp4'
+
+/** The frames the scene's passes cover. Every pass of a scene shares one range. */
+function sceneRange(passes: RenderPass[], sceneId: string): { fromFrame: number; toFrame: number } {
+  const pass = passes.find((p) => p.sceneId === sceneId)!
+  return { fromFrame: pass.fromFrame, toFrame: pass.toFrame }
 }
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw new RenderCancelled()
+/** Scenes whose map, route and signs layers all finished, with absolute media paths and clip-local markers. */
+function sceneExports(scenes: SceneRenderInput[], completed: CompletedPass[], dir: string): SceneExport[] {
+  return scenes.flatMap((scene) => {
+    const layer = (name: RenderLayer) => completed.find((pass) => pass.sceneId === scene.id && pass.layer === name)
+    const [map, route, signs] = [layer('map'), layer('route'), layer('signs')]
+    if (!map || !route || !signs) return []
+    const project = toPageProject(scene)
+    const timeline = buildTimeline(project, buildRoute(project))
+    const sourceRange = { fromFrame: map.fromFrame, toFrame: map.toFrame }
+    return [{
+      id: scene.id,
+      name: scene.name,
+      frames: map.frames,
+      sourceRange,
+      layers: { map: path.join(dir, map.path), route: path.join(dir, route.path), signs: path.join(dir, signs.path) },
+      markers: sceneMarkers(scene.content.stops, timeline.arrivals, sourceRange),
+    }]
+  })
 }
 
 function assertRenderable(project: Project): void {
@@ -286,14 +269,26 @@ function assertRenderable(project: Project): void {
 
 const round2 = (n: number) => Math.round(n * 100) / 100
 
-async function checkDisk(folder: string, neededBytes: number): Promise<void> {
+/**
+ * Fails unless there is room for every output, plus the largest one again: joining segments writes a whole new
+ * file before the segments are deleted.
+ */
+async function checkDisk(folder: string, passes: RenderPass[], size: { width: number; height: number }): Promise<void> {
+  const bytes = passes.map(
+    (pass) => (pass.toFrame - pass.fromFrame) * size.width * size.height * BYTES_PER_PIXEL[pass.kind] * DISK_MARGIN,
+  )
+  const neededBytes = bytes.reduce((sum, b) => sum + b, 0) + Math.max(...bytes)
   const stats = await statfs(folder)
   const free = Number(stats.bavail) * Number(stats.bsize)
   if (free >= neededBytes) return
   const gb = (bytes: number) => (bytes / GB).toFixed(1)
+  // H.264 has no alpha, so it is no substitute for the transparent layers.
+  const isolated = passes.some((pass) => pass.layer !== 'all')
   throw new RenderError(
     `Not enough disk space: the render needs about ${gb(neededBytes)} GB and ${gb(free)} GB is free.`,
-    "Free up disk space, render a shorter range, or use codec: 'h264', which needs far less space.",
+    isolated
+      ? 'Free up disk space, render a shorter range, or lower the output resolution.'
+      : "Free up disk space, render a shorter range, lower the output resolution, or use codec: 'h264', which needs far less space.",
   )
 }
 
@@ -317,41 +312,15 @@ async function makeRenderDir(folder: string, date: Date): Promise<string> {
 }
 
 /**
- * Waits for `work`, which does `what` (e.g. "render frame 12"), and fails with an error naming it if `work` rejects,
- * `pageFailed` rejects or it takes over 60 s. A late rejection from `work` is ignored, since the step has already
- * failed by then.
+ * Returns a function to call with the frames done so far and the active scene and layer, which reports progress with
+ * a rolling fps.
  */
-function step<T>(work: Promise<T>, what: string, pageFailed: Promise<never>): Promise<T> {
-  let timer: NodeJS.Timeout | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Could not ${what} within ${STEP_TIMEOUT_MS / 1000} s.`)), STEP_TIMEOUT_MS)
-  })
-  const named = Promise.race([work, pageFailed]).catch((e: unknown) => {
-    throw new Error(`Could not ${what}: ${errorMessage(e)}`, { cause: e })
-  })
-  named.catch(() => undefined)
-  return Promise.race([named, timeout]).finally(() => clearTimeout(timer))
-}
-
-const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
-
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-
-/** Checks the PNG's IHDR size against the output frame size. */
-function checkPngSize(png: Buffer, size: { width: number; height: number }, frame: number): void {
-  const valid = png.length >= 24 && png.subarray(0, 8).equals(PNG_SIGNATURE) && png.toString('latin1', 12, 16) === 'IHDR'
-  if (!valid) throw new Error(`Frame ${frame} was not captured as a PNG.`)
-  const width = png.readUInt32BE(16)
-  const height = png.readUInt32BE(20)
-  if (width !== size.width || height !== size.height) {
-    throw new Error(`Frame ${frame} was captured at ${width}×${height}, but the output is ${size.width}×${size.height}.`)
-  }
-}
-
-/** Returns a function to call with the frames done so far, which reports progress with a rolling fps. */
-function rollingProgress(totalFrames: number, onProgress: ((p: RenderProgress) => void) | undefined): (done: number) => void {
+function rollingProgress(
+  totalFrames: number,
+  onProgress: ((p: RenderProgress) => void) | undefined,
+): (done: number, active?: { sceneId: string; layer: RenderLayer }) => void {
   const times: { done: number; at: number }[] = [{ done: 0, at: performance.now() }]
-  return (done) => {
+  return (done, active) => {
     times.push({ done, at: performance.now() })
     while (times.length > FPS_WINDOW + 1) times.shift()
     const first = times[0]!
@@ -363,6 +332,7 @@ function rollingProgress(totalFrames: number, onProgress: ((p: RenderProgress) =
       totalFrames,
       fps: round2(fps),
       etaSeconds: fps > 0 ? Math.round((totalFrames - done) / fps) : 0,
+      ...active,
     })
   }
 }

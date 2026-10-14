@@ -80,7 +80,7 @@ test('renders a 2-second ProRes clip', async () => {
   expect(result.frames).toBe(50)
   expect(result.renderFps).toBeGreaterThan(0)
 
-  const stream = await ffprobe(result.video)
+  const stream = await ffprobe(result.video!)
   expect(stream.codec_name).toBe('prores')
   expect(stream.profile).toBe('HQ')
   expect(stream.pix_fmt).toBe('yuv422p10le')
@@ -100,13 +100,19 @@ test('renders a 2-second ProRes clip', async () => {
   expect(manifest.projectHash).toBe(result.projectHash)
   expect(manifest.mapperVersion).toBe('0.0.0')
   expect(manifest.chrome).toMatchObject({ channel: expect.any(String), webgl: expect.any(String) })
+  expect(manifest.manifestVersion).toBe(2)
+  expect(manifest.status).toBe('done')
+  expect(manifest.outputs).toEqual([
+    { sceneId: expect.any(String), layer: 'all', kind: 'prores-hq', path: 'all.mov', fromFrame: 0, toFrame: 50, frames: 50, segments: 1, recoveries: 0 },
+  ])
+  expect(result.outputs.map((o) => o.path)).toEqual([result.video])
 })
 
 test('renders H.264', async () => {
   const folder = await writeFolder(greekIslands())
   const result = await renderProject({ folder, codec: 'h264', range: { from: 0, to: 1 } })
   expect(result.video).toBe(path.join(result.dir, 'all.mp4'))
-  const stream = await ffprobe(result.video)
+  const stream = await ffprobe(result.video!)
   expect(stream.codec_name).toBe('h264')
   expect(stream.pix_fmt).toBe('yuv420p')
   expect(Number(stream.nb_frames)).toBe(25)
@@ -133,6 +139,7 @@ test('renders the starting snapshot', async () => {
   expect(during.progress!.frame).toBeLessThan(during.progress!.totalFrames)
 
   const status = await waitFor(jobId, (s) => s.state === 'done')
+  expect(status.outputs).toEqual(status.result!.outputs)
   const manifest = readManifest(status.result!.manifest)
   expect(manifest.projectHash).toBe(projectHash(before))
   expect(manifest.name).toBe('Greek Islands')
@@ -140,7 +147,7 @@ test('renders the starting snapshot', async () => {
 
   // The rendered last frame matches the original project's frame and not the edited one's.
   const last = 99
-  const rendered = await videoFramePng(status.result!.video, last)
+  const rendered = await videoFramePng(status.result!.video!, last)
   const fromOriginal = (await previewFrame({ folder: originalFolder, at: { frame: last }, width: 1920 })).png
   const fromEdited = (await previewFrame({ folder, at: { frame: last }, width: 1920 })).png
   const pixels = 1920 * 1080
@@ -167,6 +174,10 @@ test('cancel stops the job', async () => {
   const manifest = readManifest(path.join(dir, 'manifest.json'))
   expect(manifest.cancelled).toBe(true)
   expect(manifest.framesDone).toBeGreaterThanOrEqual(3)
+  expect(manifest.status).toBe('cancelled')
+  expect(manifest.outputs).toEqual([])
+  // The unfinished clip is never reported as an output.
+  expect(status.outputs).toBeUndefined()
 })
 
 test('a queued job reports running until it starts, and can be cancelled', async () => {

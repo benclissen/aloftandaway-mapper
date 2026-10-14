@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { launchBrowser } from '../render/chrome.js'
+import { findFcpxmlDtd } from '../render/fcpxml-validation.js'
 
 export interface Check {
   name: string
@@ -27,6 +28,8 @@ export interface Probes {
   chrome(): Promise<{ channel: 'chrome' | 'chromium'; webgl: string } | null>
   /** Free bytes on the volume that holds `dir`. Creates `dir` when it is missing. */
   freeBytes(dir: string): Promise<number>
+  /** The installed Final Cut Pro FCPXML 1.11 DTD, or undefined. */
+  fcpxmlDtd(): Promise<string | undefined>
 }
 
 const MIN_NODE_MAJOR = 22
@@ -80,6 +83,8 @@ export const realProbes: Probes = {
     const stats = await statfs(dir)
     return Number(stats.bavail) * Number(stats.bsize)
   },
+
+  fcpxmlDtd: () => findFcpxmlDtd(),
 }
 
 const gb = (bytes: number) => `${(bytes / GB).toFixed(1)} GB`
@@ -180,6 +185,27 @@ export async function runDoctor(probes: Probes = realProbes): Promise<Check[]> {
     detail: free === null ? `could not read free space for ${dir}` : `${gb(free)} free in ${dir}`,
     ...(diskOk ? {} : { fix: '4K ProRes needs about 8.5 GB per minute of video.' }),
   })
+
+  // FCPXML validation: optional, since flattened rendering works without Final Cut.
+  const dtd = await attempt(() => probes.fcpxmlDtd(), undefined)
+  if (!dtd) {
+    checks.push({
+      name: 'FCPXML validation',
+      ok: false,
+      level: 'warn',
+      detail: 'Final Cut Pro 1.11 DTD not found, so FCPXML validation will be skipped and exports will not be checked',
+      fix: 'Install Final Cut Pro to validate FCPXML exports. Flattened rendering works without it.',
+    })
+  } else {
+    const xmllintPath = await attempt(() => probes.which('xmllint'), null)
+    checks.push({
+      name: 'FCPXML validation',
+      ok: xmllintPath !== null,
+      level: 'warn',
+      detail: xmllintPath ? `${path.basename(dtd)} and xmllint found` : 'xmllint not found on PATH, so FCPXML validation cannot run',
+      ...(xmllintPath ? {} : { fix: 'Install libxml2 (brew install libxml2) and add its bin directory to PATH' }),
+    })
+  }
 
   return checks
 }

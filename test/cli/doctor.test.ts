@@ -9,6 +9,7 @@ const healthy = (): Probes => ({
   ffmpegEncoders: async () => ENCODERS,
   chrome: async () => ({ channel: 'chrome', webgl: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M6, Unspecified Version)' }),
   freeBytes: async () => 200e9,
+  fcpxmlDtd: async () => '/Applications/Final Cut Pro.app/FCPXMLv1_11.dtd',
 })
 
 const find = (checks: Awaited<ReturnType<typeof runDoctor>>, name: string) => {
@@ -19,10 +20,10 @@ const find = (checks: Awaited<ReturnType<typeof runDoctor>>, name: string) => {
 
 test('healthy machine: every check is ok and the exit code is 0', async () => {
   const checks = await runDoctor(healthy())
-  expect(checks.map((c) => c.name)).toEqual(['Node', 'ffmpeg', 'ProRes encoder', 'H.264 encoder', 'Chrome', 'WebGL', 'Disk'])
+  expect(checks.map((c) => c.name)).toEqual(['Node', 'ffmpeg', 'ProRes encoder', 'H.264 encoder', 'Chrome', 'WebGL', 'Disk', 'FCPXML validation'])
   expect(checks.every((c) => c.ok)).toBe(true)
   expect(doctorExitCode(checks)).toBe(0)
-  expect(formatChecks(checks)).toMatch(/All 7 checks passed/)
+  expect(formatChecks(checks)).toMatch(/All 8 checks passed/)
 })
 
 test('ffmpeg missing: error with the brew fix and exit code 1', async () => {
@@ -128,4 +129,25 @@ test('formatted output has no ANSI colour codes and ends with a summary line', a
   expect(text).not.toMatch(/\u001b\[/)
   const lines = text.trimEnd().split('\n')
   expect(lines.at(-1)).toMatch(/^\d+ problems?/)
+})
+
+test('no Final Cut DTD is a warning that says validation will be skipped', async () => {
+  const checks = await runDoctor({ ...healthy(), fcpxmlDtd: async () => undefined })
+  const check = find(checks, 'FCPXML validation')
+  expect(check).toMatchObject({ ok: false, level: 'warn' })
+  expect(check.detail).toMatch(/skipped/)
+  expect(doctorExitCode(checks)).toBe(0)
+})
+
+test('Final Cut DTD without xmllint is a warning with an install fix', async () => {
+  const checks = await runDoctor({ ...healthy(), which: async (cmd) => (cmd === 'xmllint' ? null : `/bin/${cmd}`) })
+  const check = find(checks, 'FCPXML validation')
+  expect(check).toMatchObject({ ok: false, level: 'warn' })
+  expect(check.fix).toMatch(/libxml2/)
+  expect(doctorExitCode(checks)).toBe(0)
+})
+
+test('a throwing DTD probe is treated as no Final Cut', async () => {
+  const checks = await runDoctor({ ...healthy(), fcpxmlDtd: async () => { throw new Error('boom') } })
+  expect(find(checks, 'FCPXML validation').ok).toBe(false)
 })

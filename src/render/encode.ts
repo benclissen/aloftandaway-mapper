@@ -8,6 +8,8 @@ import { EnvironmentError } from '../server/errors.js'
 
 export type Codec = 'prores' | 'h264'
 export type H264Encoder = 'h264_videotoolbox' | 'libx264'
+/** ProRes 422 HQ for opaque layers, ProRes 4444 with straight 16-bit alpha for transparent ones. */
+export type ProresProfile = 'hq' | '4444'
 
 const noFfmpeg = () => new EnvironmentError('ffmpeg is not installed or not on the PATH.', 'brew install ffmpeg')
 const isNotFound = (e: unknown) => (e as NodeJS.ErrnoException).code === 'ENOENT'
@@ -28,9 +30,13 @@ const COLOUR_TAGS = ['-color_primaries', 'bt709', '-color_trc', 'bt709', '-color
 /**
  * ffmpeg arguments that read PNG frames from stdin and write `out`. ffmpeg reads the frame size from each PNG, so
  * `width` and `height` aren't passed on; the render loop checks every PNG against them before writing it.
+ *
+ * `proresProfile` picks HQ (the default) or 4444. For 4444 the colour filter's scale converts RGBA PNGs straight to
+ * `yuva444p10le`, the format the encoder asks for, so alpha passes through untouched.
  */
 export function ffmpegArgs(args: {
   codec: Codec
+  proresProfile?: ProresProfile
   width: number
   height: number
   fps: Fps
@@ -38,9 +44,13 @@ export function ffmpegArgs(args: {
   h264Encoder?: H264Encoder
 }): string[] {
   const rate = `${args.fps.num}/${args.fps.den}`
+  const proresArgs =
+    args.proresProfile === '4444'
+      ? ['-c:v', 'prores_ks', '-profile:v', '4', '-vendor', 'apl0', '-pix_fmt', 'yuva444p10le', '-alpha_bits', '16']
+      : ['-c:v', 'prores_ks', '-profile:v', '3', '-vendor', 'apl0', '-pix_fmt', 'yuv422p10le']
   const codecArgs =
     args.codec === 'prores'
-      ? ['-c:v', 'prores_ks', '-profile:v', '3', '-vendor', 'apl0', '-pix_fmt', 'yuv422p10le']
+      ? proresArgs
       : [
           ...((args.h264Encoder ?? 'h264_videotoolbox') === 'h264_videotoolbox'
             ? ['-c:v', 'h264_videotoolbox', '-b:v', '40M']

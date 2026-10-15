@@ -9,7 +9,8 @@ export interface MapperPage {
   /**
    * `faultAtFrame` and `faultAfterRenderFrame` are test hooks that lose the map's WebGL context on purpose, as a crashing GPU
    * would: while that frame is being rendered, or just after it has been painted. Each fires at most once per page
-   * load and is ignored when absent.
+   * load and is ignored when absent. `scene` is the id of the scene to show, the project's first when left out; an
+   * unknown id rejects.
    */
   load(
     project: Project,
@@ -68,9 +69,13 @@ export function startRenderMode(root: HTMLElement): void {
     get frameCount() {
       return stage ? stage.frameCount : 0
     },
-    async load(input, { pixelRatio, layer = 'all', faultAtFrame: fault, faultAfterRenderFrame: faultAfter }) {
+    async load(input, { pixelRatio, layer = 'all', scene: sceneId, faultAtFrame: fault, faultAfterRenderFrame: faultAfter }) {
       if (!(pixelRatio > 0)) throw new RangeError(`pixelRatio must be positive, got ${pixelRatio}`)
       const project = parseProject(input)
+      // Checked before the stage is touched, so a bad id leaves the loaded scene as it was.
+      if (sceneId !== undefined && !project.scenes.some((s) => s.id === sceneId)) {
+        throw new Error(`No scene ${sceneId} in this project.`)
+      }
       await ready
       if (!stage || stageRatio !== pixelRatio || stageLayer !== layer) {
         stopWatchingContext?.()
@@ -85,7 +90,7 @@ export function startRenderMode(root: HTMLElement): void {
       }
       faultAtFrame = fault
       faultAfterRenderFrame = faultAfter
-      await stage.load(project)
+      await stage.load(project, sceneId)
       return { frameCount: stage.frameCount }
     },
     async renderFrame(n) {

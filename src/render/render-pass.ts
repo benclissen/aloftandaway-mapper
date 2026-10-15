@@ -2,8 +2,6 @@ import { mkdir, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 import type { Browser } from 'playwright'
 import {
-  buildRoute,
-  buildTimeline,
   frameSize,
   outputScale,
   type Aspect,
@@ -12,8 +10,7 @@ import {
 } from '../core/index.js'
 import { Encoder, ffmpegArgs, joinSegments, pickH264Encoder, type Codec, type H264Encoder, type ProresProfile } from './encode.js'
 import { RenderCancelled, RenderError } from './errors.js'
-import { toPageProject } from './export-plan.js'
-import type { CompletedPass, MediaKind, RenderPass, SceneRenderInput } from './export-types.js'
+import type { CompletedPass, MediaKind, PlannedScene, RenderPass } from './export-types.js'
 import { RenderPage } from './page.js'
 
 /** How long one `renderFrame` or `capturePng` may take before the pass fails. */
@@ -59,7 +56,9 @@ const DEFAULT_DEPS: PassDeps = {
 
 export interface RenderPassArgs {
   browser: Browser
-  scene: SceneRenderInput
+  /** The project snapshot the render was planned from. The page loads it and shows `scene`. */
+  project: Project
+  scene: PlannedScene
   pass: RenderPass
   /** The render folder. `pass.path` is relative to it. */
   dir: string
@@ -84,11 +83,10 @@ export interface RenderPassArgs {
  * An ffmpeg failure is not a page fault and fails the pass at once. A failed pass leaves its segments behind.
  */
 export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_DEPS): Promise<CompletedPass> {
-  const { browser, scene, pass, dir, signal } = args
+  const { browser, project, scene, pass, dir, signal } = args
   throwIfAborted(signal)
-  const project = toPageProject(scene)
-  const timeline = buildTimeline(scene.scene, scene.output.fps, buildRoute(scene.scene))
-  const size = frameSize(scene.output)
+  const { output } = project
+  const size = frameSize(output)
   const { fromFrame, toFrame } = pass
   const frames = toFrame - fromFrame
   const media = MEDIA[pass.kind]
@@ -120,13 +118,13 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
 
   /** Opens a page, loads the scene's layer into it and arms `pageFailed`. */
   const openPage = async (faults: { faultAtFrame?: number; faultAfterRenderFrame?: number } = {}) => {
-    const opened = await deps.openPage({ browser, aspect: scene.output.aspect })
+    const opened = await deps.openPage({ browser, aspect: output.aspect })
     loading = opened
     try {
       throwIfAborted(signal)
-      const frameCount = await opened.load(project, outputScale(scene.output), { layer: pass.layer, ...faults })
-      if (frameCount !== timeline.totalFrames) {
-        throw new Error(`The render page counted ${frameCount} frames, but the timeline has ${timeline.totalFrames}.`)
+      const frameCount = await opened.load(project, outputScale(output), { layer: pass.layer, scene: scene.id, ...faults })
+      if (frameCount !== scene.totalFrames) {
+        throw new Error(`The render page counted ${frameCount} frames, but the timeline has ${scene.totalFrames}.`)
       }
     } catch (e) {
       await opened.close()
@@ -200,7 +198,7 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
       if (!encoder) {
         const part = `${stem}.part${parts.length + 1}${ext}`
         parts.push(part)
-        encoder = deps.startEncoder(ffmpegArgs({ ...media, ...size, fps: scene.output.fps, out: part, h264Encoder }))
+        encoder = deps.startEncoder(ffmpegArgs({ ...media, ...size, fps: output.fps, out: part, h264Encoder }))
       }
       if (n > fromFrame) args.onFrame?.(n - fromFrame)
       writing = encoder.write(png)

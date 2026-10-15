@@ -4,14 +4,20 @@ import os from 'node:os'
 import path from 'node:path'
 import type { Browser } from 'playwright'
 import { PNG } from 'pngjs'
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest'
-import { buildRoute, buildTimeline, MAP_CREDIT, type RenderPageOptions } from '../../src/core/index.js'
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest'
+import { MAP_CREDIT, type RenderPageOptions } from '../../src/core/index.js'
 import { Encoder } from '../../src/render/encode.js'
 import { RenderError } from '../../src/render/errors.js'
-import { adaptV1Scene, planExport } from '../../src/render/export-plan.js'
+import { planExport } from '../../src/render/export-plan.js'
 import { writeManifest, type ExportManifest } from '../../src/render/manifest.js'
 import { renderPass, type PassDeps, type PassEncoder, type PassPage } from '../../src/render/render-pass.js'
+import { writeFileAtomic } from '../../src/server/atomic.js'
 import { greekIslands } from '../fixtures/projects.js'
+
+vi.mock('../../src/server/atomic.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/server/atomic.js')>()
+  return { ...actual, writeFileAtomic: vi.fn(actual.writeFileAtomic) }
+})
 
 let tmp: string
 const previousPath = process.env.PATH
@@ -53,6 +59,15 @@ function manifest(status: ExportManifest['status']): ExportManifest {
 }
 
 describe('writeManifest', () => {
+  test('writes the manifest through writeFileAtomic', async () => {
+    const dir = await mkdtemp(path.join(tmp, 'atomic-'))
+    const file = path.join(dir, 'manifest.json')
+    vi.mocked(writeFileAtomic).mockClear()
+    await writeManifest(file, manifest('running'))
+    expect(writeFileAtomic).toHaveBeenCalledTimes(1)
+    expect(writeFileAtomic).toHaveBeenCalledWith(file, `${JSON.stringify(manifest('running'), null, 2)}\n`)
+  })
+
   test('writes the manifest and leaves no temporary file', async () => {
     const dir = await mkdtemp(path.join(tmp, 'write-'))
     const file = path.join(dir, 'manifest.json')
@@ -89,8 +104,8 @@ describe('writeManifest', () => {
 
 describe('renderPass failures', () => {
   const project = greekIslands()
-  const scene = adaptV1Scene(project)
-  const totalFrames = buildTimeline(scene.scene, project.output.fps, buildRoute(scene.scene)).totalFrames
+  const scene = planExport(project, {}).scenes[0]!
+  const totalFrames = scene.totalFrames
   const browser = {} as Browser
   let frame: Buffer
 
@@ -142,15 +157,15 @@ describe('renderPass failures', () => {
         kill: () => undefined,
       }
     }
-    const e = await renderPass({ browser, scene, pass, dir, faultAtFrame: 7 }, { openPage: pages.openPage, startEncoder })
+    const e = await renderPass({ browser, project, scene, pass, dir, faultAtFrame: 7 }, { openPage: pages.openPage, startEncoder })
       .then(() => undefined, (error: unknown) => error)
     expect(e).toBeInstanceOf(RenderError)
     expect((e as Error).message).toMatch(/Frame 2 of the route layer failed 4 times, after 3 recoveries/)
     expect(pages.loads).toEqual([
-      { layer: 'route', faultAtFrame: 7, faultAfterRenderFrame: undefined },
-      { layer: 'route' },
-      { layer: 'route' },
-      { layer: 'route' },
+      { layer: 'route', scene: scene.id, faultAtFrame: 7, faultAfterRenderFrame: undefined },
+      { layer: 'route', scene: scene.id },
+      { layer: 'route', scene: scene.id },
+      { layer: 'route', scene: scene.id },
     ])
     expect(pages.openPages()).toBe(0)
     // Frames 0 and 1 went to the first segment, which was finished before the first recovery.
@@ -171,7 +186,7 @@ describe('renderPass failures', () => {
     process.env.PATH = `${bin}:${previousPath}`
     const pass = planExport(project, { layers: ['map'], range: { from: 0, to: 0.4 } }).passes[0]!
     const pages = fakePages(Infinity)
-    const e = await renderPass({ browser, scene, pass, dir }, { openPage: pages.openPage, startEncoder: Encoder.start })
+    const e = await renderPass({ browser, project, scene, pass, dir }, { openPage: pages.openPage, startEncoder: Encoder.start })
       .then(() => undefined, (error: unknown) => error)
     expect(e).toBeInstanceOf(Error)
     expect((e as Error).message).toMatch(/ffmpeg exited with code 1[\s\S]*fake encoder failure/)

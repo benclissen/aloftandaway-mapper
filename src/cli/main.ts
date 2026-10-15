@@ -231,14 +231,16 @@ async function renderCommand(args: string[]): Promise<number> {
   } catch (e) {
     // A signal is shutting down and reports the cancellation itself; let it finish and exit 130.
     if (controller.signal.aborted) return exit(shutdown, SIGNAL_EXIT)
+    // Set before printing: a signal that arrives while the report prints did not cancel this render.
+    ending = true
     // What the render left behind goes to stderr, as the MCP render_status reports it. stdout stays empty.
     console.error([errorText(e, 'render'), ...(await leftover({ outputs: finished, dir: renderDir }))].join('\n'))
-    ending = true
     return exit(shutdown, 1)
   }
+  // The render has finished, so a signal from here on is not a cancel.
+  ending = true
   console.log(JSON.stringify(result, null, 2))
   console.error(await doneSummary(result))
-  ending = true
   return exit(shutdown, 0)
 }
 

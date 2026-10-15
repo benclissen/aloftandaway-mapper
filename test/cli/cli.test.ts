@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process'
 import { execFile } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 
@@ -219,3 +219,76 @@ test('a cancelled render reports its folder and the map credit on stderr and exi
   expect(stderr).toContain(`Folder: ${path.join(renders, readdirSync(renders)[0]!)}`)
   expect(stderr).toContain('Credit required: ')
 }, 60_000)
+
+test('a signal after the render finishes is not reported as a cancel', async () => {
+  // A preload swaps in a render that succeeds at once, and a summary that waits for SIGINT before it prints. The
+  // signal so always lands while the result is printing, and the shutdown handler has run by the time it goes on.
+  const dir = path.join(tmp, 'signal-after-done')
+  await mkdir(dir, { recursive: true })
+  const fakeRender = path.join(dir, 'fake-render.mjs')
+  await writeFile(
+    fakeRender,
+    `export async function renderProject(args) {
+  args.onStart?.({ dir: ${JSON.stringify(dir)} })
+  return { dir: ${JSON.stringify(dir)}, manifest: ${JSON.stringify(path.join(dir, 'manifest.json'))}, frames: 1, renderFps: 1, projectHash: 'fake', outputs: [], scenes: [] }
+}
+`,
+  )
+  const realTools = pathToFileURL(path.join(ROOT, 'dist', 'mcp', 'tools.js')).href
+  const slowTools = path.join(dir, 'slow-tools.mjs')
+  await writeFile(
+    slowTools,
+    `export * from ${JSON.stringify(realTools)}
+import { doneSummary as realDoneSummary } from ${JSON.stringify(realTools)}
+export async function doneSummary(result) {
+  // A signal listener alone doesn't keep Node running.
+  const alive = setInterval(() => undefined, 1000)
+  await new Promise((resolve) => process.once('SIGINT', resolve))
+  clearInterval(alive)
+  await new Promise((resolve) => setImmediate(resolve))
+  return realDoneSummary(result)
+}
+`,
+  )
+  const swaps = {
+    '../render/render.js': pathToFileURL(fakeRender).href,
+    '../mcp/tools.js': pathToFileURL(slowTools).href,
+  }
+  const preload = path.join(dir, 'preload.mjs')
+  await writeFile(
+    preload,
+    `import { registerHooks } from 'node:module'
+const swaps = ${JSON.stringify(swaps)}
+registerHooks({
+  resolve(specifier, context, next) {
+    if (context.parentURL === ${JSON.stringify(pathToFileURL(MAIN).href)} && specifier in swaps) {
+      return { url: swaps[specifier], shortCircuit: true }
+    }
+    return next(specifier, context)
+  },
+})
+`,
+  )
+  const child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, MAIN, 'render', dir], {
+    env: { ...(process.env as Record<string, string>), MAPPER_CACHE_DIR: path.join(tmp, 'cache') },
+  })
+  try {
+    let stdout = ''
+    let stderr = ''
+    const printed = new Promise<void>((resolve) => {
+      child.stdout.on('data', (d: Buffer) => {
+        stdout += d
+        if (stdout.trimEnd().endsWith('}')) resolve()
+      })
+    })
+    child.stderr.on('data', (d: Buffer) => (stderr += d))
+    const closed = new Promise<number | null>((resolve) => child.on('close', resolve))
+    await printed
+    expect(JSON.parse(stdout).dir).toBe(dir)
+    child.kill('SIGINT')
+    expect(await closed).toBe(130)
+    expect(stderr).not.toContain('Cancelled.')
+  } finally {
+    child.kill('SIGKILL')
+  }
+}, 30_000)

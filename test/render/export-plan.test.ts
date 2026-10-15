@@ -1,15 +1,17 @@
 import { expect, test } from 'vitest'
-import { buildRoute, buildTimeline, parseProject } from '../../src/core/index.js'
-import { adaptV1Scene, planExport, sceneMarkers, slug, toPageProject } from '../../src/render/export-plan.js'
+import { buildRoute, buildTimeline } from '../../src/core/index.js'
+import { planExport, sceneMarkers, slug } from '../../src/render/export-plan.js'
 import type { LayerRequest } from '../../src/render/export-types.js'
 import { greekIslands, sceneOf } from '../fixtures/projects.js'
 
-test('adapts a project to one scene without changing it', () => {
+test('plans the first scene without changing the project', () => {
   const project = greekIslands()
   const before = structuredClone(project)
   const plan = planExport(project, { layers: ['map', 'route', 'signs'] })
   expect(plan.scenes).toHaveLength(1)
-  expect(plan.scenes[0].id).toBe(project.id)
+  expect(plan.scenes[0].id).toBe(sceneOf(project).id)
+  expect(plan.scenes[0].name).toBe(sceneOf(project).name)
+  expect(plan.scenes[0].scene).toEqual(sceneOf(project))
   expect(plan.passes.map(p => [p.layer, p.kind, p.path])).toEqual([
     ['map', 'prores-hq', '01-greek-islands/map.mov'],
     ['route', 'prores-4444', '01-greek-islands/route.mov'],
@@ -17,12 +19,16 @@ test('adapts a project to one scene without changing it', () => {
   ])
   expect(plan.fcpxml).toBe(true)
   expect(project).toEqual(before)
-  const page = toPageProject(plan.scenes[0])
-  expect(parseProject(page)).toEqual(page)
-  expect(page.schemaVersion).toBe(2)
-  expect(page.scenes).toEqual([sceneOf(project)])
-  expect(adaptV1Scene(page)).toEqual(plan.scenes[0])
-  expect(toPageProject(adaptV1Scene({ ...project, updatedAt: '2026-10-14T00:00:00.000Z' }))).toEqual(page)
+})
+
+test('planExport carries frame count and arrivals', () => {
+  const project = greekIslands()
+  const scene = sceneOf(project)
+  const timeline = buildTimeline(scene, project.output.fps, buildRoute(scene))
+  const plan = planExport(project, { range: { from: 1, to: 2 } })
+  expect(plan.scenes[0].totalFrames).toBe(timeline.totalFrames)
+  expect(plan.scenes[0].arrivals).toEqual(timeline.arrivals)
+  expect(plan.scenes[0].arrivals.length).toBe(4)
 })
 
 test.each([

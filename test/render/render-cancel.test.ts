@@ -1,11 +1,12 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { Browser, BrowserContext, Page } from 'playwright'
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { RenderCancelled, renderProject } from '../../src/render/render.js'
-import { adaptV1Scene, planExport } from '../../src/render/export-plan.js'
+import { planExport } from '../../src/render/export-plan.js'
 import { RenderPage } from '../../src/render/page.js'
 import { renderPass, type PassPage } from '../../src/render/render-pass.js'
 import { saveProject } from '../../src/server/store.js'
@@ -70,13 +71,39 @@ describe('cancelling a render', () => {
   })
 })
 
+describe('render speed', () => {
+  test('renderFps counts clip frames', async () => {
+    const folder = path.join(tmp, 'fps')
+    await mkdir(folder)
+    await saveProject(folder, greekIslands())
+    let clock = 0
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    // Each of the three passes renders its 10 frames in a third of a second: 30 work frames, 10 clip frames, 1 s.
+    vi.mocked(renderPass).mockImplementation(async ({ pass, onFrame }) => {
+      const frames = pass.toFrame - pass.fromFrame
+      clock += 1000 / 3
+      onFrame?.(frames)
+      return { ...pass, frames, segments: 1, recoveries: 0 }
+    })
+    try {
+      const result = await renderProject({ folder, layers: ['map', 'route', 'all'], codec: 'prores', range: { from: 0, to: 0.4 } })
+      expect(result.outputs.map((o) => o.frames)).toEqual([10, 10, 10])
+      expect(result.renderFps).toBe(10)
+      expect(JSON.parse(await readFile(result.manifest, 'utf8')).renderFps).toBe(10)
+    } finally {
+      now.mockRestore()
+    }
+  })
+})
+
 describe('cancelling a pass', () => {
   test('closes a page that is still loading', async () => {
     const { renderPass: realRenderPass } = await vi.importActual<typeof import('../../src/render/render-pass.js')>(
       '../../src/render/render-pass.js',
     )
     const project = greekIslands()
-    const pass = planExport(project, { layers: ['route'], range: { from: 0, to: 0.2 } }).passes[0]!
+    const plan = planExport(project, { layers: ['route'], range: { from: 0, to: 0.2 } })
+    const pass = plan.passes[0]!
     const controller = new AbortController()
     let closed!: () => void
     const closing = new Promise<void>((resolve) => (closed = resolve))
@@ -99,7 +126,7 @@ describe('cancelling a pass', () => {
     }
     const dir = await mkdtemp(path.join(tmp, 'loading-'))
     const rendering = realRenderPass(
-      { browser: {} as Browser, scene: adaptV1Scene(project), pass, dir, signal: controller.signal },
+      { browser: {} as Browser, project, scene: plan.scenes[0]!, pass, dir, signal: controller.signal },
       { openPage: async () => page, startEncoder: () => expect.fail('no frame should be encoded') },
     )
     await expect(rendering).rejects.toThrow('has been closed')

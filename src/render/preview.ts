@@ -155,7 +155,7 @@ async function withProject<T>(folder: string, frameWidth: (aspect: Aspect) => nu
   const { aspect } = project.output
   const { page, entry } = await pageFor(aspect)
   try {
-    await page.load(project, frameWidth(aspect) / layoutSize(aspect).width)
+    await page.load(project, frameWidth(aspect) / layoutSize(aspect).width, { scene: scene.id })
     return await use({ project, timeline, page })
   } catch (e) {
     evict(aspect, entry, page)

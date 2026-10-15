@@ -15,6 +15,8 @@ export type RenderLayer = 'map' | 'route' | 'signs' | 'all'
 
 export interface RenderPageOptions {
   layer?: RenderLayer
+  /** The id of the scene to show. The project's first scene when left out. */
+  scene?: string
   faultAtFrame?: number
   faultAfterRenderFrame?: number
 }

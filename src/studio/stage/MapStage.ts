@@ -42,7 +42,7 @@ const IDLE_TIMEOUT_MS = 60_000
 
 interface Loaded {
   project: Project
-  /** The scene the stage shows: the project's first. */
+  /** The scene the stage shows. */
   scene: Scene
   route: Route
   timeline: Timeline
@@ -177,10 +177,14 @@ export class MapStage {
     return this.require().timeline
   }
 
-  /** Lays the stage out for `project`. Rebuilds the map style only when the theme or label language changes. */
-  async load(project: Project): Promise<void> {
+  /**
+   * Lays the stage out for the scene with id `sceneId` in `project`, or its first scene when `sceneId` is left out.
+   * Rebuilds the map style only when the theme or label language changes. Rejects for an unknown scene id.
+   */
+  async load(project: Project, sceneId?: string): Promise<void> {
     await this.enqueue(async () => {
-      const scene = project.scenes[0]!
+      const scene = sceneId === undefined ? project.scenes[0]! : project.scenes.find((s) => s.id === sceneId)
+      if (!scene) throw new Error(`No scene ${sceneId} in this project.`)
       const route = buildRoute(scene)
       const timeline = buildTimeline(scene, project.output.fps, route)
       const { width, height } = layoutSize(project.output.aspect)

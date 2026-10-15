@@ -1,14 +1,16 @@
-import type { Output, Project, RenderLayer, Scene } from '../core/index.js'
+import type { Output, Project, RenderLayer, Scene, Timeline } from '../core/index.js'
 
 export type LayerRequest = RenderLayer | 'preview'
 export type MediaKind = 'prores-hq' | 'prores-4444' | 'h264'
 
-export interface SceneRenderInput {
+/** A scene to render, with its timeline's frame count and arrivals worked out once when the export is planned. */
+export interface PlannedScene {
   id: string
   name: string
-  output: Output
-  credit: Project['credit']
   scene: Scene
+  /** Frames in the scene's whole timeline, before any range is applied. */
+  totalFrames: number
+  arrivals: Timeline['arrivals']
 }
 
 export interface ExportMarker { frame: number; value: string }
@@ -43,7 +45,7 @@ export interface CompletedPass extends RenderPass {
 }
 
 export interface ExportPlan {
-  scenes: SceneRenderInput[]
+  scenes: PlannedScene[]
   passes: RenderPass[]
   fcpxml: boolean
 }

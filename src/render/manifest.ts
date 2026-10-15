@@ -1,7 +1,5 @@
-import { randomUUID } from 'node:crypto'
-import { rename, rm, writeFile } from 'node:fs/promises'
-import path from 'node:path'
 import type { Output, Project } from '../core/index.js'
+import { writeFileAtomic } from '../server/atomic.js'
 import type { Codec } from './encode.js'
 import type { CompletedPass } from './export-types.js'
 
@@ -30,6 +28,7 @@ export interface ExportManifest {
   totalWorkFrames: number
   durationSeconds: number
   renderedAt: string
+  /** Clip frames per second: completed work frames ÷ number of passes ÷ elapsed seconds. */
   renderFps: number
   chrome?: { channel: string; webgl: string }
   fcpxml?: string
@@ -45,16 +44,9 @@ export interface ExportManifest {
 }
 
 /**
- * Writes the manifest to a temporary file beside `file`, then renames it into place, so a reader never sees half a
- * manifest. If either step fails the temporary file is removed and the previous manifest is left as it was.
+ * Writes the manifest with `writeFileAtomic`, so a reader never sees half a manifest. If the write fails, the previous
+ * manifest is left as it was.
  */
 export async function writeManifest(file: string, value: ExportManifest): Promise<void> {
-  const temp = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID().slice(0, 8)}.tmp`)
-  try {
-    await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`)
-    await rename(temp, file)
-  } catch (e) {
-    await rm(temp, { force: true }).catch(() => undefined)
-    throw e
-  }
+  await writeFileAtomic(file, `${JSON.stringify(value, null, 2)}\n`)
 }

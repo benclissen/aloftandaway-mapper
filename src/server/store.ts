@@ -1,6 +1,7 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { writeFileAtomic } from './atomic.js'
 import { defaultProject, parseProject, ProjectError, type Output, type Project } from '../core/index.js'
 
 export const PROJECT_FILE = 'mapper.json'
@@ -145,21 +146,11 @@ function canonical(value: unknown): unknown {
   return value
 }
 
-/** Writes to a temporary file in the same folder, flushes it to disk, then renames it over mapper.json. */
+/** Writes mapper.json atomically (see `writeFileAtomic`). */
 async function writeAtomic(folder: string, project: Project): Promise<void> {
-  const file = path.join(folder, PROJECT_FILE)
-  const tmp = path.join(folder, `${PROJECT_FILE}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`)
   try {
-    const handle = await open(tmp, 'w')
-    try {
-      await handle.writeFile(`${JSON.stringify(project, null, 2)}\n`)
-      await handle.sync()
-    } finally {
-      await handle.close()
-    }
-    await rename(tmp, file)
+    await writeFileAtomic(path.join(folder, PROJECT_FILE), `${JSON.stringify(project, null, 2)}\n`)
   } catch (e) {
-    await unlink(tmp).catch(() => undefined)
     // Name the folder, not the temporary file.
     throw fsError(e, folder)
   }

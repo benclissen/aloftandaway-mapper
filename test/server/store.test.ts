@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
@@ -13,6 +13,7 @@ import {
   projectHash,
   saveProject,
 } from '../../src/server/store.js'
+import { writeFileAtomic } from '../../src/server/atomic.js'
 import { greekIslands, sceneOf } from '../fixtures/projects.js'
 
 let tmp: string
@@ -130,6 +131,36 @@ describe('version 1 files', () => {
     expect(written).not.toHaveProperty('stops')
     expect(written.scenes).toHaveLength(1)
     expect(written.scenes[0].id).toBe(v2.id)
+  })
+})
+
+describe('writeFileAtomic', () => {
+  test('writes the text and leaves only the file', async () => {
+    const file = path.join(tmp, 'out.json')
+    await writeFileAtomic(file, 'one')
+    await writeFileAtomic(file, 'two')
+    expect(await readFile(file, 'utf8')).toBe('two')
+    expect(await readdir(tmp)).toEqual(['out.json'])
+  })
+
+  test('writeFileAtomic leaves no temp file on failure', async () => {
+    const readOnly = path.join(tmp, 'read-only')
+    await mkdir(readOnly)
+    await writeFile(path.join(readOnly, 'out.json'), 'before')
+    await chmod(readOnly, 0o555)
+    try {
+      await expect(writeFileAtomic(path.join(readOnly, 'out.json'), 'after')).rejects.toThrow()
+    } finally {
+      await chmod(readOnly, 0o755)
+    }
+    expect(await readdir(readOnly)).toEqual(['out.json'])
+    expect(await readFile(path.join(readOnly, 'out.json'), 'utf8')).toBe('before')
+
+    // A rename over a non-empty folder fails after the temporary file was written.
+    const blocked = path.join(tmp, 'blocked')
+    await mkdir(path.join(blocked, 'out.json', 'inside'), { recursive: true })
+    await expect(writeFileAtomic(path.join(blocked, 'out.json'), 'text')).rejects.toThrow()
+    expect(await readdir(blocked)).toEqual(['out.json'])
   })
 })
 

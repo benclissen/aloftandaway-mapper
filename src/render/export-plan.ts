@@ -1,18 +1,7 @@
-import { buildRoute, buildTimeline, fpsValue, type Project, type Stop, type Timeline } from '../core/index.js'
+import { buildRoute, buildTimeline, fpsValue, type Project, type Scene, type Stop, type Timeline } from '../core/index.js'
 import type { Codec } from './encode.js'
-import type { ExportMarker, ExportPlan, LayerRequest, SceneRenderInput } from './export-types.js'
+import type { ExportMarker, ExportPlan, LayerRequest, PlannedScene } from './export-types.js'
 import { RenderError } from './errors.js'
-
-export function adaptV1Scene(p: Project): SceneRenderInput {
-  return { id: p.id, name: p.name, output: p.output, credit: p.credit, scene: p.scenes[0]! }
-}
-
-/** Temporary browser boundary: a one-scene project for the render page. Metadata is fixed and is not render provenance. */
-export function toPageProject(scene: SceneRenderInput): Project {
-  return { schemaVersion: 2, id: scene.id, name: scene.name,
-    createdAt: '2000-01-01T00:00:00.000Z', updatedAt: '2000-01-01T00:00:00.000Z',
-    output: scene.output, credit: scene.credit, scenes: [scene.scene] }
-}
 
 export function slug(value: string): string {
   return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
@@ -40,9 +29,9 @@ export function planExport(project: Project, args: {
     invalid('Isolated layers are always ProRes, so the h264 codec only applies to the flattened clip.')
   }
 
-  const scene = adaptV1Scene(project)
-  const timeline = buildTimeline(scene.scene, scene.output.fps, buildRoute(scene.scene))
-  const range = frameRange(args.range, timeline.totalFrames, fpsValue(scene.output.fps))
+  // Stage 3 renders the first scene. The route and timeline are built once here and carried in the plan.
+  const scene = planScene(project, project.scenes[0]!)
+  const range = frameRange(args.range, scene.totalFrames, fpsValue(project.output.fps))
   const directory = `01-${slug(project.name)}`
   const passes = ORDER.filter(layer => layers.includes(layer)).map(request => {
     const layer = request === 'preview' ? 'all' : request
@@ -53,6 +42,11 @@ export function planExport(project: Project, args: {
     return { sceneId: scene.id, request, layer, kind, path, ...range } as const
   })
   return { scenes: [scene], passes, fcpxml: ['map', 'route', 'signs'].every(layer => layers.includes(layer as LayerRequest)) }
+}
+
+function planScene(project: Project, scene: Scene): PlannedScene {
+  const timeline = buildTimeline(scene, project.output.fps, buildRoute(scene))
+  return { id: scene.id, name: scene.name, scene, totalFrames: timeline.totalFrames, arrivals: timeline.arrivals }
 }
 
 export function sceneMarkers(stops: Stop[], arrivals: Timeline['arrivals'], range: {

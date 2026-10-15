@@ -3,8 +3,6 @@ import { mkdir, statfs } from 'node:fs/promises'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
-  buildRoute,
-  buildTimeline,
   fpsValue,
   frameSize,
   MAP_CREDIT,
@@ -19,7 +17,7 @@ import { assertCanValidateFcpxml } from './fcpxml-validation.js'
 import { pickH264Encoder, type Codec } from './encode.js'
 import { RenderError, RenderCancelled } from './errors.js'
 import { planExport, sceneMarkers } from './export-plan.js'
-import type { CompletedPass, LayerRequest, MediaKind, RenderPass, SceneExport, SceneRenderInput } from './export-types.js'
+import type { CompletedPass, LayerRequest, MediaKind, PlannedScene, RenderPass, SceneExport } from './export-types.js'
 import { writeManifest, type ExportManifest } from './manifest.js'
 import { publishFcpxml, type PublishedFcpxml } from './publish.js'
 import { errorMessage, renderPass, throwIfAborted } from './render-pass.js'
@@ -63,6 +61,7 @@ export interface RenderResult {
   manifest: string
   /** Frames in the rendered range, not multiplied by the number of layers. */
   frames: number
+  /** Clip frames per second: completed work frames ÷ number of passes ÷ elapsed seconds. */
   renderFps: number
   projectHash: string
   /** Every finished layer, in render order. */
@@ -146,7 +145,8 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   let active: RenderPass | undefined
   let published: PublishedFcpxml | undefined
   let loopStart = performance.now()
-  const elapsedFps = () => completedWork / Math.max((performance.now() - loopStart) / 1000, 1e-9)
+  /** Clip frames per second: work frames over every pass, divided by the number of passes, per elapsed second. */
+  const elapsedFps = () => completedWork / plan.passes.length / Math.max((performance.now() - loopStart) / 1000, 1e-9)
   /** Started with the first pass, so Chrome's launch doesn't count against the fps. */
   let progress: ReturnType<typeof rollingProgress> | undefined
   /** Reports `done` frames of work across the export, naming the active scene and layer. */
@@ -205,7 +205,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
       active = pass
       const base = completedWork
       const faults = pass === faultPass ? { faultAtFrame: args.faultAtFrame, faultAfterRenderFrame: args.faultAfterRenderFrame } : {}
-      const done = await renderPass({ browser, scene, pass, dir, signal, h264Encoder, ...faults, onFrame: (n) => report(base + n) })
+      const done = await renderPass({ browser, project: snapshot, scene, pass, dir, signal, h264Encoder, ...faults, onFrame: (n) => report(base + n) })
       completed.push(done)
       completedWork = base + done.frames
       await writeManifest(manifestFile, makeManifest('running'))
@@ -253,12 +253,11 @@ function sceneRange(passes: RenderPass[], sceneId: string): { fromFrame: number;
 }
 
 /** Scenes whose map, route and signs layers all finished, with absolute media paths and clip-local markers. */
-function sceneExports(scenes: SceneRenderInput[], completed: CompletedPass[], dir: string): SceneExport[] {
+function sceneExports(scenes: PlannedScene[], completed: CompletedPass[], dir: string): SceneExport[] {
   return scenes.flatMap((scene) => {
     const layer = (name: RenderLayer) => completed.find((pass) => pass.sceneId === scene.id && pass.layer === name)
     const [map, route, signs] = [layer('map'), layer('route'), layer('signs')]
     if (!map || !route || !signs) return []
-    const timeline = buildTimeline(scene.scene, scene.output.fps, buildRoute(scene.scene))
     const sourceRange = { fromFrame: map.fromFrame, toFrame: map.toFrame }
     return [{
       id: scene.id,
@@ -266,7 +265,7 @@ function sceneExports(scenes: SceneRenderInput[], completed: CompletedPass[], di
       frames: map.frames,
       sourceRange,
       layers: { map: path.join(dir, map.path), route: path.join(dir, route.path), signs: path.join(dir, signs.path) },
-      markers: sceneMarkers(scene.scene.stops, timeline.arrivals, sourceRange),
+      markers: sceneMarkers(scene.scene.stops, scene.arrivals, sourceRange),
     }]
   })
 }

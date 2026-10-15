@@ -37,6 +37,15 @@ describe the layered export unless they say otherwise.
   as the broadcast's `origin`; a broadcast from any other origin clears the
   history.
 
+**Revision, 2026-10-15 (stage 4 decisions):**
+
+- **Land data** ships in the repo as `data/land-10m.bin` (about 1.6 MB). It's built by `scripts/build-land.ts` from Natural Earth v5.1.2 `ne_10m_land` plus `ne_10m_minor_islands`, at 1e-4° precision. The water grid is never shipped; it's rasterised at runtime for each pair of points.
+- **Air legs** are great-circle arcs with a bow toward the nearer pole (north at the equator). The bow is sized so each arc's visible curve is at least 15% of its chord. Via points split the leg into arcs that meet at corners.
+- **`camera.follow.lookAhead` is in seconds**: the camera aims where the symbol will be that many seconds later. Defaults: `{ zoom: fitted zoom + 3, capped at the theme's maximum; orient: 'north'; lookAhead: 1; smoothing: 0.5 }`.
+- **`import_gpx`** also takes `legMode?` (default `'line'`) and `symbol?`, as `set_stops` does.
+- **`validateProject(project, { seaPaths? })`.** Sea checks run only when `seaPaths` is given.
+- **Deferred to stage 6:** positional via drag index and index-based leg selection.
+
 ## Purpose
 
 Mapper turns a trip into an animated map clip for a travel film. An AI agent
@@ -280,7 +289,7 @@ starting at frame 0. A joined render plays the scenes back to back.
 - **glide**: interpolates `start` → `end` across the travel section, using
   the van Wijk–Nuij zoom-and-pan curve so zoom and pan feel natural. Holds at
   each end.
-- **follow**: centres ahead of the symbol by `lookAhead` route-distance.
+- **follow**: centres ahead of the symbol by `lookAhead` seconds of travel.
   Bearing comes from the route heading when `orient = 'heading'`. Critically
   damped smoothing (`smoothing` from 0 to 1) is precomputed over the whole
   timeline, so any frame can be rendered on its own.
@@ -294,11 +303,13 @@ makes frame-by-frame rendering, resuming and golden tests possible.
 render; warnings don't. It checks:
 
 - Schema errors.
-- A sea leg crossing land (sampled against the water grid).
-- A sea leg that fell back to `line`.
-- Sign labels overlapping at their arrival frames (estimated from text size
-  at the shot zoom).
-- Camera zoom above the tile source's maximum zoom.
+- `sea-crosses-land`: a sea leg whose path crosses land (sampled against the
+  water grid). Sea checks run only when sea paths are given.
+- `sea-fallback`: a sea leg that fell back to `line`.
+- `sign-overlap`: estimated sign boxes overlapping at each stop arrival, from
+  text size at the shot zoom.
+- Camera zoom above the tile source's maximum zoom. This also checks
+  `follow.zoom`. In follow mode the start and end zooms are not checked.
 - Durations under one second per leg.
 - Fewer than two stops in a scene.
 - Two consecutive stops at the same place (an overnight that should be one

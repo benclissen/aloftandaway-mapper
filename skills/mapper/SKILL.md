@@ -13,10 +13,17 @@ page.
 ## Workflow
 
 1. Get the stops from wherever the user points you. Mapper has no data
-   connectors and no GPX import yet, so you supply the stops.
+   connectors, so you supply the stops. A local GPX file can be used instead
+   (see step 3).
 2. `create_project` with an absolute `folder` and a `name`. Defaults are
    3840×2160, 25 fps, 16:9.
-3. `set_stops` with the stops in travel order. Each `at` is `[lng, lat]`.
+3. `set_stops` with the stops in travel order. Each `at` is `[lng, lat]`. For a
+   local GPX file, call `import_gpx` with `folder`, an absolute `path` and
+   optionally `track` (a 1-based number or a name, when the file has several).
+   By default (`stops: 'ends'`) only the first and last points become stops.
+   `stops: 'waypoints'` makes each waypoint within 2 km of the track a stop.
+   The track between stops becomes up to 100 via points per leg. `legMode`
+   (default `'line'`) and `symbol` work as they do in `set_stops`.
 4. `validate_project`. Fix every warning, or explain it to the user.
 5. `preview_contact_sheet` and look at it: framing, labels, stop timing. Use
    `preview_frame` for a closer look at one moment.
@@ -47,6 +54,22 @@ page.
   `remove_via` deletes it.
 - Mark a stop or a via point `sharp` for a corner. Without it, the line curves
   through.
+- Sea legs route around land over the water. If validation reports
+  `sea-fallback`, the leg couldn't be routed (or the stop is more than 30 km
+  from the sea) and is drawn as a straight line. If it reports
+  `sea-crosses-land`, a via point has pulled the route ashore. Add via points
+  over open water to fix either.
+- Air legs draw as great-circle flight arcs. Via points split an air leg into
+  arcs that meet at corners.
+- Follow camera: set `camera.mode: 'follow'` through `sceneSet`, with
+  `camera.follow { zoom, orient, lookAhead, smoothing }`. `orient` is `'north'`
+  or `'heading'`. `lookAhead` is in seconds: the camera aims where the symbol
+  will be that many seconds later. `smoothing` runs from 0 to 1. Omit `follow`
+  for the defaults: the fitted zoom + 3, capped at the theme's maximum,
+  north-up, 1 s look-ahead, smoothing 0.5. `get_project` shows the resolved
+  values as `resolvedFollow`.
+- Computed sea paths are cached in `<project>/.mapper/paths.json`. The cache is
+  safe to delete; Mapper recomputes the paths on the next read.
 - Set the transport per leg with `update_leg`, for example
   `{ "op": "update_leg", "index": 1, "changes": { "symbol": "ferry" } }`. A
   symbol without a mode also sets that transport's usual mode (a ferry sails,
@@ -75,9 +98,6 @@ page.
 
 ## What Mapper can't do yet
 
-- Sea and air legs are drawn as straight lines, with a warning. Add `via`
-  points through `update_project` `ops` to steer a leg, or use `line`.
-- The `follow` camera acts as `glide`, with a warning.
 - Terrain isn't available. Every transport except `none` draws as the dot for
   now. A `look.symbol` other than `dot` or `none` gets a validation warning;
   per-leg transports don't.

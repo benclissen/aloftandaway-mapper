@@ -95,6 +95,15 @@ describe('createProject and loadProject', () => {
       "mapper.json doesn't match the project schema. Restore it from a backup or create a new project.",
     )
   })
+
+  test('a file from a newer Mapper says to update Mapper', async () => {
+    const newer = { ...JSON.parse(JSON.stringify(greekIslands())), schemaVersion: 3 }
+    await writeFile(path.join(tmp, PROJECT_FILE), JSON.stringify(newer))
+    const error = await failure(loadProject(tmp))
+    expect(error).toBeInstanceOf(StoreError)
+    expect((error as StoreError).message).toContain('newer version of Mapper')
+    expect((error as StoreError).fix).toBe('Update Mapper to open it.')
+  })
 })
 
 describe('version 1 files', () => {

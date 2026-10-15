@@ -107,9 +107,12 @@ export async function loadProject(folder: string): Promise<Project> {
     return parseProject(json)
   } catch (e) {
     if (!(e instanceof ProjectError)) throw e
+    const newer = e.issues[0]?.path.length === 1 && e.issues[0].path[0] === 'schemaVersion'
     throw new StoreError(
       `${file} doesn't match the project schema:\n${e.message}`,
-      "mapper.json doesn't match the project schema. Restore it from a backup or create a new project.",
+      newer
+        ? 'Update Mapper to open it.'
+        : "mapper.json doesn't match the project schema. Restore it from a backup or create a new project.",
     )
   }
 }

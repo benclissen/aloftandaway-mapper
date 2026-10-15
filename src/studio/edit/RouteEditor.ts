@@ -28,6 +28,7 @@ export interface Edit {
 }
 
 /** Half the side of the box, in layout px, that a click searches for the route. */
+/** Half the click hit box, in screen px. */
 const HIT_PX = 8
 
 const round5 = (value: number) => Math.round(value * 1e5) / 1e5
@@ -128,10 +129,14 @@ export class RouteEditor {
     const route = this.stage.route
     if (!route || !this.map.getLayer(EDIT_ROUTE_LAYER)) return
     const { x, y } = e.point
+    // The stage is scaled down to fit the window; the hit box is HIT_PX on screen, so wider in layout px.
+    const container = this.map.getContainer()
+    const scale = container.offsetWidth > 0 ? container.getBoundingClientRect().width / container.offsetWidth : 1
+    const reach = HIT_PX / Math.max(scale, 0.05)
     const hits = this.map.queryRenderedFeatures(
       [
-        [x - HIT_PX, y - HIT_PX],
-        [x + HIT_PX, y + HIT_PX],
+        [x - reach, y - reach],
+        [x + reach, y + reach],
       ],
       { layers: [EDIT_ROUTE_LAYER] },
     )

@@ -1,5 +1,5 @@
 import type { Map as MapLibreMap } from 'maplibre-gl'
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { clampLat, layoutSize, type Project, type ProjectPatch, type Shot } from '../../core/index.js'
 import { MapStage } from '../stage/MapStage.js'
 import { RouteEditor, type PointTarget, type RouteEditorCallbacks } from './RouteEditor.js'
@@ -284,7 +284,7 @@ export function Stage(props: StageProps) {
           data-testid="stage"
           data-shown-frame={shownFrame}
           data-selected-leg={selectedLeg}
-          style={{ transform: `scale(${fit})`, transformOrigin: '0 0' }}
+          style={{ transform: `scale(${fit})`, transformOrigin: '0 0', '--stage-scale': fit } as CSSProperties}
         />
       </div>
     </div>

@@ -37,7 +37,8 @@ Stages 1 to 3 (agent-driven MVP, Final Cut export, route editing) built. What wo
   camera) with `update_project` `sceneSet`, and the project name, output and
   credit with `set`.
 - Not yet: sea and air routing (those legs draw as straight lines), the follow
-  camera, terrain, vehicle symbols, GPX import.
+  camera, terrain, drawn vehicle icons (every transport shows as the dot), GPX
+  import.
 
 Docs:
 

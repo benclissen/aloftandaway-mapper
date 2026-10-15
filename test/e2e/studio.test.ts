@@ -53,6 +53,32 @@ test('scrubbing to an arrival tick shows its timecode', async () => {
   }
 })
 
+test('the head is hidden on a leg whose symbol is none', async () => {
+  const project = greekIslands()
+  sceneOf(project).legs[0]!.symbol = 'none'
+  const studio = await openStudioPage(project, VIEWPORT)
+  const { page } = studio
+  try {
+    await page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
+    const route = buildRoute(sceneOf(project))
+    const timeline = buildTimeline(sceneOf(project), project.output.fps, route)
+    const headFeatures = () =>
+      page.evaluate(() => {
+        const map = (window as unknown as StudioWindow).mapperStudio.map
+        const data = (map.getSource('mapper-head') as unknown as { serialize(): { data: { type: string; features?: unknown[] } } }).serialize().data
+        return data.type === 'Feature' ? 1 : (data.features?.length ?? 0)
+      })
+    expect(await headFeatures()).toBe(0)
+    const second = timeline.legFrames[1]!
+    const frame = Math.round((second.start + second.end) / 2)
+    await page.getByTestId('scrubber').fill(String(frame))
+    await page.waitForSelector(`[data-testid="stage"][data-shown-frame="${frame}"]`)
+    expect(await headFeatures()).toBe(1)
+  } finally {
+    await studio.close()
+  }
+})
+
 test('dragging a stop saves its new position in a scaled container', async () => {
   const { page, folder, close } = await openStudio()
   try {
@@ -352,6 +378,17 @@ describe('route editing on the map', () => {
     await page.keyboard.press('Delete')
     await expect.poll(async () => via(await loadProject(folder)).length).toBe(0)
     await page.getByTestId('via-marker-1-0').waitFor({ state: 'detached' })
+  })
+
+  test('Escape in a leg picker does not deselect the leg', async () => {
+    const { page } = studio
+    await page.getByTestId('leg-row-1').click()
+    await expect.poll(selectedLeg).toBe('1')
+    await page.getByTestId('leg-symbol-0').focus()
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(150)
+    expect(await selectedLeg()).toBe('1')
+    await page.getByTestId('leg-symbol-0').blur()
   })
 
   test('Escape deselects', async () => {

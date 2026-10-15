@@ -78,8 +78,9 @@ page.
 - Sea and air legs are drawn as straight lines, with a warning. Add `via`
   points through `update_project` `ops` to steer a leg, or use `line`.
 - The `follow` camera acts as `glide`, with a warning.
-- Terrain isn't available, and neither is any symbol other than `dot` or
-  `none` (ship, plane, car, train, walk and arrow). They warn too.
+- Terrain isn't available. Every transport except `none` draws as the dot for
+  now. A `look.symbol` other than `dot` or `none` gets a validation warning;
+  per-leg transports don't.
 - One scene per project.
 
 ## Reading `render_status`

@@ -136,7 +136,8 @@ export function App() {
   // Escape deselects. An open menu catches Escape first and closes instead.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSelectedLeg(undefined)
+      // Escape in a field (closing a picker, say) belongs to the field.
+      if (e.key === 'Escape' && !inField(e.target)) setSelectedLeg(undefined)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)

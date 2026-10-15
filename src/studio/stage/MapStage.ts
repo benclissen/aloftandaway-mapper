@@ -7,7 +7,9 @@ import {
   buildRoute,
   buildTimeline,
   cameraAt,
+  effectiveSymbol,
   layoutSize,
+  pointAt,
   MAP_CREDIT,
   MAP_DATA_ERROR,
   slicePath,
@@ -135,19 +137,18 @@ function routeLayers(look: Look): LayerSpecification[] {
       ...(dash === 'dashed' ? { 'line-dasharray': [2, 1.5] } : dash === 'dotted' ? { 'line-dasharray': [0.1, 1.6] } : {}),
     },
   })
-  if (look.symbol !== 'none') {
-    layers.push({
-      id: 'mapper-head',
-      type: 'circle',
-      source: HEAD_SOURCE,
-      paint: {
-        'circle-color': color,
-        'circle-radius': Math.max(5, width * 1.5),
-        'circle-stroke-color': '#ffffff',
-        'circle-stroke-width': 2,
-      },
-    })
-  }
+  // Always added; the head is hidden by emptying its source while it is on a leg whose symbol is `none`.
+  layers.push({
+    id: 'mapper-head',
+    type: 'circle',
+    source: HEAD_SOURCE,
+    paint: {
+      'circle-color': color,
+      'circle-radius': Math.max(5, width * 1.5),
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 2,
+    },
+  })
   return layers
 }
 
@@ -297,7 +298,10 @@ export class MapStage {
       // Listen before changing anything, so an idle from this frame can't be missed.
       const settled = this.settled()
       this.source(ROUTE_SOURCE).setData(lineFeature(slicePath(route, state.distance)))
-      this.source(HEAD_SOURCE).setData(pointFeature(state.head.at))
+      const onLeg = route.legs.length > 0 ? pointAt(route, state.distance).legIndex : 0
+      this.source(HEAD_SOURCE).setData(
+        effectiveSymbol(scene, onLeg) === 'none' ? emptyCollection() : pointFeature(state.head.at),
+      )
       if (opts.camera !== false) this.map.jumpTo(cameraAt(scene, project.output.aspect, route, timeline, n))
       // Makes the map render, and so go idle, even when nothing above changed.
       this.map.triggerRepaint()

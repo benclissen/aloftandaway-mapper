@@ -1,5 +1,5 @@
 import { toLngLat, toXY, unwrapLng, headingDeg, type XY } from './geo.js'
-import type { LegMode, LngLat, Scene } from './schema.js'
+import type { LegMode, LngLat, Scene, SymbolKind } from './schema.js'
 
 export interface RouteLeg {
   mode: LegMode
@@ -283,6 +283,11 @@ function headingNear(route: Route, legIndex: number): number {
     if (leg.length > 0) return headingInLeg(leg, leg.length)
   }
   return 0
+}
+
+/** The symbol drawn on leg `legIndex`: its own, else the scene's `look.symbol`. */
+export function effectiveSymbol(scene: Scene, legIndex: number): SymbolKind {
+  return scene.legs[legIndex]?.symbol ?? scene.look.symbol
 }
 
 /** The head at `distance` along the whole route, clamped to `[0, route.length]`. */

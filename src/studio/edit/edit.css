@@ -343,10 +343,11 @@
 }
 
 .studio .via-handle {
-  width: 16px;
-  height: 16px;
+  /* The stage is scaled to fit the window; --stage-scale undoes that so the handle is ~15 screen px. */
+  width: calc(15px / var(--stage-scale, 1));
+  height: calc(15px / var(--stage-scale, 1));
   background: #ffffff;
-  border: 2px solid rgba(0, 0, 0, 0.55);
+  border: calc(2px / var(--stage-scale, 1)) solid rgba(0, 0, 0, 0.55);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import {
   buildRoute,
   clampLat,
+  effectiveSymbol,
   haversineKm,
   LngLatSchema,
   MAX_LAT,
@@ -413,5 +414,20 @@ describe('nearestOnLeg', () => {
     expect(hit.at[0]).toBeCloseTo(-179.5, 1)
     expect(hit.distance).toBeLessThan(0.01)
     expect(hit.insertIndex).toBe(0)
+  })
+})
+
+describe('effectiveSymbol', () => {
+  test('a leg symbol wins over look.symbol, which applies to every other leg', () => {
+    const scene = structuredClone(sceneOf(greekIslands()))
+    scene.look.symbol = 'dot'
+    scene.legs[0]!.symbol = 'none'
+    scene.legs[1]!.symbol = 'ferry'
+    expect(effectiveSymbol(scene, 0)).toBe('none')
+    expect(effectiveSymbol(scene, 1)).toBe('ferry')
+    expect(effectiveSymbol(scene, 2)).toBe('dot')
+    scene.look.symbol = 'none'
+    expect(effectiveSymbol(scene, 2)).toBe('none')
+    expect(effectiveSymbol(scene, 1)).toBe('ferry')
   })
 })

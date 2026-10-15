@@ -1,6 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { buildRoute, buildTimeline, fpsValue, type Project, type ProjectPatch } from '../../core/index.js'
-import { getProject, patch, subscribe } from './api.js'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import {
+  applyPatch,
+  buildRoute,
+  buildTimeline,
+  fpsValue,
+  invertPatch,
+  type PatchResponse,
+  type Project,
+  type ProjectPatch,
+} from '../../core/index.js'
+import { CLIENT_ID, getProject, patch, subscribe } from './api.js'
+import { EditHistory, EditQueue, type Entry } from './history.js'
 import { LegsPanel } from './LegsPanel.js'
 import { PointMenu } from './PointMenu.js'
 import { isSharp, removeViaEdit, sharpEdit, type PointTarget } from './RouteEditor.js'
@@ -16,6 +26,15 @@ const INFO_NOTICE_MS = 2500
 
 const newer = (a: Project, b: Project) => Date.parse(a.updatedAt) > Date.parse(b.updatedAt)
 
+const HISTORY_CLEARED = 'Your agent changed the project. Undo history cleared.'
+
+const MODE_NAMES = { fixed: 'Fixed', glide: 'Glide', follow: 'Follow' } as const
+
+/** Whether a key press belongs to a form field, where Cmd-Z means the field's own undo. */
+function inField(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)
+}
+
 /**
  * Edit mode: preview and scrub the project, drag stops and set the camera's shots. Every edit is a patch to the
  * server, which saves it to mapper.json where the agent sees it; edits from the agent arrive over the WebSocket.
@@ -30,23 +49,62 @@ export function App() {
   const [selectedLeg, setSelectedLeg] = useState<number>()
   const [pointMenu, setPointMenu] = useState<{ target: PointTarget; at: { x: number; y: number } }>()
   const stage = useRef<StageHandle | null>(null)
+  /** The project on screen, readable outside a render. */
+  const current = useRef<Project | undefined>(undefined)
+  const [history] = useState(() => new EditHistory())
+  const [queue] = useState(() => new EditQueue(patch))
+  // EditHistory isn't React state; this re-renders the undo and redo buttons when it changes.
+  const [, historyChanged] = useReducer((n: number) => n + 1, 0)
 
-  /** Keeps the newest project; an older or equal one (such as the echo of our own patch) is ignored. */
-  const accept = useCallback((incoming: Project) => {
-    setProject((current) => (!current || newer(incoming, current) ? incoming : current))
+  /**
+   * Keeps the newest project; an older or equal one (such as the echo of our own patch) is ignored. Returns whether
+   * `incoming` was newer.
+   */
+  const accept = useCallback((incoming: Project): boolean => {
+    if (current.current && !newer(incoming, current.current)) return false
+    current.current = incoming
+    setProject(incoming)
+    return true
   }, [])
+
+  /** Forgets every step, since the project changed under them. Says so when there was anything to forget. */
+  const clearHistory = useCallback(() => {
+    if (!history.canUndo && !history.canRedo) return
+    history.clear()
+    historyChanged()
+    setNotice({ kind: 'info', text: HISTORY_CLEARED })
+  }, [history])
+
+  /**
+   * Takes a saved response. When the server applied the patch to a version other than the one the studio sent it
+   * against, something outside the studio wrote in between and the history no longer lines up, so it's cleared.
+   * Returns whether the base matched.
+   */
+  const settle = useCallback(
+    (response: PatchResponse, held: string): boolean => {
+      accept(response.project)
+      if (response.previousUpdatedAt === held) return true
+      clearHistory()
+      return false
+    },
+    [accept, clearHistory],
+  )
 
   useEffect(() => {
     getProject().then(accept, (e: Error) => setLoadError(e.message))
     try {
-      return subscribe(accept, () =>
+      // A newer version that this page didn't patch came from outside: the agent or the CLI.
+      const onMessage = ({ project: incoming, origin }: { project: Project; origin?: string }) => {
+        if (accept(incoming) && origin !== CLIENT_ID) clearHistory()
+      }
+      return subscribe(onMessage, () =>
         setNotice({ kind: 'error', text: "Lost the connection to Mapper. Reload to see your agent's changes." }),
       )
     } catch (e) {
       setLoadError((e as Error).message)
       return undefined
     }
-  }, [accept])
+  }, [accept, clearHistory])
 
   useEffect(() => {
     if (notice?.kind !== 'info') return
@@ -103,23 +161,87 @@ export function App() {
     return timeline.arrivals.map((a) => ({ stopId: a.stopId, frame: a.frame, name: scene.stops[a.index]?.name ?? '' }))
   }, [scene, timeline])
 
-  /** Sends a patch and resolves to whether it was saved. A failure shows the server's message. */
-  const send = useCallback(
-    async (body: ProjectPatch, saved?: string): Promise<boolean> => {
-      try {
-        accept(await patch(body))
-        setNotice(saved ? { kind: 'info', text: saved } : undefined)
-        return true
-      } catch (e) {
-        setNotice({ kind: 'error', text: `Not saved. ${(e as Error).message}` })
-        return false
+  /**
+   * Every studio edit comes through here. It queues `body` behind any edit still saving, works out how to undo it
+   * against the project it is sent against, and resolves to whether it was saved. A failure shows the reason. `label`
+   * names the edit for undo; `saved`, when given, is shown once it's saved.
+   */
+  const edit = useCallback(
+    (body: ProjectPatch, label: string, saved?: string): Promise<boolean> => {
+      let held = ''
+      let inverse: ProjectPatch | undefined
+      let problem = ''
+      const make = (base: Project): ProjectPatch | undefined => {
+        held = base.updatedAt
+        try {
+          // Applying it here first turns a patch that doesn't fit the project into a readable error.
+          applyPatch(base, body)
+          inverse = invertPatch(base, body)
+          return body
+        } catch (e) {
+          problem = (e as Error).message
+          return undefined
+        }
       }
+      return queue.run(make, () => current.current!).then(
+        (response) => {
+          if (!response || !inverse) {
+            setNotice({ kind: 'error', text: `Not saved. ${problem}` })
+            return false
+          }
+          if (settle(response, held)) {
+            history.push({ label, forward: body, inverse })
+            historyChanged()
+            setNotice(saved ? { kind: 'info', text: saved } : undefined)
+          }
+          return true
+        },
+        (e: Error) => {
+          setNotice({ kind: 'error', text: `Not saved. ${e.message}` })
+          return false
+        },
+      )
     },
-    [accept],
+    [queue, history, settle],
   )
 
-  /** Every edit made on the map comes through here. `label` names it for undo. */
-  const onEdit = useCallback((body: ProjectPatch, _label: string) => send(body), [send])
+  /** Undoes or redoes the latest step, in turn with any edit still saving. A step that fails to save is dropped. */
+  const step = useCallback(
+    (direction: 'undo' | 'redo') => {
+      let entry: Entry | undefined
+      let held = ''
+      const make = (base: Project): ProjectPatch | undefined => {
+        entry = direction === 'undo' ? history.takeUndo() : history.takeRedo()
+        historyChanged()
+        held = base.updatedAt
+        return entry && (direction === 'undo' ? entry.inverse : entry.forward)
+      }
+      void queue.run(make, () => current.current!).then(
+        (response) => {
+          if (response && settle(response, held)) setNotice(undefined)
+        },
+        (e: Error) => {
+          if (entry) history.discard(entry)
+          historyChanged()
+          setNotice({ kind: 'error', text: `Couldn't ${direction}. ${e.message}` })
+        },
+      )
+    },
+    [queue, history, settle],
+  )
+
+  // Cmd-Z undoes and Shift-Cmd-Z redoes, except in a form field, which keeps its own undo.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== 'z' || !(e.metaKey || e.ctrlKey) || e.altKey || inField(e.target)) return
+      e.preventDefault()
+      step(e.shiftKey ? 'redo' : 'undo')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [step])
+
+  const onEdit = useCallback((body: ProjectPatch, label: string) => edit(body, label), [edit])
   const onPointMenu = useCallback((target: PointTarget, at: { x: number; y: number }) => setPointMenu({ target, at }), [])
   const closePointMenu = useCallback(() => setPointMenu(undefined), [])
   const onUserMove = useCallback(() => setFreeView(true), [])
@@ -130,7 +252,9 @@ export function App() {
 
   const saveShot = (which: 'start' | 'end') => {
     const shot = stage.current?.shot()
-    if (shot) void send({ sceneSet: { camera: { [which]: shot } } }, which === 'start' ? 'Start shot saved' : 'End shot saved')
+    if (!shot) return
+    if (which === 'start') void edit({ sceneSet: { camera: { start: shot } } }, 'Set the start shot', 'Start shot saved')
+    else void edit({ sceneSet: { camera: { end: shot } } }, 'Set the end shot', 'End shot saved')
   }
 
   return (
@@ -186,18 +310,38 @@ export function App() {
           }}
         />
         <div className="controls-row">
+          <div className="history-buttons" role="group" aria-label="History">
+            <button
+              type="button"
+              data-testid="undo"
+              disabled={!history.canUndo}
+              title={history.undoLabel ? `Undo ${history.undoLabel} (⌘Z)` : 'Nothing to undo (⌘Z)'}
+              onClick={() => step('undo')}
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              data-testid="redo"
+              disabled={!history.canRedo}
+              title={history.redoLabel ? `Redo ${history.redoLabel} (⇧⌘Z)` : 'Nothing to redo (⇧⌘Z)'}
+              onClick={() => step('redo')}
+            >
+              Redo
+            </button>
+          </div>
           <ShotPanel
             mode={scene.camera.mode}
             freeView={freeView}
             onMode={(mode) => {
               setFreeView(false)
-              void send({ sceneSet: { camera: { mode } } })
+              void edit({ sceneSet: { camera: { mode } } }, `Camera mode: ${MODE_NAMES[mode]}`)
             }}
             onUseStart={() => saveShot('start')}
             onUseEnd={() => saveShot('end')}
             onFit={() => {
               setFreeView(false)
-              void send({ sceneSet: { camera: { start: null, end: null } } }, 'Camera fits the route')
+              void edit({ sceneSet: { camera: { start: null, end: null } } }, 'Fit to route', 'Camera fits the route')
             }}
           />
           <StylePicker theme={scene.look.theme} onEdit={onEdit} />

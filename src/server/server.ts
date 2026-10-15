@@ -7,7 +7,15 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
-import { applyPatch, ProjectError, type PatchRequest, type ServerMessage } from '../core/index.js'
+import {
+  applyPatch,
+  CLIENT_HEADER,
+  CLIENT_ID_PATTERN,
+  ProjectError,
+  type PatchRequest,
+  type Project,
+  type ServerMessage,
+} from '../core/index.js'
 import { assertAbsolute, loadProject, mutateProject, PROJECT_FILE, StoreError } from './store.js'
 import { createTileProxy } from './tiles.js'
 
@@ -34,6 +42,8 @@ export interface ServerOptions {
 
 const MAX_BODY_BYTES = 1024 * 1024
 const WATCH_DEBOUNCE_MS = 50
+/** How many saved versions per project remember which studio client patched them. */
+const ORIGIN_MEMORY = 32
 
 const CONTENT_TYPES = new Map(Object.entries({
   '.html': 'text/html; charset=utf-8',
@@ -58,6 +68,8 @@ interface Registered {
   /** `updatedAt` of the last project this entry broadcast or loaded. */
   lastUpdatedAt: string
   timer: NodeJS.Timeout | undefined
+  /** The client id that patched each recent version, by the version's `updatedAt`. Oldest first. */
+  origins: Map<string, string>
 }
 
 interface RouteContext {
@@ -212,7 +224,16 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
           if (e instanceof SyntaxError) return sendError(res, 400, `The request body isn't valid JSON: ${e.message}`, { path: [] })
           throw e
         }
-        await respondWithProject(res, () => mutateProject(entry.folder, (p) => applyPatch(p, patch)))
+        const client = clientId(req)
+        await respondWith(res, async () => {
+          let previousUpdatedAt = ''
+          const project = await mutateProject(entry.folder, (p) => {
+            previousUpdatedAt = p.updatedAt
+            return applyPatch(p, patch)
+          })
+          if (client !== undefined) rememberOrigin(entry, project.updatedAt, client)
+          return { project, previousUpdatedAt }
+        })
       },
     },
     {
@@ -223,9 +244,14 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     },
   ]
 
-  async function respondWithProject(res: http.ServerResponse, run: () => Promise<unknown>): Promise<void> {
+  async function respondWithProject(res: http.ServerResponse, run: () => Promise<Project>): Promise<void> {
+    await respondWith(res, async () => ({ project: await run() }))
+  }
+
+  /** Sends what `run` returns, or the error a bad project or patch caused. */
+  async function respondWith(res: http.ServerResponse, run: () => Promise<object>): Promise<void> {
     try {
-      sendJson(res, 200, { project: await run() })
+      sendJson(res, 200, await run())
     } catch (e) {
       if (e instanceof ProjectError) {
         sendError(res, 400, e.message, { path: e.issues[0]?.path ?? [], issues: e.issues })
@@ -235,6 +261,18 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
         throw e
       }
     }
+  }
+
+  /** The studio's client id from its header, or undefined when it's missing or malformed. */
+  function clientId(req: http.IncomingMessage): string | undefined {
+    const value = req.headers[CLIENT_HEADER.toLowerCase()]
+    return typeof value === 'string' && CLIENT_ID_PATTERN.test(value) ? value : undefined
+  }
+
+  function rememberOrigin(entry: Registered, updatedAt: string, client: string): void {
+    entry.origins.delete(updatedAt)
+    entry.origins.set(updatedAt, client)
+    while (entry.origins.size > ORIGIN_MEMORY) entry.origins.delete(entry.origins.keys().next().value!)
   }
 
   function lookup(encodedKey: string): Registered | undefined {
@@ -325,7 +363,9 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     }
     if (closed || projects.get(entry.key) !== entry || project.updatedAt === entry.lastUpdatedAt) return
     entry.lastUpdatedAt = project.updatedAt
-    for (const ws of entry.clients) send(ws, { type: 'project', project })
+    const origin = entry.origins.get(project.updatedAt)
+    const message: ServerMessage = origin === undefined ? { type: 'project', project } : { type: 'project', project, origin }
+    for (const ws of entry.clients) send(ws, message)
   }
 
   function dispose(entry: Registered): void {
@@ -351,6 +391,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
       clients: new Set(),
       lastUpdatedAt: project.updatedAt,
       timer: undefined,
+      origins: new Map(),
     }
     // Watch the folder, not the file: atomic saves rename a temporary file over mapper.json.
     try {

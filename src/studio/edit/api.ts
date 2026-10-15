@@ -1,4 +1,11 @@
-import { parseProject, type Project, type ProjectPatch, type ServerMessage } from '../../core/index.js'
+import {
+  CLIENT_HEADER,
+  parseProject,
+  type PatchResponse,
+  type Project,
+  type ProjectPatch,
+  type ServerMessage,
+} from '../../core/index.js'
 
 // The page is served at `<base>studio/?project=<key>`, where the base already carries the session token and the key
 // is the server's opaque key for the project folder.
@@ -9,35 +16,47 @@ function projectKey(): string {
   return key
 }
 
+/** This page's id, sent with every patch. The server echoes it as the `origin` of the broadcast the patch causes. */
+export const CLIENT_ID = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
+
 const apiUrl = (suffix = '') => new URL(`../api/projects/${encodeURIComponent(projectKey())}${suffix}`, location.href)
 
-async function readProject(res: Response): Promise<Project> {
-  const body = (await res.json().catch(() => undefined)) as { project?: unknown; error?: { message?: string } } | undefined
+/** The response body, or the server's error message as a thrown Error. */
+async function readBody(res: Response): Promise<{ project?: unknown; previousUpdatedAt?: unknown }> {
+  const body = (await res.json().catch(() => undefined)) as
+    | { project?: unknown; previousUpdatedAt?: unknown; error?: { message?: string } }
+    | undefined
   if (!res.ok || !body?.project) {
     throw new Error(body?.error?.message ?? `The server answered ${res.status} ${res.statusText}.`)
   }
-  return parseProject(body.project)
+  return body
 }
 
 export async function getProject(): Promise<Project> {
-  return readProject(await fetch(apiUrl()))
-}
-
-/** Applies `body` on the server and returns the saved project. Rejects with the server's error message. */
-export async function patch(body: ProjectPatch): Promise<Project> {
-  const res = await fetch(apiUrl('/patch'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  return readProject(res)
+  return parseProject((await readBody(await fetch(apiUrl()))).project)
 }
 
 /**
- * Calls `onProject` with the project when connected and again whenever it changes on disk, including after this
- * page's own patches. `onClose` hears if the connection drops. Returns a function that disconnects.
+ * Applies `body` on the server. Resolves to the saved project and the `updatedAt` of the version it was applied to.
+ * Rejects with the server's error message.
  */
-export function subscribe(onProject: (p: Project) => void, onClose?: () => void): () => void {
+export async function patch(body: ProjectPatch): Promise<PatchResponse> {
+  const res = await fetch(apiUrl('/patch'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', [CLIENT_HEADER]: CLIENT_ID },
+    body: JSON.stringify(body),
+  })
+  const saved = await readBody(res)
+  if (typeof saved.previousUpdatedAt !== 'string') throw new Error("The server's answer is missing previousUpdatedAt.")
+  return { project: parseProject(saved.project), previousUpdatedAt: saved.previousUpdatedAt }
+}
+
+/**
+ * Calls `onMessage` with the project when connected and again whenever it changes on disk, including after this
+ * page's own patches. `origin` is the client id of the studio whose patch made that version, if one did. `onClose`
+ * hears if the connection drops. Returns a function that disconnects.
+ */
+export function subscribe(onMessage: (m: { project: Project; origin?: string }) => void, onClose?: () => void): () => void {
   const url = new URL(`../ws/projects/${encodeURIComponent(projectKey())}`, location.href)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   const ws = new WebSocket(url)
@@ -47,7 +66,8 @@ export function subscribe(onProject: (p: Project) => void, onClose?: () => void)
     try {
       message = JSON.parse(String(event.data)) as ServerMessage
       if (message.type !== 'project') return
-      onProject(parseProject(message.project))
+      const project = parseProject(message.project)
+      onMessage(typeof message.origin === 'string' ? { project, origin: message.origin } : { project })
     } catch {
       // A malformed message can't be shown; the next change on disk sends a fresh copy.
     }

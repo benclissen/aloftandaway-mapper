@@ -449,3 +449,126 @@ describe('legs panel and style picker', () => {
     expect(await page.getByTestId('leg-row-2').getAttribute('aria-selected')).toBe('true')
   })
 })
+
+describe('undo and redo', () => {
+  const via = (p: Project) => sceneOf(p).legs[1]!.via
+  const symbol = async (folder: string) => sceneOf(await loadProject(folder)).legs[0]!.symbol
+
+  /** Leg 1's midpoint (Mykonos to Santorini) on screen, in CSS px. */
+  async function legMidpoint(page: Page, folder: string): Promise<[number, number]> {
+    const at = legMiddle(await loadProject(folder), 1)
+    return page.evaluate((at) => {
+      const map = (window as unknown as StudioWindow).mapperStudio.map
+      const container = map.getContainer()
+      const box = container.getBoundingClientRect()
+      const fit = box.width / container.offsetWidth
+      const p = map.project(at)
+      return [box.left + p.x * fit, box.top + p.y * fit] as [number, number]
+    }, at)
+  }
+
+  const enabled = (page: Page, testId: 'undo' | 'redo') => page.getByTestId(testId).isEnabled()
+
+  /** Sets leg 0's transport to ferry and waits for it to save. */
+  async function setFerry(page: Page, folder: string): Promise<void> {
+    await page.getByTestId('leg-symbol-0').selectOption('ferry')
+    await expect.poll(() => symbol(folder)).toBe('ferry')
+  }
+
+  test('undo and redo a via insert', async () => {
+    const { page, folder, close } = await openStudio()
+    try {
+      expect(await enabled(page, 'undo')).toBe(false)
+      expect(await enabled(page, 'redo')).toBe(false)
+      await page.mouse.click(...(await legMidpoint(page, folder)))
+      await page.waitForSelector('[data-testid="stage"][data-selected-leg="1"]')
+      await page.mouse.click(...(await legMidpoint(page, folder)))
+      await expect.poll(async () => via(await loadProject(folder)).length).toBe(1)
+      await expect.poll(() => enabled(page, 'undo')).toBe(true)
+      expect(await page.getByTestId('undo').getAttribute('title')).toBe('Undo Add a via point (⌘Z)')
+      expect(await enabled(page, 'redo')).toBe(false)
+
+      await page.getByTestId('undo').click()
+      await expect.poll(async () => via(await loadProject(folder)).length).toBe(0)
+      await page.getByTestId('via-marker-1-0').waitFor({ state: 'detached' })
+      await expect.poll(() => enabled(page, 'redo')).toBe(true)
+      expect(await page.getByTestId('redo').getAttribute('title')).toBe('Redo Add a via point (⇧⌘Z)')
+      expect(await enabled(page, 'undo')).toBe(false)
+
+      await page.getByTestId('redo').click()
+      await expect.poll(async () => via(await loadProject(folder)).length).toBe(1)
+      await page.getByTestId('via-marker-1-0').waitFor()
+      await expect.poll(() => enabled(page, 'undo')).toBe(true)
+      expect(await enabled(page, 'redo')).toBe(false)
+    } finally {
+      await close()
+    }
+  })
+
+  test('Cmd-Z undoes a transport change', async () => {
+    const { page, folder, close } = await openStudio()
+    try {
+      const before = sceneOf(await loadProject(folder)).legs[0]!
+      await setFerry(page, folder)
+      await expect.poll(() => enabled(page, 'undo')).toBe(true)
+      // Out of the select, so the shortcut belongs to the studio.
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+      await page.keyboard.press('Meta+z')
+      await expect.poll(async () => 'symbol' in sceneOf(await loadProject(folder)).legs[0]!).toBe(false)
+      expect(sceneOf(await loadProject(folder)).legs[0]!.mode).toBe(before.mode)
+      await expect.poll(() => page.getByTestId('leg-symbol-0').inputValue()).toBe('')
+
+      await page.keyboard.press('Meta+Shift+z')
+      await expect.poll(() => symbol(folder)).toBe('ferry')
+    } finally {
+      await close()
+    }
+  })
+
+  test('Cmd-Z in a select does not undo', async () => {
+    const { page, folder, close } = await openStudio()
+    try {
+      await setFerry(page, folder)
+      await expect.poll(() => enabled(page, 'undo')).toBe(true)
+      await page.getByTestId('leg-symbol-0').focus()
+      await page.keyboard.press('Meta+z')
+      await page.waitForTimeout(500)
+      expect(await symbol(folder)).toBe('ferry')
+      expect(await enabled(page, 'undo')).toBe(true)
+    } finally {
+      await close()
+    }
+  })
+
+  test('an agent write clears the history', async () => {
+    const { page, folder, close } = await openStudio()
+    try {
+      await setFerry(page, folder)
+      await expect.poll(() => enabled(page, 'undo')).toBe(true)
+      await mutateProject(folder, (p) => ({ ...p, name: 'Renamed by the agent' }))
+      await page.getByRole('status').filter({ hasText: 'Your agent changed the project. Undo history cleared.' }).waitFor()
+      expect(await enabled(page, 'undo')).toBe(false)
+      expect(await enabled(page, 'redo')).toBe(false)
+    } finally {
+      await close()
+    }
+  })
+
+  test("clears history when the saved project's base is not the one the studio held", async () => {
+    const { page, folder, close } = await openStudio()
+    try {
+      // The agent writes while the studio's patch is on its way, so the server applies the patch on top of that write.
+      await page.route('**/patch', async (route) => {
+        await mutateProject(folder, (p) => ({ ...p, name: 'Renamed by the agent' }))
+        await route.continue()
+      })
+      await setFerry(page, folder)
+      expect((await loadProject(folder)).name).toBe('Renamed by the agent')
+      await expect.poll(() => page.getByTestId('leg-symbol-0').inputValue()).toBe('ferry')
+      await page.waitForTimeout(500)
+      expect(await enabled(page, 'undo')).toBe(false)
+    } finally {
+      await close()
+    }
+  })
+})

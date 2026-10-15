@@ -230,6 +230,18 @@
   min-height: 28px;
 }
 
+.history-buttons {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
+.studio .history-buttons button:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.5;
+}
+
 .shot-panel {
   display: flex;
   align-items: center;

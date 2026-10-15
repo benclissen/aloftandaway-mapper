@@ -6,7 +6,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { WebSocket } from 'ws'
 import type { Project, ServerMessage } from '../../src/core/index.js'
-import { PROJECT_FILE, createProject, loadProject, saveProject } from '../../src/server/store.js'
+import { PROJECT_FILE, createProject, loadProject, mutateProject, saveProject } from '../../src/server/store.js'
 import { getServer, startServer, type MapperServer } from '../../src/server/server.js'
 
 let tmp: string
@@ -24,7 +24,10 @@ interface Reply {
 }
 
 /** node:http, because fetch won't let a test set the Host header. */
-function call(url: string, init: { method?: string; host?: string; body?: string | Buffer } = {}): Promise<Reply> {
+function call(
+  url: string,
+  init: { method?: string; host?: string; body?: string | Buffer; headers?: Record<string, string> } = {},
+): Promise<Reply> {
   return new Promise((resolve, reject) => {
     const target = new URL(url)
     const req = http.request(
@@ -33,7 +36,7 @@ function call(url: string, init: { method?: string; host?: string; body?: string
         port: target.port,
         path: target.pathname + target.search,
         method: init.method ?? 'GET',
-        headers: init.host ? { Host: init.host } : {},
+        headers: { ...init.headers, ...(init.host ? { Host: init.host } : {}) },
       },
       (res) => {
         const chunks: Buffer[] = []
@@ -53,8 +56,8 @@ function projectUrl(suffix = '', projectKey = key): string {
   return `${server.base}api/projects/${projectKey}${suffix}`
 }
 
-function patchProject(body: unknown): Promise<Reply> {
-  return call(projectUrl('/patch'), { method: 'POST', body: JSON.stringify(body) })
+function patchProject(body: unknown, headers: Record<string, string> = {}): Promise<Reply> {
+  return call(projectUrl('/patch'), { method: 'POST', body: JSON.stringify(body), headers })
 }
 
 function wsUrl(projectKey = key): string {
@@ -382,6 +385,55 @@ describe('websocket sync', () => {
     await next()
     await patchProject({ ops: [{ op: 'update_stop', id: 'b', changes: { name: 'Mykonos Town' } }] })
     expect((await next(1000)).project.scenes[0]!.stops[1]?.name).toBe('Mykonos Town')
+    ws.close()
+  })
+
+  test('patch responds with previousUpdatedAt', async () => {
+    const before = await loadProject(folder)
+    const reply = await patchProject({ set: { name: 'Renamed' } })
+    expect(reply.status).toBe(200)
+    const body = reply.json()
+    expect(body.previousUpdatedAt).toBe(before.updatedAt)
+    expect(body.project.name).toBe('Renamed')
+    expect(Date.parse(body.project.updatedAt)).toBeGreaterThan(Date.parse(before.updatedAt))
+  })
+
+  test("broadcast carries the patching client's origin", async () => {
+    const { ws, next } = await connect()
+    expect((await next()).origin).toBeUndefined()
+    const reply = await patchProject({ set: { name: 'From the studio' } }, { 'X-Mapper-Client': 'abc' })
+    expect(reply.status).toBe(200)
+    const message = await next(1000)
+    expect(message.project.name).toBe('From the studio')
+    expect(message.origin).toBe('abc')
+    ws.close()
+  })
+
+  test('outside writes broadcast with no origin', async () => {
+    const { ws, next } = await connect()
+    await next()
+    await patchProject({ set: { name: 'From the studio' } }, { 'X-Mapper-Client': 'abc' })
+    expect((await next(1000)).origin).toBe('abc')
+    await mutateProject(folder, (p) => ({ ...p, name: 'From the agent' }))
+    const message = await next(1000)
+    expect(message.project.name).toBe('From the agent')
+    expect('origin' in message).toBe(false)
+    ws.close()
+  })
+
+  test('an invalid client id is ignored', async () => {
+    const { ws, next } = await connect()
+    await next()
+    const reply = await patchProject({ set: { name: 'Odd client' } }, { 'X-Mapper-Client': 'not valid!' })
+    expect(reply.status).toBe(200)
+    const message = await next(1000)
+    expect(message.project.name).toBe('Odd client')
+    expect('origin' in message).toBe(false)
+    const long = await patchProject({ set: { name: 'Long client' } }, { 'X-Mapper-Client': 'a'.repeat(65) })
+    expect(long.status).toBe(200)
+    const second = await next(1000)
+    expect(second.project.name).toBe('Long client')
+    expect('origin' in second).toBe(false)
     ws.close()
   })
 

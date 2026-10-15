@@ -15,9 +15,13 @@ import {
   ProjectError,
   STALE_BASE_MESSAGE,
   type PatchRequest,
+  type LandSource,
   type Project,
+  type SeaPaths,
   type ServerMessage,
 } from '../core/index.js'
+import { loadLand } from './land.js'
+import { resolveSeaPaths } from './paths.js'
 import { assertAbsolute, loadProject, mutateProject, PROJECT_FILE, StoreError } from './store.js'
 import { createTileProxy } from './tiles.js'
 
@@ -40,6 +44,8 @@ export interface ServerOptions {
   studioDir: string
   cacheDir: string
   tileUpstream?: string
+  /** Where sea routes get their land data. Defaults to the data that ships with Mapper. */
+  land?: () => Promise<LandSource>
 }
 
 const MAX_BODY_BYTES = 1024 * 1024
@@ -72,6 +78,8 @@ interface Registered {
   timer: NodeJS.Timeout | undefined
   /** The client id that patched each recent version, by the version's `updatedAt`. Oldest first. */
   origins: Map<string, string>
+  /** Whether a failure to work out sea routes has been logged for this project. */
+  seaPathsFailed: boolean
 }
 
 interface RouteContext {
@@ -149,6 +157,9 @@ async function readBody(req: http.IncomingMessage): Promise<string> {
 
 export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   const studioDir = path.resolve(opts.studioDir)
+  const land = opts.land ?? loadLand
+  /** Sea route work in flight, which `close` waits for so nothing writes a cache file after it returns. */
+  const resolving = new Set<Promise<unknown>>()
   const token = randomBytes(32).toString('hex')
   /** Registered folders by key, and keys by resolved folder. */
   const projects = new Map<string, Registered>()
@@ -203,7 +214,10 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
       handle: async ({ res, params }) => {
         const entry = lookup(params[0]!)
         if (!entry) return sendError(res, 404, 'Not found')
-        await respondWithProject(res, () => loadProject(entry.folder))
+        await respondWith(res, async () => {
+          const project = await loadProject(entry.folder)
+          return { project, seaPaths: await seaPathsFor(entry, project) }
+        })
       },
     },
     {
@@ -241,7 +255,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
             return applyPatch(p, patch)
           })
           if (client !== undefined) rememberOrigin(entry, project.updatedAt, client)
-          return { project, previousUpdatedAt }
+          return { project, seaPaths: await seaPathsFor(entry, project), previousUpdatedAt }
         })
       },
     },
@@ -253,8 +267,25 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     },
   ]
 
-  async function respondWithProject(res: http.ServerResponse, run: () => Promise<Project>): Promise<void> {
-    await respondWith(res, async () => ({ project: await run() }))
+  /**
+   * The sea routes for `project`. When they can't be worked out (the land data is missing, say) this answers `{}`, so
+   * sea legs draw as pending lines, and logs the error the first time for each project.
+   */
+  async function seaPathsFor(entry: Registered, project: Project): Promise<SeaPaths> {
+    if (!project.scenes.some((scene) => scene.legs.some((leg) => leg.mode === 'sea'))) return {}
+    const work = (async () => resolveSeaPaths(entry.folder, project, { land: await land() }))()
+    resolving.add(work)
+    try {
+      return await work
+    } catch (e) {
+      if (!entry.seaPathsFailed) {
+        entry.seaPathsFailed = true
+        console.error(`Mapper could not work out sea routes for ${entry.folder}:`, e)
+      }
+      return {}
+    } finally {
+      resolving.delete(work)
+    }
   }
 
   /** Sends what `run` returns, or the error a bad project or patch caused. */
@@ -345,7 +376,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
       entry.clients.add(ws)
       ws.on('close', () => entry.clients.delete(ws))
       void loadProject(entry.folder).then(
-        (project) => send(ws, { type: 'project', project }),
+        async (project) => send(ws, { type: 'project', project, seaPaths: await seaPathsFor(entry, project) }),
         () => ws.close(1011, 'Could not load the project'),
       )
     })
@@ -375,7 +406,10 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     if (closed || projects.get(entry.key) !== entry || project.updatedAt === entry.lastUpdatedAt) return
     entry.lastUpdatedAt = project.updatedAt
     const origin = entry.origins.get(project.updatedAt)
-    const message: ServerMessage = origin === undefined ? { type: 'project', project } : { type: 'project', project, origin }
+    const seaPaths = await seaPathsFor(entry, project)
+    if (closed || projects.get(entry.key) !== entry) return
+    const message: ServerMessage =
+      origin === undefined ? { type: 'project', project, seaPaths } : { type: 'project', project, seaPaths, origin }
     for (const ws of entry.clients) send(ws, message)
   }
 
@@ -403,6 +437,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
       lastUpdatedAt: project.updatedAt,
       timer: undefined,
       origins: new Map(),
+      seaPathsFailed: false,
     }
     // Watch the folder, not the file: atomic saves rename a temporary file over mapper.json.
     try {
@@ -432,6 +467,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     // Every socket the server accepted, whichever entry it belongs to.
     for (const ws of wss.clients) ws.terminate()
     wss.close()
+    await Promise.allSettled([...resolving])
     await new Promise<void>((resolve) => {
       server.close(() => resolve())
       server.closeAllConnections()

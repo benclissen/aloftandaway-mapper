@@ -454,7 +454,6 @@ describe('legs panel and style picker', () => {
     const { page } = studio
     await page.getByTestId('leg-symbol-0').selectOption('ferry')
     await expect.poll(async () => ({ symbol: (await leg(0)).symbol, mode: (await leg(0)).mode })).toEqual({ symbol: 'ferry', mode: 'sea' })
-    await page.getByTestId('leg-row-0').getByText('Drawn as a plain line for now.').waitFor()
     expect(await page.getByTestId('leg-mode-0').inputValue()).toBe('sea')
   })
 

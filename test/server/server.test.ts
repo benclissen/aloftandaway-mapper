@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { WebSocket } from 'ws'
-import type { Project, ServerMessage } from '../../src/core/index.js'
+import { decodeLand, encodeLand, landIndex, seaLegKey, type LandSource, type LngLat, type Project, type ServerMessage } from '../../src/core/index.js'
 import { PROJECT_FILE, createProject, loadProject, mutateProject, saveProject } from '../../src/server/store.js'
 import { getServer, startServer, type MapperServer } from '../../src/server/server.js'
 
@@ -503,6 +503,92 @@ describe('getServer', () => {
     } finally {
       if (cache === undefined) delete process.env.MAPPER_CACHE_DIR
       else process.env.MAPPER_CACHE_DIR = cache
+    }
+  })
+})
+
+describe('sea paths', () => {
+  const A: LngLat = [9, 50]
+  const B: LngLat = [11, 50]
+  const island = (): LandSource =>
+    landIndex(decodeLand(encodeLand('test-land', [[[9.8, 49.5], [10.2, 49.5], [10.2, 50.5], [9.8, 50.5]]])))
+  let sea: MapperServer
+  let seaKey: string
+  let seaUrl: (suffix?: string) => string
+
+  async function seaServer(land: () => Promise<LandSource>): Promise<void> {
+    sea = await startServer({ studioDir, cacheDir: path.join(tmp, 'cache2'), land })
+    seaKey = await sea.registerProject(folder)
+    seaUrl = (suffix = '') => `${sea.base}api/projects/${seaKey}${suffix}`
+  }
+  const withSeaLeg = (p: Project): Project => ({
+    ...p,
+    scenes: [
+      {
+        ...p.scenes[0]!,
+        stops: [
+          { id: 'a', name: 'A', at: A, pause: 0, sign: 'always' },
+          { id: 'b', name: 'B', at: B, pause: 0, sign: 'always' },
+        ],
+        legs: [{ mode: 'sea', via: [] }],
+      },
+    ],
+  })
+  const legKey = seaLegKey(A, B, [])
+
+  afterEach(async () => {
+    await sea?.close()
+  })
+
+  test('GET answers with seaPaths', async () => {
+    await saveProject(folder, withSeaLeg(await loadProject(folder)))
+    await seaServer(async () => island())
+    const body = (await call(seaUrl())).json()
+    expect(body.project.id).toBe(project.id)
+    expect(body.seaPaths[legKey].status).toBe('ok')
+  })
+
+  test('a patch answer carries seaPaths for a new sea leg', async () => {
+    await seaServer(async () => island())
+    const before = (await call(seaUrl())).json()
+    expect(before.seaPaths).toEqual({})
+    const reply = await call(seaUrl('/patch'), {
+      method: 'POST',
+      body: JSON.stringify({ ops: [{ op: 'update_leg', index: 0, changes: { mode: 'sea' } }] }),
+    })
+    // The fixture's stops are in Greece; the leg's key comes from the answer's own project.
+    const answer = reply.json()
+    const [s0, s1] = answer.project.scenes[0].stops
+    expect(answer.seaPaths[seaLegKey(s0.at, s1.at, [])]).toBeDefined()
+  })
+
+  test('broadcasts seaPaths for a sea leg added from outside', async () => {
+    await seaServer(async () => island())
+    const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
+    const { ws, next } = await connect(url)
+    try {
+      expect(((await next()) as any).seaPaths).toEqual({})
+      await mutateProject(folder, withSeaLeg)
+      const message = (await next()) as any
+      expect(message.seaPaths[legKey].status).toBe('ok')
+    } finally {
+      ws.close()
+    }
+  })
+
+  test("sends empty seaPaths when the land data can't load", async () => {
+    await saveProject(folder, withSeaLeg(await loadProject(folder)))
+    const error = console.error
+    console.error = () => undefined
+    try {
+      await seaServer(async () => {
+        throw new Error('no land')
+      })
+      const body = (await call(seaUrl())).json()
+      expect(body.project.id).toBe(project.id)
+      expect(body.seaPaths).toEqual({})
+    } finally {
+      console.error = error
     }
   })
 })

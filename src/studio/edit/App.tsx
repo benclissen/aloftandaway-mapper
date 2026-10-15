@@ -6,6 +6,7 @@ import {
   fpsValue,
   invertPatch,
   type PatchResponse,
+  type SeaPaths,
   type Project,
   type ProjectPatch,
 } from '../../core/index.js'
@@ -41,6 +42,8 @@ function inField(target: EventTarget | null): boolean {
  */
 export function App() {
   const [project, setProject] = useState<Project>()
+  /** The sea routes of `project`; always replaced together with it. */
+  const [seaPaths, setSeaPaths] = useState<SeaPaths>({})
   const [loadError, setLoadError] = useState<string>()
   const [frame, setFrame] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -60,10 +63,11 @@ export function App() {
    * Keeps the newest project; an older or equal one (such as the echo of our own patch) is ignored. Returns whether
    * `incoming` was newer.
    */
-  const accept = useCallback((incoming: Project): boolean => {
+  const accept = useCallback((incoming: Project, paths: SeaPaths): boolean => {
     if (current.current && !newer(incoming, current.current)) return false
     current.current = incoming
     setProject(incoming)
+    setSeaPaths(paths)
     return true
   }, [])
 
@@ -95,7 +99,7 @@ export function App() {
    */
   const settle = useCallback(
     (response: PatchResponse, held: string): boolean => {
-      accept(response.project)
+      accept(response.project, response.seaPaths)
       if (response.previousUpdatedAt === held) return true
       clearHistory()
       return false
@@ -104,11 +108,11 @@ export function App() {
   )
 
   useEffect(() => {
-    getProject().then(accept, (e: Error) => setLoadError(e.message))
+    getProject().then(({ project: loaded, seaPaths: paths }) => accept(loaded, paths), (e: Error) => setLoadError(e.message))
     try {
       // A newer version that this page didn't patch came from outside: the agent or the CLI.
-      const onMessage = ({ project: incoming, origin }: { project: Project; origin?: string }) => {
-        if (accept(incoming) && origin !== CLIENT_ID) clearHistory()
+      const onMessage = ({ project: incoming, seaPaths: paths, origin }: { project: Project; seaPaths: SeaPaths; origin?: string }) => {
+        if (accept(incoming, paths) && origin !== CLIENT_ID) clearHistory()
       }
       return subscribe(onMessage, () =>
         setNotice({ kind: 'error', text: "Lost the connection to Mapper. Reload to see your agent's changes." }),
@@ -142,7 +146,7 @@ export function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
-  const route = useMemo(() => (scene ? buildRoute(scene) : undefined), [scene])
+  const route = useMemo(() => (scene ? buildRoute(scene, seaPaths) : undefined), [scene, seaPaths])
   const timeline = useMemo(
     () => (project && scene && route ? buildTimeline(scene, project.output.fps, route) : undefined),
     [project, scene, route],
@@ -286,6 +290,7 @@ export function App() {
       <div className="workspace">
         <Stage
           project={project}
+          seaPaths={seaPaths}
           frame={shown}
           freeView={freeView}
           handle={stage}

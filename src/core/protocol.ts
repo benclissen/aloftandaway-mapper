@@ -9,11 +9,13 @@ export const MAP_DATA_ERROR = 'The map could not load its data'
  * Messages the server sends to the studio. `origin` is the client id of the studio whose patch made this version, when
  * a studio made it; a version written any other way (the agent, the CLI) has none.
  */
-export type ServerMessage = { type: 'project'; project: Project; origin?: string }
+export type ServerMessage = { type: 'project'; project: Project; seaPaths: SeaPaths; origin?: string }
 
 /** The server's answer to a patch: the saved project, and the `updatedAt` of the version the patch was applied to. */
 export interface PatchResponse {
   project: Project
+  /** The sea routes of `project`'s sea legs. */
+  seaPaths: SeaPaths
   previousUpdatedAt: string
 }
 

@@ -79,7 +79,13 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
                   ))}
                 </select>
               </div>
-              {route.legs[i]?.sea?.status === 'pending' && <p className="leg-note">Drawn as a plain line for now.</p>}
+              {route.legs[i]?.sea?.status === 'fallback' && (
+                <p className="leg-note">
+                  {route.legs[i]?.sea?.reason ? `No sea route found: ${route.legs[i]?.sea?.reason}.` : 'No sea route found.'} Drawn as
+                  a line.
+                </p>
+              )}
+              {route.legs[i]?.sea?.status === 'pending' && <p className="leg-note">Finding a sea route…</p>}
             </li>
           ))}
         </ul>

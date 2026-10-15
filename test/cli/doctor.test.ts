@@ -10,6 +10,7 @@ const healthy = (): Probes => ({
   chrome: async () => ({ channel: 'chrome', webgl: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M6, Unspecified Version)' }),
   freeBytes: async () => 200e9,
   fcpxmlDtd: async () => '/Applications/Final Cut Pro.app/FCPXMLv1_11.dtd',
+  land: async () => ({ version: 'ne-10m-5.1.2', rings: 4000 }),
 })
 
 const find = (checks: Awaited<ReturnType<typeof runDoctor>>, name: string) => {
@@ -20,10 +21,10 @@ const find = (checks: Awaited<ReturnType<typeof runDoctor>>, name: string) => {
 
 test('healthy machine: every check is ok and the exit code is 0', async () => {
   const checks = await runDoctor(healthy())
-  expect(checks.map((c) => c.name)).toEqual(['Node', 'ffmpeg', 'ProRes encoder', 'H.264 encoder', 'Chrome', 'WebGL', 'Disk', 'FCPXML validation'])
+  expect(checks.map((c) => c.name)).toEqual(['Node', 'ffmpeg', 'ProRes encoder', 'H.264 encoder', 'Chrome', 'WebGL', 'Disk', 'FCPXML validation', 'Land data'])
   expect(checks.every((c) => c.ok)).toBe(true)
   expect(doctorExitCode(checks)).toBe(0)
-  expect(formatChecks(checks)).toMatch(/All 8 checks passed/)
+  expect(formatChecks(checks)).toMatch(/All 9 checks passed/)
 })
 
 test('ffmpeg missing: error with the brew fix and exit code 1', async () => {
@@ -151,4 +152,24 @@ test('Final Cut DTD without xmllint is a warning with an install fix', async () 
 test('a throwing DTD probe is treated as no Final Cut', async () => {
   const checks = await runDoctor({ ...healthy(), fcpxmlDtd: async () => { throw new Error('boom') } })
   expect(find(checks, 'FCPXML validation').ok).toBe(false)
+})
+
+test('land data: ok with its version and ring count', async () => {
+  const check = find(await runDoctor(healthy()), 'Land data')
+  expect(check).toMatchObject({ ok: true, level: 'error', detail: 'ne-10m-5.1.2, 4,000 rings' })
+})
+
+test('land data that will not load is an error with the reinstall fix', async () => {
+  const checks = await runDoctor({
+    ...healthy(),
+    land: async () => {
+      throw new Error('missing')
+    },
+  })
+  expect(find(checks, 'Land data')).toMatchObject({
+    ok: false,
+    level: 'error',
+    fix: 'Reinstall Mapper, or run npm run build:land in its folder.',
+  })
+  expect(doctorExitCode(checks)).toBe(1)
 })

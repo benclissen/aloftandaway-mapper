@@ -6,6 +6,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { launchBrowser } from '../render/chrome.js'
 import { findFcpxmlDtd } from '../render/fcpxml-validation.js'
+import { loadLandData } from '../server/land.js'
 
 export interface Check {
   name: string
@@ -30,6 +31,8 @@ export interface Probes {
   freeBytes(dir: string): Promise<number>
   /** The installed Final Cut Pro FCPXML 1.11 DTD, or undefined. */
   fcpxmlDtd(): Promise<string | undefined>
+  /** Loads the shipped land data. Throws when it is missing or bad. */
+  land(): Promise<{ version: string; rings: number }>
 }
 
 const MIN_NODE_MAJOR = 22
@@ -85,6 +88,11 @@ export const realProbes: Probes = {
   },
 
   fcpxmlDtd: () => findFcpxmlDtd(),
+
+  async land() {
+    const data = await loadLandData()
+    return { version: data.version, rings: data.rings.length }
+  },
 }
 
 const gb = (bytes: number) => `${(bytes / GB).toFixed(1)} GB`
@@ -206,6 +214,16 @@ export async function runDoctor(probes: Probes = realProbes): Promise<Check[]> {
       ...(xmllintPath ? {} : { fix: 'Install libxml2 (brew install libxml2) and add its bin directory to PATH' }),
     })
   }
+
+  // Land data: the sea router needs it.
+  const land = await attempt(() => probes.land(), null)
+  checks.push({
+    name: 'Land data',
+    ok: land !== null,
+    level: 'error',
+    detail: land ? `${land.version}, ${land.rings.toLocaleString('en-US')} rings` : 'could not load the land data',
+    ...(land ? {} : { fix: 'Reinstall Mapper, or run npm run build:land in its folder.' }),
+  })
 
   return checks
 }

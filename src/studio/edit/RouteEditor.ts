@@ -27,7 +27,6 @@ export interface Edit {
   label: string
 }
 
-/** Half the side of the box, in layout px, that a click searches for the route. */
 /** Half the click hit box, in screen px. */
 const HIT_PX = 8
 

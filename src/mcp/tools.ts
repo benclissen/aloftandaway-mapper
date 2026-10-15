@@ -128,7 +128,7 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
     lines.push(
       `${project.name}: ${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
       ...(scene.stops.length
-        ? scene.stops.map((s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}`)
+        ? scene.stops.map((s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}${s.sharp ? ' · sharp' : ''}`)
         : ['No stops yet.']),
       ...scene.legs.flatMap((_, i) => legLine(scene, i, route) ?? []),
     )
@@ -183,7 +183,11 @@ async function readGpxFile(file: string): Promise<string> {
       'Trim the track in your GPS app or route planner, then export it again.',
     )
   }
-  return readFile(file, 'utf8')
+  try {
+    return await readFile(file, 'utf8')
+  } catch {
+    throw new ToolError(`Could not read ${path.basename(file)}.`, 'Check that the file is readable.')
+  }
 }
 
 function importLine(imported: GpxImport): string {
@@ -339,11 +343,15 @@ export async function leftover(status: Pick<RenderStatus, 'outputs' | 'dir'>): P
   ]
 }
 
-async function statusSummary(status: RenderStatus): Promise<string> {
+/** The one-line summary of a render job. */
+export async function statusSummary(status: RenderStatus): Promise<string> {
   switch (status.state) {
     case 'running': {
       const p = status.progress
-      if (p) return `Frame ${p.frame} of ${p.totalFrames} · ${p.fps.toFixed(1)} fps · ${etaText(p.etaSeconds)}${p.layer ? ` · ${p.layer}` : ''}`
+      if (p) {
+        const all = p.layers && p.layers > 1 ? ' (all layers)' : ''
+        return `Frame ${p.frame} of ${p.totalFrames}${all} · ${p.fps.toFixed(1)} fps · ${etaText(p.etaSeconds)}${p.layer ? ` · ${p.layer}` : ''}`
+      }
       return status.dir ? 'Starting. The render folder exists; no frames yet.' : 'Queued behind another render. No frames yet.'
     }
     case 'done':

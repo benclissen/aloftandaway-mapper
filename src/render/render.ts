@@ -47,6 +47,8 @@ export interface RenderProgress {
   /** The scene and layer being rendered. */
   sceneId?: string
   layer?: RenderLayer
+  /** Layers in the export. Absent or 1 for a single flattened clip. */
+  layers?: number
 }
 
 /**
@@ -153,6 +155,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   const elapsedFps = () => completedWork / plan.passes.length / Math.max((performance.now() - loopStart) / 1000, 1e-9)
   /** Started with the first pass, so Chrome's launch doesn't count against the fps. */
   let progress: ReturnType<typeof rollingProgress> | undefined
+  const layerCount = new Set(plan.passes.map((pass) => pass.layer)).size
   /** Reports `done` frames of work across the export, naming the active scene and layer. */
   const report = (done: number) => {
     completedWork = done
@@ -202,7 +205,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     throwIfAborted(signal)
     const { browser } = launched
     loopStart = performance.now()
-    progress = rollingProgress(totalWork, args.onProgress)
+    progress = rollingProgress(totalWork, args.onProgress, layerCount)
     for (const pass of plan.passes) {
       const scene = plan.scenes.find((s) => s.id === pass.sceneId)
       if (!scene) throw new Error(`Missing scene ${pass.sceneId}`)
@@ -336,14 +339,20 @@ async function makeRenderDir(folder: string, date: Date): Promise<string> {
 
 /**
  * Returns a function to call with the frames done so far and the active scene and layer, which reports progress with
- * a rolling fps.
+ * a rolling fps. When the active scene or layer changes, the window restarts from the new sample, so the page load
+ * between passes doesn't skew the fps.
  */
-function rollingProgress(
+export function rollingProgress(
   totalFrames: number,
   onProgress: ((p: RenderProgress) => void) | undefined,
+  layers?: number,
 ): (done: number, active?: { sceneId: string; layer: RenderLayer }) => void {
   const times: { done: number; at: number }[] = [{ done: 0, at: performance.now() }]
+  let lastPage: string | undefined
   return (done, active) => {
+    const page = active && `${active.sceneId}\u0000${active.layer}`
+    if (page !== undefined && lastPage !== undefined && page !== lastPage) times.splice(0)
+    if (page !== undefined) lastPage = page
     times.push({ done, at: performance.now() })
     while (times.length > FPS_WINDOW + 1) times.shift()
     const first = times[0]!
@@ -355,6 +364,7 @@ function rollingProgress(
       totalFrames,
       fps: round2(fps),
       etaSeconds: fps > 0 ? Math.round((totalFrames - done) / fps) : 0,
+      ...(layers !== undefined && layers > 1 ? { layers } : {}),
       ...active,
     })
   }

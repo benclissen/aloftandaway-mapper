@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { chmod, copyFile, mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -6,7 +6,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { createMcpServer } from '../../src/mcp/server.js'
-import { doneSummary, leftover, TOOLS } from '../../src/mcp/tools.js'
+import { doneSummary, leftover, statusSummary, TOOLS } from '../../src/mcp/tools.js'
+import type { RenderStatus } from '../../src/render/jobs.js'
 
 const STOPS = [
   { name: 'Piraeus', at: [23.6466, 37.942] },
@@ -103,8 +104,22 @@ describe('tools', () => {
     const set = await call('set_stops', { folder, stops: STOPS.slice(0, 2), legMode: 'sea' })
     expect(set.isError).toBeFalsy()
     expect(text(set)).toContain('sea route')
+    expect(text(set)).not.toContain('sea route failed')
     const data = set.structuredContent as { validation: { warnings: { code: string }[] } }
     expect(data.validation.warnings.map((w) => w.code)).not.toContain('not-available-yet')
+  })
+
+  test('a sharp stop ends its summary line in · sharp', async () => {
+    const folder = path.join(tmp, 'sharp-stop')
+    await call('create_project', { folder, name: 'Sharp' })
+    await call('set_stops', { folder, stops: STOPS })
+    const got = await call('get_project', { folder })
+    const stops = (got.structuredContent as { project: { scenes: { stops: { id: string }[] }[] } }).project.scenes[0]!.stops
+    const updated = await call('update_project', { folder, ops: [{ op: 'update_stop', id: stops[1]!.id, changes: { sharp: true } }] })
+    expect(updated.isError, text(updated)).toBeFalsy()
+    const lines = text(updated).split('\n')
+    expect(lines.find((l) => l.startsWith('2. Mykonos'))).toMatch(/ · sharp$/)
+    expect(lines.find((l) => l.startsWith('1. Piraeus'))).not.toContain('sharp')
   })
 
   test('a landlocked sea leg reports the fallback', async () => {
@@ -364,6 +379,17 @@ describe('tools', () => {
     await expect(readFile(path.join(folder, 'renders'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  test('a running status says all layers only when the export has more than one', async () => {
+    const running = (layers?: number): RenderStatus => ({
+      jobId: 'j',
+      state: 'running',
+      progress: { frame: 120, totalFrames: 900, fps: 12.5, etaSeconds: 70, layers },
+    })
+    expect(await statusSummary(running(3))).toMatch(/^Frame 120 of 900 \(all layers\) · 12\.5 fps/)
+    expect(await statusSummary(running(1))).toMatch(/^Frame 120 of 900 · 12\.5 fps/)
+    expect(await statusSummary(running())).toMatch(/^Frame 120 of 900 · 12\.5 fps/)
+  })
+
   test('render_status and cancel_render reject an unknown job', async () => {
     for (const name of ['render_status', 'cancel_render']) {
       const result = await call(name, { jobId: 'missing' })
@@ -458,6 +484,21 @@ describe('render summaries', () => {
 
   describe('import_gpx', () => {
     const gpx = (name: string) => path.resolve(process.cwd(), 'test/fixtures/gpx', name)
+
+    test('import_gpx says so when the file cannot be read', async () => {
+      const folder = path.join(tmp, 'gpx')
+      await call('create_project', { folder, name: 'Walk' })
+      const file = path.join(tmp, 'locked.gpx')
+      await copyFile(gpx('track.gpx'), file)
+      await chmod(file, 0o000)
+      try {
+        const result = await call('import_gpx', { folder, path: file })
+        expect(result.isError).toBe(true)
+        expect(text(result)).toContain('Fix: Check that the file is readable.')
+      } finally {
+        await chmod(file, 0o644)
+      }
+    })
 
     test('import_gpx imports a track with waypoints', async () => {
       const folder = path.join(tmp, 'gpx')

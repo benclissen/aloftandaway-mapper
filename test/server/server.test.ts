@@ -579,7 +579,10 @@ describe('sea paths', () => {
   test("sends empty seaPaths when the land data can't load", async () => {
     await saveProject(folder, withSeaLeg(await loadProject(folder)))
     const error = console.error
-    console.error = () => undefined
+    let logged = 0
+    console.error = () => {
+      logged++
+    }
     try {
       await seaServer(async () => {
         throw new Error('no land')
@@ -587,6 +590,8 @@ describe('sea paths', () => {
       const body = (await call(seaUrl())).json()
       expect(body.project.id).toBe(project.id)
       expect(body.seaPaths).toEqual({})
+      expect((await call(seaUrl())).json().seaPaths).toEqual({})
+      expect(logged).toBe(1)
     } finally {
       console.error = error
     }

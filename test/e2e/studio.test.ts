@@ -454,7 +454,10 @@ describe('legs panel and style picker', () => {
     const { page } = studio
     await page.getByTestId('leg-symbol-0').selectOption('ferry')
     await expect.poll(async () => ({ symbol: (await leg(0)).symbol, mode: (await leg(0)).mode })).toEqual({ symbol: 'ferry', mode: 'sea' })
-    expect(await page.getByTestId('leg-mode-0').inputValue()).toBe('sea')
+    // The select follows the saved project, which reaches the page a moment after the file changes.
+    await expect.poll(() => page.getByTestId('leg-mode-0').inputValue()).toBe('sea')
+    // The sea route settles to a path or a fallback; either way the note "Finding a sea route…" goes away.
+    await expect.poll(() => page.getByTestId('leg-row-0').getByText('Finding a sea route…').count()).toBe(0)
   })
 
   test('Default clears the symbol', async () => {

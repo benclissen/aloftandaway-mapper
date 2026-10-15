@@ -12,7 +12,7 @@ or copy.
 
 ## Status
 
-Stage 1 (agent-driven MVP) built. What works today:
+Stages 1 to 3 (agent-driven MVP, Final Cut export, route editing) built. What works today:
 
 - An MCP server and CLI. The agent creates a project, sets stops, validates,
   previews, opens the studio and renders.
@@ -26,7 +26,13 @@ Stage 1 (agent-driven MVP) built. What works today:
   separate ProRes layers, with an FCPXML that rebuilds them in Final Cut Pro.
   The default MP4 path is done; the Final Cut import check is still
   outstanding for the layered export only. See below.
-- Route editing: via points bend a leg, `sharp` makes a corner, and each leg
+- Route editing in the studio: click a leg's line to select it, click it
+  again to add a via point, and drag points to reshape the route. Alt-click or
+  right-click a point to make it sharp or curved, or remove it. A legs panel
+  sets each leg's transport, and a picker changes the map style. Undo and redo
+  (⌘Z, ⇧⌘Z) cover the studio's own edits. Projects saved by earlier versions
+  open as before and are saved in the new format on the next edit.
+- Route editing from the agent: via points bend a leg, `sharp` makes a corner, and each leg
   can have its own transport. The agent changes scene settings (timing, look,
   camera) with `update_project` `sceneSet`, and the project name, output and
   credit with `set`.

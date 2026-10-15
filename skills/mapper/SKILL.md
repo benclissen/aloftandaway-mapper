@@ -25,7 +25,9 @@ page.
    scene's name, timing, look and camera (for example `look.theme`). `ops`
    edits stops, legs and via points. Passing `null` removes a key.
 7. `open_studio` and give the user the link. They can scrub the preview, drag
-   stops and set start and end shots. It doesn't open a browser itself.
+   stops, set start and end shots, and reshape routes: click a leg to select
+   it, click again to add a via point, drag points, and Alt-click or right-click
+   a point for sharp, curved or remove. The legs panel sets each leg's transport. It doesn't open a browser itself.
 8. When the user says they're done, call `get_project` and look at the contact
    sheet again, because their edits are now in the project.
 9. `render` returns a `jobId`. Render the default flattened H.264 MP4 unless

@@ -20,8 +20,10 @@ page.
 3. `set_stops` with the stops in travel order. Each `at` is `[lng, lat]`. For a
    local GPX file, call `import_gpx` with `folder`, an absolute `path` and
    optionally `track` (a 1-based number or a name, when the file has several).
-   By default (`stops: 'ends'`) only the first and last points become stops.
-   `stops: 'waypoints'` makes each waypoint within 2 km of the track a stop.
+   By default (`stops: 'ends'`) only the first and last points become stops;
+   this needs a track or route in the file. `stops: 'waypoints'` makes each
+   waypoint within 2 km of the track a stop. For a file with only waypoints,
+   pass `stops: 'waypoints'`: they become stops in file order.
    The track between stops becomes up to 100 via points per leg. `legMode`
    (default `'line'`) and `symbol` work as they do in `set_stops`.
 4. `validate_project`. Fix every warning, or explain it to the user.
@@ -56,7 +58,8 @@ page.
   through.
 - Sea legs route around land over the water. If validation reports
   `sea-fallback`, the leg couldn't be routed (or the stop is more than 30 km
-  from the sea) and is drawn as a straight line. If it reports
+  from the sea, or Mapper's land data couldn't be loaded) and is drawn as a
+  straight line. If it reports
   `sea-crosses-land`, a via point has pulled the route ashore. Add via points
   over open water to fix either.
 - Air legs draw as great-circle flight arcs. Via points split an air leg into
@@ -64,10 +67,10 @@ page.
 - Follow camera: set `camera.mode: 'follow'` through `sceneSet`, with
   `camera.follow { zoom, orient, lookAhead, smoothing }`. `orient` is `'north'`
   or `'heading'`. `lookAhead` is in seconds: the camera aims where the symbol
-  will be that many seconds later. `smoothing` runs from 0 to 1. Omit `follow`
-  for the defaults: the fitted zoom + 3, capped at the theme's maximum,
-  north-up, 1 s look-ahead, smoothing 0.5. `get_project` shows the resolved
-  values as `resolvedFollow`.
+  will be that many seconds later. `smoothing` runs from 0 to 1. A stored
+  `follow` must give all four fields. Omit `follow` for the defaults: the
+  fitted zoom + 3, capped at the theme's maximum, north-up, 1 s look-ahead,
+  smoothing 0.5. `get_project` shows the resolved values as `resolvedFollow`.
 - Computed sea paths are cached in `<project>/.mapper/paths.json`. The cache is
   safe to delete; Mapper recomputes the paths on the next read.
 - Set the transport per leg with `update_leg`, for example

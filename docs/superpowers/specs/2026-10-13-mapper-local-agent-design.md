@@ -263,9 +263,13 @@ Each leg becomes a polyline in `[lng, lat]`:
   corner instead of curving through.
 - **air**: a great-circle arc. If `via` is given, arcs between each pair.
 - **sea**: the shortest path over water. Natural Earth 1:10m land polygons
-  (public domain) are rasterised once into a water grid around the leg's
-  bounds. A* finds a path, which is then simplified and smoothed with a
-  check that the smoothed line still stays off land. `via` points are forced
+  (public domain) are rasterised into a coarse water grid around the leg's
+  bounds, where any cell with some water in it is passable. A* finds the way
+  on it; each stretch that passes near land is then routed again on a fine
+  grid (about 200 m cells) over just that stretch, so narrow straits and
+  harbours stay open while the line stays off land. Each stop snaps to the
+  nearest water connected to the other end. The path is then simplified and
+  smoothed with a check that the smoothed line still stays off land. `via` points are forced
   waypoints, and smoothing never rounds off a `sharp` one. If no path is found the leg falls back to `line`, and
   `validate_project` reports it.
 - **land**: same as `line` for now. Road snapping is out of scope.

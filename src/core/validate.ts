@@ -1,9 +1,10 @@
-import { resolveShots } from './camera.js'
+import { cameraAt, projectToLayout, resolveShots } from './camera.js'
 import { haversineKm } from './geo.js'
 import { buildRoute } from './route.js'
-import { THEME_MAX_ZOOM, type Aspect, type Project, type Scene } from './schema.js'
+import { THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
 import type { SeaPaths } from './sea.js'
-import { legSeconds } from './timeline.js'
+import { signBox, signText } from './signs.js'
+import { buildTimeline, formatTimecode, legSeconds, SIGN_FADE_SECONDS } from './timeline.js'
 
 export interface Issue {
   code: string
@@ -30,17 +31,68 @@ export function validateProject(
   const warnings: Issue[] = []
   project.scenes.forEach((scene, i) => {
     const prefix = (issue: Issue): Issue => (issue.path ? { ...issue, path: ['scenes', i, ...issue.path] } : issue)
-    const found = validateScene(scene, project.output.aspect, opts.seaPaths)
+    const found = validateScene(scene, project.output.aspect, project.output.fps, opts.seaPaths)
     errors.push(...found.errors.map(prefix))
     warnings.push(...found.warnings.map(prefix))
   })
   return { errors, warnings }
 }
 
+/** One warning per pair of signs whose boxes overlap, at the first frame (once each has faded in) where they do. */
+function signOverlaps(
+  scene: Scene,
+  aspect: Aspect,
+  fps: Fps,
+  route: ReturnType<typeof buildRoute>,
+  nameOf: (i: number) => string,
+): Issue[] {
+  const timeline = buildTimeline(scene, fps, route)
+  const fadeFrames = Math.round(SIGN_FADE_SECONDS * (fps.num / fps.den))
+  const stopIndex = new Map(scene.stops.map((s, i) => [s.id, i]))
+  const issues: Issue[] = []
+  const seen = new Set<string>()
+  for (const arrival of timeline.arrivals) {
+    if (scene.stops[arrival.index]?.sign === 'none') continue
+    const frame = Math.min(arrival.frame + fadeFrames, timeline.totalFrames - 1)
+    const shot = cameraAt(scene, aspect, route, timeline, frame)
+    const boxes = timeline
+      .stateAt(frame)
+      .signs.filter((s) => s.opacity > 0)
+      .flatMap((s) => {
+        const j = stopIndex.get(s.stopId)
+        const stop = j === undefined ? undefined : scene.stops[j]
+        return stop && j !== undefined ? [{ j, box: signBox(projectToLayout(shot, aspect, stop.at), signText(stop)) }] : []
+      })
+    // Sorted by left edge, so a box can stop looking once the next one starts past its right edge.
+    boxes.sort((x, y) => x.box.left - y.box.left)
+    for (let a = 0; a < boxes.length; a++) {
+      for (let b = a + 1; b < boxes.length && boxes[b]!.box.left < boxes[a]!.box.right; b++) {
+        const [p, q] = [boxes[a]!, boxes[b]!]
+        const key = p.j < q.j ? `${p.j}|${q.j}` : `${q.j}|${p.j}`
+        if (seen.has(key)) continue
+        const hit = p.box.left < q.box.right && q.box.left < p.box.right && p.box.top < q.box.bottom && q.box.top < p.box.bottom
+        if (!hit) continue
+        seen.add(key)
+        issues.push({
+          code: 'sign-overlap',
+          message: `The ${nameOf(Math.min(p.j, q.j))} and ${nameOf(Math.max(p.j, q.j))} signs overlap at ${formatTimecode(frame, fps)}`,
+          path: ['stops', Math.max(p.j, q.j), 'label'],
+          fix: "Give one a shorter label with update_stop, set one stop's sign to 'none', or move the camera closer so the stops sit further apart.",
+        })
+      }
+    }
+  }
+  return issues
+}
+
+/** A zoom for a message, rounded up to 2 decimals and trimmed, so a value over the maximum never reads as the maximum. */
+const zoomText = (zoom: number): string => String(Math.ceil(zoom * 100 - 1e-9) / 100)
+
 /** Checks one scene. Issue paths are relative to the scene. */
 function validateScene(
   scene: Scene,
   aspect: Aspect,
+  fps: Fps,
   seaPaths: SeaPaths | undefined,
 ): { errors: Issue[]; warnings: Issue[] } {
   const errors: Issue[] = []
@@ -92,13 +144,14 @@ function validateScene(
     const max = THEME_MAX_ZOOM[look.theme]
     const resolved = resolveShots(scene, aspect, route)
     const fitted: ('start' | 'end')[] = []
-    for (const which of ['start', 'end'] as const) {
+    // Follow doesn't use the start and end shots' zooms.
+    for (const which of camera.mode === 'follow' ? [] : (['start', 'end'] as const)) {
       const zoom = resolved[which].zoom
       if (zoom <= max) continue
       if (camera[which]) {
         warnings.push({
           code: 'zoom-above-max',
-          message: `The ${look.theme} theme's tiles stop at zoom ${max}, but the camera's ${which} view is at zoom ${zoom.toFixed(1)}`,
+          message: `The ${look.theme} theme's tiles stop at zoom ${max}, but the camera's ${which} view is at zoom ${zoomText(zoom)}`,
           path: ['camera', which, 'zoom'],
           fix: `With update_project sceneSet, set camera.${which}.zoom to ${max} or less, or set look.theme to 'blank' if you need the deeper zoom.`,
         })
@@ -108,7 +161,7 @@ function validateScene(
     }
     if (fitted.length > 0) {
       // Both fitted shots come from the same bounds, so they share a zoom.
-      const zoom = resolved[fitted[0]!].zoom.toFixed(1)
+      const zoom = zoomText(resolved[fitted[0]!].zoom)
       const which = fitted.join(' and ')
       warnings.push({
         code: 'zoom-above-max',
@@ -126,7 +179,7 @@ function validateScene(
     const max = THEME_MAX_ZOOM[look.theme]
     warnings.push({
       code: 'zoom-above-max',
-      message: `The ${look.theme} theme's tiles stop at zoom ${max}, but the follow camera is at zoom ${followZoom.toFixed(1)}`,
+      message: `The ${look.theme} theme's tiles stop at zoom ${max}, but the follow camera is at zoom ${zoomText(followZoom)}`,
       path: ['camera', 'follow', 'zoom'],
       fix: `With update_project sceneSet, set camera.follow.zoom to ${max} or less, or set look.theme to 'blank' if you need the deeper zoom.`,
     })
@@ -148,6 +201,34 @@ function validateScene(
       path: ['look', 'symbol'],
       fix: "Set look.symbol to 'dot' or 'none' with update_project sceneSet; other symbols aren't available yet.",
     })
+  }
+
+  if (stops.length >= 2) {
+    const route = buildRoute(scene, seaPaths)
+    if (seaPaths) {
+      route.legs.forEach((leg, i) => {
+        if (leg.sea?.status === 'fallback') {
+          warnings.push({
+            code: 'sea-fallback',
+            message: `${legName(i)} has no sea route: ${leg.sea.reason ?? 'routing failed'}`,
+            path: ['legs', i, 'mode'],
+            fix: "Add via points over open water with insert_via to guide it, move the stop nearer the coast, or set the leg's mode to 'line' with update_leg. It is drawn as a straight line until then.",
+          })
+        }
+      })
+      route.legs.forEach((leg, i) => {
+        const land = leg.sea?.crossesLand
+        if (land) {
+          warnings.push({
+            code: 'sea-crosses-land',
+            message: `${legName(i)}'s sea route crosses land near [${land[0].toFixed(4)}, ${land[1].toFixed(4)}]`,
+            path: ['legs', i, 'via'],
+            fix: 'Move or add via points with update_via or insert_via so the route stays over water; a via point on land pulls the route ashore.',
+          })
+        }
+      })
+    }
+    warnings.push(...signOverlaps(scene, aspect, fps, route, nameOf))
   }
 
   return { errors, warnings }

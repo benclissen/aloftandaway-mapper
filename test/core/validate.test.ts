@@ -202,4 +202,93 @@ describe('validateProject', () => {
     const { errors } = validateProject(project)
     expect(errors).toEqual([expect.objectContaining({ code: 'too-few-stops', path: ['scenes', 1, 'stops'] })])
   })
+
+  describe('sea and sign warnings', () => {
+    const seaProject = () => {
+      const project = greekIslands()
+      const scene = sceneOf(project)
+      scene.legs[0] = { ...scene.legs[0]!, mode: 'sea' }
+      const key = seaLegKey(scene.stops[0]!.at, scene.stops[1]!.at, [])
+      return { project, key, from: scene.stops[0]!.at, to: scene.stops[1]!.at }
+    }
+
+    test('warns when a sea leg falls back', () => {
+      const { project, key } = seaProject()
+      const seaPaths: SeaPaths = { [key]: { status: 'fallback', reason: 'no water near Piraeus', path: [], knots: [] } }
+      const found = validateProject(project, { seaPaths }).warnings.filter((w) => w.code === 'sea-fallback')
+      expect(found).toEqual([
+        expect.objectContaining({
+          path: ['scenes', 0, 'legs', 0, 'mode'],
+          message: 'Leg 1 (Piraeus → Mykonos) has no sea route: no water near Piraeus',
+          fix: expect.stringContaining('insert_via'),
+        }),
+      ])
+    })
+
+    test('warns when a sea route crosses land', () => {
+      const { project, key, from, to } = seaProject()
+      const seaPaths: SeaPaths = {
+        [key]: { status: 'ok', path: [from, to], knots: [0, 1], crossesLand: [24.123456, 37.5] },
+      }
+      const found = validateProject(project, { seaPaths }).warnings.filter((w) => w.code === 'sea-crosses-land')
+      expect(found).toEqual([
+        expect.objectContaining({
+          path: ['scenes', 0, 'legs', 0, 'via'],
+          message: "Leg 1 (Piraeus → Mykonos)'s sea route crosses land near [24.1235, 37.5000]",
+        }),
+      ])
+    })
+
+    test('skips sea checks without seaPaths', () => {
+      const { project } = seaProject()
+      expect(codes(validateProject(project).warnings)).not.toContain('sea-fallback')
+      expect(codes(validateProject(project).warnings)).not.toContain('sea-crosses-land')
+    })
+
+    test('warns once when two signs overlap', () => {
+      const project = stopsAt(
+        [
+          [25, 37],
+          [25.009, 37],
+        ],
+        { camera: { mode: 'fixed', easing: 'linear', start: { center: [25, 37], zoom: 5, bearing: 0, pitch: 0 } } },
+      )
+      const stops = sceneOf(project).stops
+      stops[0] = { ...stops[0]!, label: 'A very long sign label' }
+      stops[1] = { ...stops[1]!, label: 'Another long sign label' }
+      const found = validateProject(project).warnings.filter((w) => w.code === 'sign-overlap')
+      expect(found).toHaveLength(1)
+      expect(found[0]!.path).toEqual(['scenes', 0, 'stops', 1, 'label'])
+      expect(found[0]!.message).toMatch(/^The S0 and S1 signs overlap at \d\d:\d\d:\d\d$/)
+      expect(found[0]!.fix).toContain("'none'")
+    })
+
+    test('does not warn for signs far apart', () => {
+      expect(codes(validateProject(greekIslands()).warnings)).not.toContain('sign-overlap')
+    })
+  })
+
+  describe('follow and zoom messages', () => {
+    test('follow mode skips the start and end zoom check', () => {
+      const project = stopsAt([[25, 37], [25.01, 37]], { look: paperLook })
+      expect(codes(validateProject(project).warnings)).toContain('zoom-above-max')
+      sceneOf(project).camera = {
+        mode: 'follow',
+        easing: 'smooth',
+        follow: { zoom: 10, orient: 'north', lookAhead: 1, smoothing: 0.5 },
+      }
+      expect(codes(validateProject(project).warnings)).not.toContain('zoom-above-max')
+    })
+
+    test('a zoom just over the maximum never prints as the maximum', () => {
+      const project = stopsAt([[25, 37], [26, 37]], { look: paperLook })
+      sceneOf(project).camera = {
+        mode: 'follow',
+        easing: 'smooth',
+        follow: { zoom: 14.004, orient: 'north', lookAhead: 1, smoothing: 0.5 },
+      }
+      const w = validateProject(project).warnings.find((x) => x.code === 'zoom-above-max')!
+      expect(w.message).toContain('zoom 14.01')
+    })
+  })
 })

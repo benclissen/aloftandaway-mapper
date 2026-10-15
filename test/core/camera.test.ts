@@ -7,6 +7,7 @@ import {
   fitShot,
   flyInterpolator,
   layoutSize,
+  projectToLayout,
   resolveFollow,
   resolveShots,
   THEME_MAX_ZOOM,
@@ -363,5 +364,40 @@ describe('follow camera', () => {
   test('uses the start shot pitch', () => {
     const p = greekIslands({ camera: { ...followCamera(settings()), start: shot([25, 37], 6, 0, 40) } })
     expect(camOf(p).at(50).pitch).toBe(40)
+  })
+
+  test('crosses the antimeridian without jumping', () => {
+    const p = pacific()
+    p.scenes[0] = { ...sceneOf(p), camera: followCamera(settings({ smoothing: 0.5 })) }
+    const { tl, at } = camOf(p)
+    for (let f = 1; f < tl.totalFrames; f++) {
+      expect(Math.abs(at(f).center[0] - at(f - 1).center[0])).toBeLessThan(180)
+    }
+  })
+})
+
+describe('projectToLayout', () => {
+  test('puts the shot centre at the layout centre, and east of it to the right', () => {
+    const { width, height } = layoutSize('16:9')
+    const s = shot([25, 37], 6)
+    const [cx, cy] = projectToLayout(s, '16:9', [25, 37])
+    expect(cx).toBeCloseTo(width / 2, 6)
+    expect(cy).toBeCloseTo(height / 2, 6)
+    const [ex] = projectToLayout(s, '16:9', [25.5, 37])
+    expect(ex).toBeGreaterThan(cx)
+    const [, ny] = projectToLayout(s, '16:9', [25, 38])
+    expect(ny).toBeLessThan(cy)
+    // 0.5 degrees of longitude is TILE_SIZE * 2^zoom / 720 px.
+    expect(ex - cx).toBeCloseTo((TILE_SIZE * 2 ** 6) / 720, 6)
+  })
+
+  test('rotates by the bearing and unwraps across the antimeridian', () => {
+    const { width, height } = layoutSize('16:9')
+    const [x, y] = projectToLayout(shot([25, 37], 6, 90), '16:9', [25.5, 37])
+    expect(x).toBeCloseTo(width / 2, 6)
+    expect(y).toBeLessThan(height / 2)
+    const [wx] = projectToLayout(shot([179.9, 0], 6), '16:9', [-179.9, 0])
+    expect(wx).toBeGreaterThan(width / 2)
+    expect(wx).toBeLessThan(width / 2 + 200)
   })
 })

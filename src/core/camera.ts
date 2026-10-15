@@ -226,3 +226,19 @@ export function cameraAt(scene: Scene, aspect: Aspect, route: Route, timeline: T
   const { travelT } = timeline.stateAt(frame)
   return flyInterpolator(start, end, aspect)(ease(scene.camera.easing, travelT))
 }
+
+/**
+ * Layout px of `at` on the map view `shot`: the Mercator offset from the shot centre at `TILE_SIZE · 2^zoom` px per
+ * world, rotated so the bearing points up, around the layout centre. Pitch is ignored. `at` is unwrapped against the
+ * shot centre.
+ */
+export function projectToLayout(shot: Shot, aspect: Aspect, at: LngLat): [number, number] {
+  const { width, height } = layoutSize(aspect)
+  const world = TILE_SIZE * 2 ** shot.zoom
+  const c = toXY(shot.center)
+  const p = toXY([unwrapLng(shot.center[0], at[0]), at[1]])
+  const dx = (p[0] - c[0]) * world
+  const dy = (p[1] - c[1]) * world
+  const b = (shot.bearing * Math.PI) / 180
+  return [width / 2 + dx * Math.cos(b) + dy * Math.sin(b), height / 2 - dx * Math.sin(b) + dy * Math.cos(b)]
+}

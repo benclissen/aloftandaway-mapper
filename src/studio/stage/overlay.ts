@@ -1,4 +1,4 @@
-import { MAP_CREDIT, type FrameState, type LngLat, type Project, type Scene, type Stop, type RenderLayer } from '../../core/index.js'
+import { MAP_CREDIT, SIGN_TAG as TAG, signText, type FrameState, type LngLat, type Project, type Scene, type RenderLayer } from '../../core/index.js'
 
 /** Fonts the overlay draws with. Callers load them before drawing so text never falls back mid-render. */
 export const SIGN_FONT = '600 26px Inter'
@@ -8,19 +8,7 @@ export const CREDIT_FONT = '400 14px Inter'
 const DOT_RADIUS = 6
 const TERMINAL_SCALE = 1.5
 const DOT_STROKE = 2.5
-const TAG = {
-  radius: 6,
-  fill: 'rgba(255, 255, 255, 0.92)',
-  text: '#1d2430',
-  padX: 16,
-  padY: 10,
-  /** Height of the text line inside the padding. */
-  lineHeight: 26,
-  pointer: 10,
-  pointerHalfWidth: 8,
-  /** Gap from the dot's centre to the bottom of the box. */
-  lift: 16,
-}
+const TAG_STYLE = { fill: 'rgba(255, 255, 255, 0.92)', text: '#1d2430' }
 const CREDIT = { margin: 16, fill: 'rgba(255, 255, 255, 0.92)', halo: 'rgba(20, 24, 32, 0.7)', haloWidth: 3 }
 
 export interface OverlayArgs {
@@ -34,8 +22,7 @@ export interface OverlayArgs {
   pixelRatio: number
 }
 
-/** The text a stop's sign shows. */
-export const signText = (stop: Stop) => stop.label ?? stop.name
+export { signText }
 
 /** Clears the overlay canvas and draws stop dots, signs and (when burned in) the map credit. */
 export function drawOverlay(ctx: CanvasRenderingContext2D, args: OverlayArgs): void {
@@ -96,10 +83,10 @@ function drawTag(ctx: CanvasRenderingContext2D, [x, y]: [number, number], text: 
   ctx.lineTo(x, bottom + TAG.pointer)
   ctx.lineTo(x + TAG.pointerHalfWidth, bottom)
   ctx.closePath()
-  ctx.fillStyle = TAG.fill
+  ctx.fillStyle = TAG_STYLE.fill
   ctx.fill()
 
-  ctx.fillStyle = TAG.text
+  ctx.fillStyle = TAG_STYLE.text
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   ctx.fillText(text, x, top + boxHeight / 2)

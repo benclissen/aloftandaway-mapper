@@ -1,20 +1,30 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
 import {
+  AIR_SAMPLES,
   buildRoute,
   clampLat,
+  decodeLand,
   effectiveSymbol,
   haversineKm,
   LngLatSchema,
   MAX_LAT,
   headingDeg,
+  landIndex,
   nearestOnLeg,
   pointAt,
+  routeSea,
+  seaLegKey,
   slicePath,
   toLngLat,
   toXY,
   unwrapLng,
   type LngLat,
   type RouteLeg,
+  type Scene,
+  type SeaPath,
+  type SeaPaths,
+  type ViaPoint,
   type XY,
 } from '../../src/core/index.js'
 import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
@@ -114,7 +124,8 @@ describe('buildRoute', () => {
     const base = sceneOf(stopsAt([[0, 0], [20, 0]]))
     const r = buildRoute({ ...base, legs: [{ mode: 'land', via: [{ at: [10, 10] }] }] })
     expect(r.legs[0]!.mode).toBe('land')
-    expect(r.legs[0]!.notAvailable).toBeUndefined()
+    expect(r.legs[0]!.drawnAs).toBe('line')
+    expect(r.legs[0]!.sea).toBeUndefined()
     expect(r.legs[0]!.path).toHaveLength(2 * 24 + 1)
   })
 
@@ -139,20 +150,20 @@ describe('buildRoute', () => {
     expect(r.legs[0]!.xy.at(-1)).toEqual(r.legs[1]!.xy[0])
   })
 
-  test('sea leg is drawn as line and flagged', () => {
+  test('sea leg without seaPaths is drawn as a line and pending', () => {
     const base = sceneOf(greekIslands())
     const r = buildRoute({ ...base, legs: base.legs.map((l, i) => (i === 1 ? { ...l, mode: 'sea' as const } : l)) })
     expect(r.legs[1]!.mode).toBe('sea')
     expect(r.legs[1]!.drawnAs).toBe('line')
-    expect(r.legs[1]!.notAvailable).toBe(true)
-    expect(r.legs[0]!.notAvailable).toBeUndefined()
+    expect(r.legs[1]!.sea).toEqual({ status: 'pending' })
+    expect(r.legs[0]!.sea).toBeUndefined()
   })
 
-  test('air leg is drawn as line and flagged', () => {
+  test('air leg is drawn as an air arc', () => {
     const base = sceneOf(stopsAt([[0, 0], [30, 10]]))
     const r = buildRoute({ ...base, legs: [{ mode: 'air', via: [] }] })
-    expect(r.legs[0]!.drawnAs).toBe('line')
-    expect(r.legs[0]!.notAvailable).toBe(true)
+    expect(r.legs[0]!.drawnAs).toBe('air')
+    expect(r.legs[0]!.sea).toBeUndefined()
   })
 
   test('route length is the sum of leg lengths and bounds cover every path point', () => {
@@ -414,6 +425,149 @@ describe('nearestOnLeg', () => {
     expect(hit.at[0]).toBeCloseTo(-179.5, 1)
     expect(hit.distance).toBeLessThan(0.01)
     expect(hit.insertIndex).toBe(0)
+  })
+})
+
+const land = landIndex(decodeLand(readFileSync(new URL('../../data/land-10m.bin', import.meta.url))))
+
+/** Greek islands with leg 0 (Piraeus → Mykonos) by sea through `via`, and its sea path routed. */
+function greekSea(via: ViaPoint[] = []): { scene: Scene; cached: SeaPath; seaPaths: SeaPaths } {
+  const base = sceneOf(greekIslands())
+  const scene: Scene = { ...base, legs: base.legs.map((l, i) => (i === 0 ? { ...l, mode: 'sea' as const, via } : l)) }
+  const [from, to] = [scene.stops[0]!.at, scene.stops[1]!.at]
+  const cached = routeSea(from, to, via, land)
+  expect(cached.status).toBe('ok')
+  return { scene, cached, seaPaths: { [seaLegKey(from, to, via)]: cached } }
+}
+
+describe('sea and air legs', () => {
+  test('draws a sea leg from its cached path', () => {
+    const { scene, cached, seaPaths } = greekSea()
+    const leg = buildRoute(scene, seaPaths).legs[0]!
+    expect(leg.drawnAs).toBe('sea')
+    expect(leg.sea).toEqual({ status: 'ok' })
+    expect(leg.path).toHaveLength(cached.path.length)
+    expect(leg.xy).toHaveLength(cached.path.length)
+    expect(leg.cum).toHaveLength(cached.path.length)
+    expect(leg.knots).toEqual(cached.knots)
+    expect(leg.path).toEqual(cached.path)
+    expect(leg.length).toBe(leg.cum.at(-1))
+    expect(leg.length).toBeGreaterThan(0)
+  })
+
+  test('a sea leg with coincident via points keeps one knot per control, exactly on it', () => {
+    const via: ViaPoint[] = [{ at: [24, 37.6] }, { at: [24, 37.6] }, { at: [24.8, 37.3] }]
+    const { scene, seaPaths } = greekSea(via)
+    const leg = buildRoute(scene, seaPaths).legs[0]!
+    expect(leg.drawnAs).toBe('sea')
+    expect(leg.knots).toHaveLength(via.length + 2)
+    const controls = [scene.stops[0]!.at, ...via.map((v) => v.at), scene.stops[1]!.at]
+    controls.forEach((c, i) => expect(leg.path[leg.knots[i]!]).toEqual(c))
+    expect(leg.knots[1]).toBe(leg.knots[2])
+  })
+
+  test('places a cached sea path on the scene\'s unwrapped longitudes', () => {
+    const base = sceneOf(stopsAt([[170, -17], [178.44, -18.14], [-171.75, -13.83]]))
+    const scene: Scene = { ...base, legs: [{ mode: 'line', via: [] }, { mode: 'sea', via: [] }] }
+    const cached: SeaPath = {
+      status: 'ok',
+      path: [[178.44, -18.14], [181, -17], [185, -15], [188.25, -13.83]],
+      knots: [0, 3],
+    }
+    const r = buildRoute(scene, { [seaLegKey([178.44, -18.14], [-171.75, -13.83], [])]: cached })
+    expect(r.legs[1]!.drawnAs).toBe('sea')
+    expect(r.legs[1]!.path[0]).toEqual(r.legs[0]!.path.at(-1))
+    expect(r.legs[1]!.path.at(-1)![0]).toBe(188.25)
+    expect(r.bounds[1][0]).toBe(188.25)
+  })
+
+  test('shifts a cached sea path by whole turns to meet an unwrapped start', () => {
+    // Leg 0 crosses the antimeridian, so the sea leg starts at 190 while its cache starts at -170.
+    const base = sceneOf(stopsAt([[170, 0], [-170, 0], [-160, 0], [-150, 0]]))
+    const scene: Scene = {
+      ...base,
+      legs: [{ mode: 'line', via: [] }, { mode: 'sea', via: [] }, { mode: 'line', via: [] }],
+    }
+    const cached: SeaPath = { status: 'ok', path: [[-170, 0], [-165, 1], [-160, 0]], knots: [0, 2] }
+    const r = buildRoute(scene, { [seaLegKey([-170, 0], [-160, 0], [])]: cached })
+    expect(r.legs[1]!.path).toEqual([[190, 0], [195, 1], [200, 0]])
+    expect(r.legs[2]!.path[0]).toEqual([200, 0])
+    expect(r.legs[2]!.path.at(-1)).toEqual([210, 0])
+  })
+
+  test('later legs continue from where a long sea path actually ends', () => {
+    // The sea path runs east the long way round, ending a turn further than the straight unwrap.
+    const base = sceneOf(stopsAt([[0, 0], [-10, 0], [-5, 0]]))
+    const scene: Scene = { ...base, legs: [{ mode: 'sea', via: [] }, { mode: 'line', via: [] }] }
+    const path: [number, number][] = []
+    for (let lng = 0; lng <= 350; lng += 10) path.push([lng, 0])
+    const cached: SeaPath = { status: 'ok', path, knots: [0, path.length - 1] }
+    const r = buildRoute(scene, { [seaLegKey([0, 0], [-10, 0], [])]: cached })
+    expect(r.legs[0]!.path.at(-1)).toEqual([350, 0])
+    expect(r.legs[1]!.path[0]).toEqual([350, 0])
+    expect(r.legs[1]!.path.at(-1)).toEqual([355, 0])
+  })
+
+  test('draws a sea leg without a cached path as a pending line', () => {
+    const { scene } = greekSea()
+    const leg = buildRoute(scene, {}).legs[0]!
+    expect(leg.drawnAs).toBe('line')
+    expect(leg.sea).toEqual({ status: 'pending' })
+    expect(leg.path).toEqual([scene.stops[0]!.at, scene.stops[1]!.at])
+  })
+
+  test('draws a fallback sea leg as a line and keeps its reason', () => {
+    const { scene } = greekSea()
+    const key = seaLegKey(scene.stops[0]!.at, scene.stops[1]!.at, [])
+    const reason = 'Mykonos is more than 30 km from the sea'
+    const leg = buildRoute(scene, { [key]: { status: 'fallback', reason, path: [], knots: [] } }).legs[0]!
+    expect(leg.drawnAs).toBe('line')
+    expect(leg.sea).toEqual({ status: 'fallback', reason })
+    expect(leg.path).toEqual([scene.stops[0]!.at, scene.stops[1]!.at])
+    expect(leg.knots).toEqual([0, 1])
+  })
+
+  test('an ok sea leg that crosses land says where', () => {
+    const { scene, cached } = greekSea()
+    const key = seaLegKey(scene.stops[0]!.at, scene.stops[1]!.at, [])
+    const crossesLand: LngLat = [24.5, 37.5]
+    const leg = buildRoute(scene, { [key]: { ...cached, crossesLand } }).legs[0]!
+    expect(leg.drawnAs).toBe('sea')
+    expect(leg.sea).toEqual({ status: 'ok', crossesLand })
+  })
+
+  test('draws an air leg as an arc with knots at its via points', () => {
+    const base = sceneOf(stopsAt([[0, 0], [40, 10]]))
+    const leg = buildRoute({ ...base, legs: [{ mode: 'air', via: [{ at: [20, 20] }] }] }).legs[0]!
+    expect(leg.drawnAs).toBe('air')
+    expect(leg.sea).toBeUndefined()
+    expect(leg.path).toHaveLength(2 * AIR_SAMPLES + 1)
+    expect(leg.knots).toEqual([0, AIR_SAMPLES, 2 * AIR_SAMPLES])
+    expect(leg.path[leg.knots[1]!]).toEqual([20, 20])
+    expect(leg.path.at(-1)).toEqual([40, 10])
+    // The arc bows north of the straight line between the stops.
+    expect(leg.path[AIR_SAMPLES / 2]![1]).toBeGreaterThan(10)
+    expect(leg.cum).toHaveLength(leg.path.length)
+    expect(leg.length).toBe(leg.cum.at(-1))
+  })
+
+  test('an air leg across the antimeridian stays continuous with the next leg', () => {
+    const base = sceneOf(stopsAt([[170, 0], [-170, 10], [-160, 10]]))
+    const r = buildRoute({ ...base, legs: [{ mode: 'air', via: [] }, { mode: 'line', via: [] }] })
+    expect(r.legs[0]!.path.at(-1)).toEqual([190, 10])
+    expect(r.legs[1]!.path[0]).toEqual([190, 10])
+    for (const [lng] of r.legs[0]!.path) expect(lng).toBeGreaterThanOrEqual(170)
+  })
+
+  test('nearestOnLeg on a sea leg gives an insertIndex between the right knots', () => {
+    const via: ViaPoint[] = [{ at: [24, 37.6] }, { at: [24.8, 37.3] }]
+    const { scene, seaPaths } = greekSea(via)
+    const r = buildRoute(scene, seaPaths)
+    const leg = r.legs[0]!
+    const [k0, k1, k2, k3] = leg.knots
+    expect(nearestOnLeg(r, 0, leg.path[Math.floor((k0! + k1!) / 2)]!).insertIndex).toBe(0)
+    expect(nearestOnLeg(r, 0, leg.path[Math.floor((k1! + k2!) / 2)]!).insertIndex).toBe(1)
+    expect(nearestOnLeg(r, 0, leg.path[Math.floor((k2! + k3!) / 2)]!).insertIndex).toBe(2)
   })
 })
 

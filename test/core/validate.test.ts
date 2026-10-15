@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { validateProject, type Issue, type Project } from '../../src/core/index.js'
+import { seaLegKey, validateProject, type Issue, type Project, type SeaPaths } from '../../src/core/index.js'
 import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 const paperLook = { ...sceneOf(greekIslands()).look, theme: 'paper' as const }
@@ -103,24 +103,24 @@ describe('validateProject', () => {
     expect(fix).toContain('camera.resolvedEnd')
   })
 
-  test('a sea leg is a not-available-yet warning on its mode', () => {
+  test('sea and air legs are not warnings', () => {
     const project = greekIslands()
     sceneOf(project).legs[0] = { ...sceneOf(project).legs[0]!, mode: 'sea' }
-    const { errors, warnings } = validateProject(project)
-    expect(errors).toEqual([])
-    expect(warnings).toEqual([
-      expect.objectContaining({ code: 'not-available-yet', path: ['scenes', 0, 'legs', 0, 'mode'] }),
-    ])
-    expect(warnings[0]!.fix).toContain("Use 'line'")
-    expect(warnings[0]!.fix).toContain('update_project')
+    sceneOf(project).legs[1] = { ...sceneOf(project).legs[1]!, mode: 'air' }
+    expect(validateProject(project)).toEqual({ errors: [], warnings: [] })
   })
 
-  test('an air leg is a not-available-yet warning too', () => {
+  test('sea legs are measured along their seaPaths', () => {
     const project = greekIslands()
-    sceneOf(project).legs[1] = { ...sceneOf(project).legs[1]!, mode: 'air' }
-    expect(validateProject(project).warnings).toEqual([
-      expect.objectContaining({ code: 'not-available-yet', path: ['scenes', 0, 'legs', 1, 'mode'] }),
-    ])
+    const scene = sceneOf(project)
+    scene.legs[0] = { ...scene.legs[0]!, mode: 'sea' }
+    expect(validateProject(project).warnings).toEqual([])
+    // A sea path that wanders far away takes nearly all the travel time from the other legs.
+    const [from, to] = [scene.stops[0]!.at, scene.stops[1]!.at]
+    const seaPaths: SeaPaths = {
+      [seaLegKey(from, to, [])]: { status: 'ok', path: [from, [60, -60], to], knots: [0, 2] },
+    }
+    expect(codes(validateProject(project, { seaPaths }).warnings)).toContain('short-leg')
   })
 
   test('the follow camera is a not-available-yet warning', () => {

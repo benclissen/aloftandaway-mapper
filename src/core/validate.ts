@@ -2,6 +2,7 @@ import { resolveShots } from './camera.js'
 import { haversineKm } from './geo.js'
 import { buildRoute } from './route.js'
 import { THEME_MAX_ZOOM, type Aspect, type Project, type Scene } from './schema.js'
+import type { SeaPaths } from './sea.js'
 import { legSeconds } from './timeline.js'
 
 export interface Issue {
@@ -16,19 +17,20 @@ const MIN_LEG_SECONDS = 1
 /** Consecutive stops closer than this many km are reported as the same place. */
 const SAME_PLACE_KM = 0.5
 
-const MODE_NAME = { sea: 'Sea', air: 'Air' } as const
-
 /**
  * Checks a project for what blocks a render (errors) and what an agent should fix or explain (warnings). Every scene
  * is checked. Every issue carries a `path` into the project, starting `['scenes', i]`, and a `fix` sentence for the
- * agent.
+ * agent. Sea legs are measured along their paths in `opts.seaPaths`, and as lines where they have none.
  */
-export function validateProject(project: Project): { errors: Issue[]; warnings: Issue[] } {
+export function validateProject(
+  project: Project,
+  opts: { seaPaths?: SeaPaths } = {},
+): { errors: Issue[]; warnings: Issue[] } {
   const errors: Issue[] = []
   const warnings: Issue[] = []
   project.scenes.forEach((scene, i) => {
     const prefix = (issue: Issue): Issue => (issue.path ? { ...issue, path: ['scenes', i, ...issue.path] } : issue)
-    const found = validateScene(scene, project.output.aspect)
+    const found = validateScene(scene, project.output.aspect, opts.seaPaths)
     errors.push(...found.errors.map(prefix))
     warnings.push(...found.warnings.map(prefix))
   })
@@ -36,10 +38,14 @@ export function validateProject(project: Project): { errors: Issue[]; warnings: 
 }
 
 /** Checks one scene. Issue paths are relative to the scene. */
-function validateScene(scene: Scene, aspect: Aspect): { errors: Issue[]; warnings: Issue[] } {
+function validateScene(
+  scene: Scene,
+  aspect: Aspect,
+  seaPaths: SeaPaths | undefined,
+): { errors: Issue[]; warnings: Issue[] } {
   const errors: Issue[] = []
   const warnings: Issue[] = []
-  const { stops, legs, camera, look, timing } = scene
+  const { stops, camera, look, timing } = scene
 
   if (stops.length < 2) {
     errors.push({
@@ -54,7 +60,7 @@ function validateScene(scene: Scene, aspect: Aspect): { errors: Issue[]; warning
   const legName = (i: number) => `Leg ${i + 1} (${nameOf(i)} → ${nameOf(i + 1)})`
 
   if (stops.length >= 2) {
-    const route = buildRoute(scene)
+    const route = buildRoute(scene, seaPaths)
 
     for (let i = 1; i < stops.length; i++) {
       const km = haversineKm(stops[i - 1]!.at, stops[i]!.at)
@@ -114,18 +120,6 @@ function validateScene(scene: Scene, aspect: Aspect): { errors: Issue[]; warning
       })
     }
   }
-
-  legs.forEach((leg, i) => {
-    if (leg.mode === 'sea' || leg.mode === 'air') {
-      const name = MODE_NAME[leg.mode]
-      warnings.push({
-        code: 'not-available-yet',
-        message: `${legName(i)} is a ${leg.mode} leg, and ${leg.mode} routing isn't available yet`,
-        path: ['legs', i, 'mode'],
-        fix: `${name} routing isn't available yet; this leg is drawn as a straight line. Use 'line' (update_project ops update_leg), or add via points with insert_via to steer it.`,
-      })
-    }
-  })
 
   if (camera.mode === 'follow') {
     warnings.push({

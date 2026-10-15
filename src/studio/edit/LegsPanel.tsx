@@ -79,7 +79,7 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
                   ))}
                 </select>
               </div>
-              {route.legs[i]?.notAvailable && <p className="leg-note">Drawn as a plain line for now.</p>}
+              {route.legs[i]?.sea?.status === 'pending' && <p className="leg-note">Drawn as a plain line for now.</p>}
             </li>
           ))}
         </ul>

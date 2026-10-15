@@ -4,9 +4,9 @@ import type { LngLat } from './schema.js'
 export const SAMPLES_PER_SPAN = 24
 const ALPHA = 0.5
 
-const dist = (a: XY, b: XY) => Math.hypot(b[0] - a[0], b[1] - a[1])
+export const dist = (a: XY, b: XY) => Math.hypot(b[0] - a[0], b[1] - a[1])
 
-function lerp(a: XY, b: XY, t: number): XY {
+export function lerp(a: XY, b: XY, t: number): XY {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 }
 
@@ -51,7 +51,7 @@ export function curveThrough(points: XY[], samplesPerSpan = SAMPLES_PER_SPAN): X
 }
 
 /** A stop or via point, unwrapped. */
-interface Control {
+export interface Control {
   at: LngLat
   sharp: boolean
 }
@@ -60,7 +60,7 @@ interface Control {
  * Sample one curve through `controls`, with a corner at each sharp point. Returns the
  * samples and, for each control, the index of its sample. Coincident neighbours share one.
  */
-export function sampleChain(controls: { at: LngLat; sharp: boolean }[]): { xy: XY[]; at: number[] } {
+export function sampleChain(controls: Control[]): { xy: XY[]; at: number[] } {
   // Merge coincident neighbours: the curve needs distinct points.
   const points: XY[] = []
   const sharp: boolean[] = []

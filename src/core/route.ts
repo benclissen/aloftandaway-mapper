@@ -1,10 +1,13 @@
-import { sampleChain } from './curve.js'
+import { airPath } from './air.js'
+import { dist, lerp, sampleChain, type Control } from './curve.js'
 import { toLngLat, toXY, unwrapLng, headingDeg, type XY } from './geo.js'
 import type { LegMode, LngLat, Scene, SymbolKind } from './schema.js'
+import { seaLegKey, type SeaPaths } from './sea.js'
 
 export interface RouteLeg {
   mode: LegMode
-  drawnAs: 'line'
+  /** `sea` follows a routed sea path, `air` is a flight arc, and `line` is a plain curve through the controls. */
+  drawnAs: 'line' | 'sea' | 'air'
   /** Unwrapped `[lng, lat]`, sampled from `xy`. The ends are exactly the unwrapped stop coordinates. */
   path: LngLat[]
   xy: XY[]
@@ -16,8 +19,11 @@ export interface RouteLeg {
    * Always `via.length + 2` long; coincident points share an index.
    */
   knots: number[]
-  /** The mode has no router yet, so the leg is drawn as a line. */
-  notAvailable?: boolean
+  /**
+   * On every sea leg. `pending` until its sea path has been routed; `fallback` when routing failed, with the
+   * reason. Both are drawn as lines. `crossesLand` is where an `ok` path first crosses land.
+   */
+  sea?: { status: 'ok' | 'fallback' | 'pending'; reason?: string; crossesLand?: LngLat }
 }
 
 export interface Route {
@@ -27,57 +33,59 @@ export interface Route {
   bounds: [LngLat, LngLat]
 }
 
-const dist = (a: XY, b: XY) => Math.hypot(b[0] - a[0], b[1] - a[1])
-
-function lerp(a: XY, b: XY, t: number): XY {
-  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
-}
-
-/** A stop or via point, unwrapped. */
-interface Control {
-  at: LngLat
-  sharp: boolean
-}
-
 /** Whether a leg's line may curve through its end stops into neighbouring legs. */
 const curves = (mode: LegMode) => mode === 'line' || mode === 'land'
+
+function finishLeg(mode: LegMode, drawnAs: RouteLeg['drawnAs'], path: LngLat[], xy: XY[], knots: number[]): RouteLeg {
+  const cum = [0]
+  for (let i = 1; i < xy.length; i++) cum.push(cum[i - 1]! + dist(xy[i - 1]!, xy[i]!))
+  return { mode, drawnAs, path, xy, cum, length: cum[cum.length - 1]!, knots }
+}
 
 function makeLeg(mode: LegMode, xy: XY[], controls: Control[], knots: number[]): RouteLeg {
   const path = xy.map(toLngLat)
   // Stops and via points sit exactly on their own coordinates.
   knots.forEach((k, i) => (path[k] = controls[i]!.at))
-  const cum = [0]
-  for (let i = 1; i < xy.length; i++) cum.push(cum[i - 1]! + dist(xy[i - 1]!, xy[i]!))
-  const leg: RouteLeg = { mode, drawnAs: 'line', path, xy, cum, length: cum[cum.length - 1]!, knots }
-  if (mode === 'sea' || mode === 'air') leg.notAvailable = true
-  return leg
+  return finishLeg(mode, 'line', path, xy, knots)
 }
 
-export function buildRoute(scene: Scene): Route {
+/** `lng` shifted by whole turns to lie nearest `near`. */
+const nearestTurn = (lng: number, near: number): number => lng + Math.round((near - lng) / 360) * 360
+
+/**
+ * The routed line of a scene. Line and land legs curve through their stops and via points. A sea leg follows its
+ * path in `seaPaths`, keyed by `seaLegKey`, and is drawn as a line until it has one. An air leg is a flight arc.
+ */
+export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
   const { stops } = scene
   if (stops.length < 2) {
     const at = stops[0]?.at ?? [0, 0]
     return { legs: [], length: 0, bounds: [[...at], [...at]] }
   }
 
-  // Unwrap every point in travel order so the whole route is continuous in longitude.
+  // Unwrap every point in travel order so the whole route is continuous in longitude. Each chain
+  // starts from where the previous leg actually ended.
   let prevLng = stops[0]!.at[0]
   const unwrap = (p: LngLat): LngLat => {
     prevLng = unwrapLng(prevLng, p[0])
     return [prevLng, p[1]]
   }
   const specs = stops.slice(1).map((_, i) => scene.legs[i] ?? { mode: 'line' as const, via: [] })
-  const stopAt: LngLat[] = [unwrap(stops[0]!.at)]
-  const viaAt: Control[][] = []
-  specs.forEach((spec, i) => {
-    viaAt.push(spec.via.map((v) => ({ at: unwrap(v.at), sharp: v.sharp === true })))
-    stopAt.push(unwrap(stops[i + 1]!.at))
-  })
+  let start: LngLat = unwrap(stops[0]!.at)
 
   // One curve runs through each chain of `line` and `land` legs. A sharp stop ends a
   // chain, and a sea or air leg is a chain on its own.
   const legs: RouteLeg[] = []
   for (let first = 0; first < specs.length; ) {
+    const spec = specs[first]!
+    const leg = spec.mode === 'sea' ? seaLeg(first) : spec.mode === 'air' ? airLeg(first) : undefined
+    if (leg) {
+      legs.push(leg)
+      start = leg.path[leg.path.length - 1]!
+      prevLng = start[0]
+      first++
+      continue
+    }
     let last = first
     while (
       curves(specs[last]!.mode) &&
@@ -86,13 +94,22 @@ export function buildRoute(scene: Scene): Route {
       stops[last + 1]!.sharp !== true
     )
       last++
-    const controls: Control[] = [{ at: stopAt[first]!, sharp: false }]
+    legs.push(...lineChain(first, last))
+    start = legs[legs.length - 1]!.path.at(-1)!
+    first = last + 1
+  }
+
+  /** Legs `first` to `last` as one curve from `start`. */
+  function lineChain(first: number, last: number): RouteLeg[] {
+    const controls: Control[] = [{ at: start, sharp: false }]
     const stopControl = [0]
     for (let i = first; i <= last; i++) {
-      controls.push(...viaAt[i]!, { at: stopAt[i + 1]!, sharp: false })
+      controls.push(...specs[i]!.via.map((v) => ({ at: unwrap(v.at), sharp: v.sharp === true })))
+      controls.push({ at: unwrap(stops[i + 1]!.at), sharp: false })
       stopControl.push(controls.length - 1)
     }
     const chain = sampleChain(controls)
+    const out: RouteLeg[] = []
     for (let i = first; i <= last; i++) {
       const from = stopControl[i - first]!
       const to = stopControl[i - first + 1]!
@@ -103,13 +120,46 @@ export function buildRoute(scene: Scene): Route {
         // A zero-length leg still has a start and an end point.
         const p = chain.xy[lo]!
         const knots = legControls.map((_, j) => (j === legControls.length - 1 ? 1 : 0))
-        legs.push(makeLeg(specs[i]!.mode, [p, p], legControls, knots))
+        out.push(makeLeg(specs[i]!.mode, [p, p], legControls, knots))
       } else {
         const knots = chain.at.slice(from, to + 1).map((k) => k - lo)
-        legs.push(makeLeg(specs[i]!.mode, chain.xy.slice(lo, hi + 1), legControls, knots))
+        out.push(makeLeg(specs[i]!.mode, chain.xy.slice(lo, hi + 1), legControls, knots))
       }
     }
-    first = last + 1
+    return out
+  }
+
+  /** Leg `i` by sea: its cached path, or a line while it has none. */
+  function seaLeg(i: number): RouteLeg {
+    const { via } = specs[i]!
+    const from = stops[i]!.at
+    const to = stops[i + 1]!.at
+    const cached = seaPaths?.[seaLegKey(from, to, via)]
+    if (cached?.status !== 'ok') {
+      const leg = lineChain(i, i)[0]!
+      leg.sea = cached
+        ? { status: 'fallback', ...(cached.reason !== undefined && { reason: cached.reason }) }
+        : { status: 'pending' }
+      return leg
+    }
+    // Shift by whole turns onto the unwrapped start, then put each control exactly on its own coordinates.
+    const shift = Math.round((start[0] - cached.path[0]![0]) / 360) * 360
+    const path: LngLat[] = cached.path.map(([lng, lat]) => [lng + shift, lat])
+    const controls = [from, ...via.map((v) => v.at), to]
+    cached.knots.forEach((k, j) => {
+      const c = controls[j]!
+      path[k] = j === 0 ? start : [nearestTurn(c[0], path[k]![0]), c[1]]
+    })
+    const leg = finishLeg('sea', 'sea', path, path.map(toXY), [...cached.knots])
+    leg.sea = { status: 'ok', ...(cached.crossesLand && { crossesLand: cached.crossesLand }) }
+    return leg
+  }
+
+  /** Leg `i` by air: an arc through its unwrapped controls. */
+  function airLeg(i: number): RouteLeg {
+    const controls = [start, ...specs[i]!.via.map((v) => unwrap(v.at)), unwrap(stops[i + 1]!.at)]
+    const { path, knots } = airPath(controls)
+    return finishLeg('air', 'air', path, path.map(toXY), knots)
   }
 
   let length = 0

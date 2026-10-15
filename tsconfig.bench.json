@@ -6,5 +6,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["bench/**/*.ts"]
+  "include": ["bench/**/*.ts", "scripts/**/*.ts"]
 }

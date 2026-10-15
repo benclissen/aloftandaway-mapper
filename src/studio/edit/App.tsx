@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { buildRoute, buildTimeline, fpsValue, type Project, type ProjectPatch } from '../../core/index.js'
 import { getProject, patch, subscribe } from './api.js'
+import { LegsPanel } from './LegsPanel.js'
 import { PointMenu } from './PointMenu.js'
 import { isSharp, removeViaEdit, sharpEdit, type PointTarget } from './RouteEditor.js'
 import { Scrubber, type Tick } from './Scrubber.js'
 import { ShotPanel } from './ShotPanel.js'
+import { StylePicker } from './StylePicker.js'
 import { Stage, type StageHandle } from './Stage.js'
 import './edit.css'
 
@@ -68,9 +70,10 @@ export function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+  const route = useMemo(() => (scene ? buildRoute(scene) : undefined), [scene])
   const timeline = useMemo(
-    () => (project && scene ? buildTimeline(scene, project.output.fps, buildRoute(scene)) : undefined),
-    [project, scene],
+    () => (project && scene && route ? buildTimeline(scene, project.output.fps, route) : undefined),
+    [project, scene, route],
   )
   const last = timeline ? timeline.totalFrames - 1 : 0
   const shown = Math.min(frame, last)
@@ -123,7 +126,7 @@ export function App() {
   const onStageError = useCallback((message: string) => setNotice({ kind: 'error', text: message }), [])
 
   if (loadError) return <p className="studio-message">{loadError}</p>
-  if (!project || !scene || !timeline) return <p className="studio-message">Loading the project…</p>
+  if (!project || !scene || !route || !timeline) return <p className="studio-message">Loading the project…</p>
 
   const saveShot = (which: 'start' | 'end') => {
     const shot = stage.current?.shot()
@@ -132,18 +135,21 @@ export function App() {
 
   return (
     <div className="studio">
-      <Stage
-        project={project}
-        frame={shown}
-        freeView={freeView}
-        handle={stage}
-        selectedLeg={selected}
-        onUserMove={onUserMove}
-        onSelectLeg={setSelectedLeg}
-        onEdit={onEdit}
-        onPointMenu={onPointMenu}
-        onError={onStageError}
-      />
+      <div className="workspace">
+        <Stage
+          project={project}
+          frame={shown}
+          freeView={freeView}
+          handle={stage}
+          selectedLeg={selected}
+          onUserMove={onUserMove}
+          onSelectLeg={setSelectedLeg}
+          onEdit={onEdit}
+          onPointMenu={onPointMenu}
+          onError={onStageError}
+        />
+        <LegsPanel scene={scene} route={route} selectedLeg={selected} onSelectLeg={setSelectedLeg} onEdit={onEdit} />
+      </div>
       {pointMenu && isSharp(scene, pointMenu.target) !== undefined && (
         <PointMenu
           target={pointMenu.target}
@@ -194,6 +200,7 @@ export function App() {
               void send({ sceneSet: { camera: { start: null, end: null } } }, 'Camera fits the route')
             }}
           />
+          <StylePicker theme={scene.look.theme} onEdit={onEdit} />
           {notice && (
             <p className={`notice notice-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>
               <span title={notice.text}>{notice.text}</span>

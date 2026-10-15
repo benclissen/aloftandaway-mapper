@@ -393,3 +393,59 @@ test('a via point across the antimeridian sits on the line and saves within ±18
     await close()
   }
 })
+
+describe('legs panel and style picker', () => {
+  let studio: Awaited<ReturnType<typeof openStudio>>
+  const leg = async (i: number) => sceneOf(await loadProject(studio.folder)).legs[i]!
+
+  beforeAll(async () => {
+    studio = await openStudio()
+  })
+  afterAll(async () => {
+    await studio?.close()
+  })
+
+  test('lists legs', async () => {
+    const { page } = studio
+    await page.getByTestId('leg-row-2').waitFor()
+    expect(await page.locator('[data-testid^="leg-row-"]').count()).toBe(3)
+    expect(await page.getByTestId('leg-row-0').locator('.leg-title').textContent()).toBe('1 · Piraeus → Mykonos')
+    expect(await page.getByTestId('leg-row-0').locator('.leg-note').count()).toBe(0)
+  })
+
+  test('transport picker sets symbol and mode', async () => {
+    const { page } = studio
+    await page.getByTestId('leg-symbol-0').selectOption('ferry')
+    await expect.poll(async () => ({ symbol: (await leg(0)).symbol, mode: (await leg(0)).mode })).toEqual({ symbol: 'ferry', mode: 'sea' })
+    await page.getByTestId('leg-row-0').getByText('Drawn as a plain line for now.').waitFor()
+    expect(await page.getByTestId('leg-mode-0').inputValue()).toBe('sea')
+  })
+
+  test('Default clears the symbol', async () => {
+    const { page } = studio
+    await page.getByTestId('leg-symbol-0').selectOption('')
+    await expect.poll(async () => 'symbol' in (await leg(0))).toBe(false)
+    expect(await page.getByTestId('leg-symbol-0').inputValue()).toBe('')
+  })
+
+  test('mode picker overrides the mode', async () => {
+    const { page } = studio
+    await page.getByTestId('leg-mode-1').selectOption('air')
+    await expect.poll(async () => (await leg(1)).mode).toBe('air')
+    await page.getByTestId('leg-mode-1').selectOption('land')
+    await expect.poll(async () => (await leg(1)).mode).toBe('land')
+  })
+
+  test('style picker changes the theme', async () => {
+    const { page, folder } = studio
+    await page.getByTestId('theme-picker').selectOption('blank')
+    await expect.poll(async () => sceneOf(await loadProject(folder)).look.theme).toBe('blank')
+  })
+
+  test('clicking a row selects the leg on the map', async () => {
+    const { page } = studio
+    await page.getByTestId('leg-row-2').click()
+    await page.waitForSelector('[data-testid="stage"][data-selected-leg="2"]')
+    expect(await page.getByTestId('leg-row-2').getAttribute('aria-selected')).toBe('true')
+  })
+})

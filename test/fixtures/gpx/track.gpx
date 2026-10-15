@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="hand-written fixture" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata><name>Coastal walk sample</name></metadata>
+  <wpt lat="50.101" lon="-5.48"><name>Harbour</name></wpt>
+  <wpt lat="50.105" lon="-5.66"><name>Old Quay</name></wpt>
+  <wpt lat="50.098" lon="-5.58"><name>Lighthouse</name></wpt>
+  <wpt lat="50.19" lon="-5.60"><name>Inland Farm</name></wpt>
+  <wpt lat="50.12" lon="-5.62"></wpt>
+  <trk>
+    <name>Coastal Walk</name>
+    <trkseg>
+      <trkpt lat="50.100" lon="-5.70"/>
+      <trkpt lat="50.102" lon="-5.68"/>
+      <trkpt lat="50.100" lon="-5.66"/>
+      <trkpt lat="50.102" lon="-5.64"/>
+      <trkpt lat="50.100" lon="-5.62"/>
+      <trkpt lat="50.102" lon="-5.60"/>
+    </trkseg>
+    <trkseg>
+      <trkpt lat="50.100" lon="-5.58"/>
+      <trkpt lat="50.102" lon="-5.56"/>
+      <trkpt lat="50.100" lon="-5.54"/>
+      <trkpt lat="50.102" lon="-5.52"/>
+      <trkpt lat="50.100" lon="-5.50"/>
+      <trkpt lat="50.100" lon="-5.48"/>
+    </trkseg>
+  </trk>
+</gpx>

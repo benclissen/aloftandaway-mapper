@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="hand-written fixture" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>Morning Loop</name>
+    <trkseg>
+      <trkpt lat="40.00" lon="-3.70"/>
+      <trkpt lat="40.01" lon="-3.69"/>
+      <trkpt lat="40.02" lon="-3.70"/>
+    </trkseg>
+  </trk>
+  <trk>
+    <name>Evening Climb</name>
+    <trkseg>
+      <trkpt lat="40.10" lon="-3.60"/>
+      <trkpt lat="40.11" lon="-3.58"/>
+      <trkpt lat="40.13" lon="-3.57"/>
+    </trkseg>
+  </trk>
+</gpx>

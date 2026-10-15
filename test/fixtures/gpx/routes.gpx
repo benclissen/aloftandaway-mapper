@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="hand-written fixture" xmlns="http://www.topografix.com/GPX/1/1">
+  <rte>
+    <name>Ridge Route</name>
+    <rtept lat="46.50" lon="8.00"/>
+    <rtept lat="46.51" lon="8.02"/>
+    <rtept lat="46.50" lon="8.04"/>
+    <rtept lat="46.52" lon="8.06"/>
+  </rte>
+</gpx>

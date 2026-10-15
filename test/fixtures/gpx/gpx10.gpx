@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.0" creator="hand-written fixture" xmlns="http://www.topografix.com/GPX/1/0"
+     xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
+  <name>Valley trail</name>
+  <trk>
+    <name>Valley Trail</name>
+    <trkseg>
+      <trkpt lat="47.00" lon="11.00">
+        <ele>812.5</ele>
+        <time>2025-06-01T08:00:00Z</time>
+        <extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>96</gpxtpx:hr></gpxtpx:TrackPointExtension></extensions>
+      </trkpt>
+      <trkpt lat="47.01" lon="11.01">
+        <ele>830.0</ele>
+        <time>2025-06-01T08:10:00Z</time>
+        <extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>110</gpxtpx:hr></gpxtpx:TrackPointExtension></extensions>
+      </trkpt>
+    </trkseg>
+    <trkseg>
+      <trkpt lat="47.02" lon="11.03">
+        <ele>870.2</ele>
+        <time>2025-06-01T08:20:00Z</time>
+        <extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>121</gpxtpx:hr></gpxtpx:TrackPointExtension></extensions>
+      </trkpt>
+      <trkpt lat="47.03" lon="11.04">
+        <ele>901.0</ele>
+        <time>2025-06-01T08:30:00Z</time>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>

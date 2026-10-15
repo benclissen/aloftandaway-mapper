@@ -554,6 +554,55 @@ describe('undo and redo', () => {
     }
   })
 
+  test('a step saved before an outside change is not recorded after it', async () => {
+    const { page, folder, close } = await openStudio()
+    try {
+      await setFerry(page, folder)
+      await expect.poll(() => enabled(page, 'undo')).toBe(true)
+      const cleared = page.getByRole('status').filter({ hasText: 'Your agent changed the project. Undo history cleared.' })
+      // The server saves the studio's edit, the agent writes after it, and the agent's broadcast reaches the studio
+      // before the response to the edit does.
+      await page.route('**/patch', async (route) => {
+        const response = await route.fetch()
+        await mutateProject(folder, (p) => ({ ...p, name: 'Renamed by the agent' }))
+        await cleared.waitFor()
+        await route.fulfill({ response })
+      })
+      await page.getByTestId('leg-mode-1').selectOption('air')
+      await expect.poll(async () => sceneOf(await loadProject(folder)).legs[1]!.mode).toBe('air')
+      await expect.poll(() => page.getByTestId('leg-mode-1').inputValue()).toBe('air')
+      await page.waitForTimeout(500)
+      expect(await enabled(page, 'undo')).toBe(false)
+    } finally {
+      await close()
+    }
+  })
+
+  test('undo after an unseen agent write does not overwrite it', async () => {
+    const { page, folder, close } = await openStudio()
+    try {
+      await setFerry(page, folder)
+      await expect.poll(() => enabled(page, 'undo')).toBe(true)
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+      // The agent changes the same leg's transport just as the undo goes out, before the studio can hear about it.
+      await page.route('**/patch', async (route) => {
+        await mutateProject(folder, (p) => ({
+          ...p,
+          scenes: [{ ...sceneOf(p), legs: sceneOf(p).legs.map((l, i) => (i === 0 ? { ...l, symbol: 'sailboat' } : l)) }],
+        }))
+        await route.continue()
+      })
+      await page.keyboard.press('Meta+z')
+      await page.getByRole('status').filter({ hasText: 'Your agent changed the project. Undo history cleared.' }).waitFor()
+      expect(await symbol(folder)).toBe('sailboat')
+      expect(await enabled(page, 'undo')).toBe(false)
+      expect(await enabled(page, 'redo')).toBe(false)
+      expect(await page.locator('.notice-error').count()).toBe(0)
+    } finally {
+      await close()
+    }
+  })
+
   test("clears history when the saved project's base is not the one the studio held", async () => {
     const { page, folder, close } = await openStudio()
     try {

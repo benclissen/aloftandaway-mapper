@@ -114,6 +114,18 @@ describe('EditQueue', () => {
     expect(order).toEqual(['make 1', 'handler 1', 'make 2'])
   })
 
+  test('a conditional run sends the base it was made against', async () => {
+    const initial = greekIslands()
+    const bases: Array<string | undefined> = []
+    const queue = new EditQueue(async (_patch, base) => {
+      bases.push(base)
+      return { project: initial, previousUpdatedAt: initial.updatedAt }
+    })
+    await queue.run(() => ({ set: { name: 'A' } }), () => initial)
+    await queue.run(() => ({ set: { name: 'B' } }), () => initial, { conditional: true })
+    expect(bases).toEqual([undefined, initial.updatedAt])
+  })
+
   test('make returning undefined sends nothing', async () => {
     const initial = greekIslands()
     let calls = 0

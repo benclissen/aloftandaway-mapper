@@ -9,9 +9,11 @@ import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import {
   applyPatch,
+  BASE_HEADER,
   CLIENT_HEADER,
   CLIENT_ID_PATTERN,
   ProjectError,
+  STALE_BASE_MESSAGE,
   type PatchRequest,
   type Project,
   type ServerMessage,
@@ -128,6 +130,9 @@ function sendError(res: http.ServerResponse, status: number, message: string, ex
 
 class BodyTooLarge extends Error {}
 
+/** A conditional patch whose base is no longer the project on disk. */
+class StaleBase extends Error {}
+
 async function readBody(req: http.IncomingMessage): Promise<string> {
   const declared = Number(req.headers['content-length'])
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new BodyTooLarge()
@@ -225,9 +230,13 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
           throw e
         }
         const client = clientId(req)
+        const baseHeader = req.headers[BASE_HEADER.toLowerCase()]
+        const base = typeof baseHeader === 'string' ? baseHeader : undefined
         await respondWith(res, async () => {
           let previousUpdatedAt = ''
           const project = await mutateProject(entry.folder, (p) => {
+            // Throwing here leaves the file as it is.
+            if (base !== undefined && p.updatedAt !== base) throw new StaleBase()
             previousUpdatedAt = p.updatedAt
             return applyPatch(p, patch)
           })
@@ -253,7 +262,9 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     try {
       sendJson(res, 200, await run())
     } catch (e) {
-      if (e instanceof ProjectError) {
+      if (e instanceof StaleBase) {
+        sendError(res, 409, STALE_BASE_MESSAGE)
+      } else if (e instanceof ProjectError) {
         sendError(res, 400, e.message, { path: e.issues[0]?.path ?? [], issues: e.issues })
       } else if (e instanceof StoreError) {
         sendError(res, 400, e.message, { fix: e.fix })

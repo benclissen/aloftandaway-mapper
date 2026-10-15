@@ -9,7 +9,7 @@ import {
   type Project,
   type ProjectPatch,
 } from '../../core/index.js'
-import { CLIENT_ID, getProject, patch, subscribe } from './api.js'
+import { CLIENT_ID, getProject, patch, RequestError, subscribe } from './api.js'
 import { EditHistory, EditQueue, type Entry } from './history.js'
 import { LegsPanel } from './LegsPanel.js'
 import { PointMenu } from './PointMenu.js'
@@ -67,13 +67,26 @@ export function App() {
     return true
   }, [])
 
-  /** Forgets every step, since the project changed under them. Says so when there was anything to forget. */
-  const clearHistory = useCallback(() => {
-    if (!history.canUndo && !history.canRedo) return
-    history.clear()
-    historyChanged()
-    setNotice({ kind: 'info', text: HISTORY_CLEARED })
-  }, [history])
+  /**
+   * Counts outside changes. An edit or step in flight when one is seen must not touch the history when it settles: its
+   * inverse was worked out against a project that is no longer the base.
+   */
+  const generation = useRef(0)
+
+  /**
+   * Forgets every step, since the project changed under them. Says so when there was anything to forget, or always
+   * with `tell`.
+   */
+  const clearHistory = useCallback(
+    (tell = false) => {
+      generation.current++
+      if (!tell && !history.canUndo && !history.canRedo) return
+      history.clear()
+      historyChanged()
+      setNotice({ kind: 'info', text: HISTORY_CLEARED })
+    },
+    [history],
+  )
 
   /**
    * Takes a saved response. When the server applied the patch to a version other than the one the studio sent it
@@ -169,10 +182,12 @@ export function App() {
   const edit = useCallback(
     (body: ProjectPatch, label: string, saved?: string): Promise<boolean> => {
       let held = ''
+      let sentIn = 0
       let inverse: ProjectPatch | undefined
       let problem = ''
       const make = (base: Project): ProjectPatch | undefined => {
         held = base.updatedAt
+        sentIn = generation.current
         try {
           // Applying it here first turns a patch that doesn't fit the project into a readable error.
           applyPatch(base, body)
@@ -189,7 +204,8 @@ export function App() {
             setNotice({ kind: 'error', text: `Not saved. ${problem}` })
             return false
           }
-          if (settle(response, held)) {
+          // An outside change seen while this was saving cleared the history; recording it now would undo onto that.
+          if (settle(response, held) && generation.current === sentIn) {
             history.push({ label, forward: body, inverse })
             historyChanged()
             setNotice(saved ? { kind: 'info', text: saved } : undefined)
@@ -205,29 +221,36 @@ export function App() {
     [queue, history, settle],
   )
 
-  /** Undoes or redoes the latest step, in turn with any edit still saving. A step that fails to save is dropped. */
+  /**
+   * Undoes or redoes the latest step, in turn with any edit still saving. The server applies it only if the project
+   * is still the version the studio holds, so it never overwrites a write the studio hasn't seen yet; a refusal
+   * clears the history. A step that fails to save is dropped.
+   */
   const step = useCallback(
     (direction: 'undo' | 'redo') => {
       let entry: Entry | undefined
       let held = ''
+      let sentIn = 0
       const make = (base: Project): ProjectPatch | undefined => {
         entry = direction === 'undo' ? history.takeUndo() : history.takeRedo()
         historyChanged()
         held = base.updatedAt
+        sentIn = generation.current
         return entry && (direction === 'undo' ? entry.inverse : entry.forward)
       }
-      void queue.run(make, () => current.current!).then(
+      void queue.run(make, () => current.current!, { conditional: true }).then(
         (response) => {
-          if (response && settle(response, held)) setNotice(undefined)
+          if (response && settle(response, held) && generation.current === sentIn) setNotice(undefined)
         },
         (e: Error) => {
           if (entry) history.discard(entry)
           historyChanged()
-          setNotice({ kind: 'error', text: `Couldn't ${direction}. ${e.message}` })
+          if (e instanceof RequestError && e.status === 409) clearHistory(true)
+          else setNotice({ kind: 'error', text: `Couldn't ${direction}. ${e.message}` })
         },
       )
     },
-    [queue, history, settle],
+    [queue, history, settle, clearHistory],
   )
 
   // Cmd-Z undoes and Shift-Cmd-Z redoes, except in a form field, which keeps its own undo.

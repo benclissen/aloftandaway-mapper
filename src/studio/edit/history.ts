@@ -73,18 +73,25 @@ export class EditQueue {
   private tail: Promise<unknown> = Promise.resolve()
   private latest: Project | undefined
 
-  constructor(private readonly send: (patch: ProjectPatch) => Promise<PatchResponse>) {}
+  /** `send` gets `base`, the `updatedAt` the patch was made against, for a conditional run only. */
+  constructor(private readonly send: (patch: ProjectPatch, base?: string) => Promise<PatchResponse>) {}
 
   /**
    * Queues an edit. Resolves to the server's response, or undefined when `make` returned no patch. Rejects with the
-   * send's error, and the queue carries on.
+   * send's error, and the queue carries on. A `conditional` run sends the base it was made against, so the server
+   * refuses it if the project has moved on.
    */
-  run(make: (current: Project) => ProjectPatch | undefined, current: () => Project): Promise<PatchResponse | undefined> {
+  run(
+    make: (current: Project) => ProjectPatch | undefined,
+    current: () => Project,
+    opts: { conditional?: boolean } = {},
+  ): Promise<PatchResponse | undefined> {
     const job = this.tail.then(async () => {
       const held = current()
-      const patch = make(this.latest && newer(this.latest, held) ? this.latest : held)
+      const base = this.latest && newer(this.latest, held) ? this.latest : held
+      const patch = make(base)
       if (!patch) return undefined
-      const response = await this.send(patch)
+      const response = await (opts.conditional ? this.send(patch, base.updatedAt) : this.send(patch))
       if (!this.latest || newer(response.project, this.latest)) this.latest = response.project
       return response
     })

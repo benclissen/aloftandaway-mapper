@@ -19,6 +19,16 @@ export interface PatchResponse {
 /** The header a studio sends with each patch to name itself. */
 export const CLIENT_HEADER = 'X-Mapper-Client'
 
+/**
+ * The header that makes a patch conditional: the `updatedAt` of the version the client expects to change. When the
+ * project on disk has moved on, the server writes nothing and answers 409. Undo and redo send it; ordinary edits
+ * don't, so they stay last-write-wins.
+ */
+export const BASE_HEADER = 'X-Mapper-Base'
+
+/** The message of the 409 a stale `X-Mapper-Base` gets. */
+export const STALE_BASE_MESSAGE = 'The project changed since the studio last saw it.'
+
 /** What a client id must look like. The server ignores any other value. */
 export const CLIENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
@@ -396,6 +396,25 @@ describe('websocket sync', () => {
     expect(body.previousUpdatedAt).toBe(before.updatedAt)
     expect(body.project.name).toBe('Renamed')
     expect(Date.parse(body.project.updatedAt)).toBeGreaterThan(Date.parse(before.updatedAt))
+  })
+
+  test('patch with a stale base is rejected with 409 and the file is unchanged', async () => {
+    const stale = (await loadProject(folder)).updatedAt
+    await mutateProject(folder, (p) => ({ ...p, name: 'From the agent' }))
+    const file = path.join(folder, PROJECT_FILE)
+    const before = await readFile(file, 'utf8')
+    const reply = await patchProject({ set: { name: 'From the studio' } }, { 'X-Mapper-Base': stale })
+    expect(reply.status).toBe(409)
+    expect(reply.json().error.message).toBe('The project changed since the studio last saw it.')
+    expect(await readFile(file, 'utf8')).toBe(before)
+  })
+
+  test('patch with the current base applies', async () => {
+    const current = (await loadProject(folder)).updatedAt
+    const reply = await patchProject({ set: { name: 'From the studio' } }, { 'X-Mapper-Base': current })
+    expect(reply.status).toBe(200)
+    expect(reply.json().previousUpdatedAt).toBe(current)
+    expect((await loadProject(folder)).name).toBe('From the studio')
   })
 
   test("broadcast carries the patching client's origin", async () => {

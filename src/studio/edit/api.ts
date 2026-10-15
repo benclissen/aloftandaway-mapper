@@ -1,4 +1,5 @@
 import {
+  BASE_HEADER,
   CLIENT_HEADER,
   parseProject,
   type PatchResponse,
@@ -21,13 +22,23 @@ export const CLIENT_ID = Array.from(crypto.getRandomValues(new Uint8Array(16)), 
 
 const apiUrl = (suffix = '') => new URL(`../api/projects/${encodeURIComponent(projectKey())}${suffix}`, location.href)
 
-/** The response body, or the server's error message as a thrown Error. */
+/** A request the server refused, with its status and message. */
+export class RequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
+/** The response body, or the server's error message as a thrown RequestError. */
 async function readBody(res: Response): Promise<{ project?: unknown; previousUpdatedAt?: unknown }> {
   const body = (await res.json().catch(() => undefined)) as
     | { project?: unknown; previousUpdatedAt?: unknown; error?: { message?: string } }
     | undefined
   if (!res.ok || !body?.project) {
-    throw new Error(body?.error?.message ?? `The server answered ${res.status} ${res.statusText}.`)
+    throw new RequestError(body?.error?.message ?? `The server answered ${res.status} ${res.statusText}.`, res.status)
   }
   return body
 }
@@ -38,14 +49,13 @@ export async function getProject(): Promise<Project> {
 
 /**
  * Applies `body` on the server. Resolves to the saved project and the `updatedAt` of the version it was applied to.
- * Rejects with the server's error message.
+ * With `base`, the server applies it only if the project is still at that version, and otherwise rejects with a
+ * RequestError of status 409. Rejects with the server's error message.
  */
-export async function patch(body: ProjectPatch): Promise<PatchResponse> {
-  const res = await fetch(apiUrl('/patch'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', [CLIENT_HEADER]: CLIENT_ID },
-    body: JSON.stringify(body),
-  })
+export async function patch(body: ProjectPatch, base?: string): Promise<PatchResponse> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', [CLIENT_HEADER]: CLIENT_ID }
+  if (base !== undefined) headers[BASE_HEADER] = base
+  const res = await fetch(apiUrl('/patch'), { method: 'POST', headers, body: JSON.stringify(body) })
   const saved = await readBody(res)
   if (typeof saved.previousUpdatedAt !== 'string') throw new Error("The server's answer is missing previousUpdatedAt.")
   return { project: parseProject(saved.project), previousUpdatedAt: saved.previousUpdatedAt }

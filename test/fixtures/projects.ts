@@ -45,6 +45,14 @@ export function greekIslands(scene: Partial<Scene> = {}): Project {
   )
 }
 
+/** The Greek Islands stops with every leg by sea, on the blank theme. */
+export function cruise(): Project {
+  const project = greekIslands()
+  const scene = sceneOf(project)
+  scene.legs = scene.legs.map((leg) => ({ ...leg, mode: 'sea' as const }))
+  return project
+}
+
 export function pacific(): Project {
   return lineProject(
     'Pacific',

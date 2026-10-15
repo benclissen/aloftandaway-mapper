@@ -8,7 +8,7 @@ import pixelmatch from 'pixelmatch'
 import type { Browser, Page } from 'playwright'
 import { PNG } from 'pngjs'
 import { expect } from 'vitest'
-import { layoutSize, type Project, type RenderLayer } from '../../src/core/index.js'
+import { layoutSize, type Project, type RenderLayer, type SeaPaths } from '../../src/core/index.js'
 import { capturePng } from '../../src/render/capture.js'
 import { launchBrowser } from '../../src/render/chrome.js'
 import { startServer, type MapperServer } from '../../src/server/server.js'
@@ -47,7 +47,7 @@ function setup(): Promise<Shared> {
 export async function openRenderPage(
   project: Project,
   pixelRatio: number,
-  opts: { tileUpstream?: string; layer?: RenderLayer } = {},
+  opts: { tileUpstream?: string; layer?: RenderLayer; seaPaths?: SeaPaths } = {},
 ): Promise<{ page: Page; close(): Promise<void> }> {
   const { server: sharedServer, browser, tempDir } = await setup()
   const server = opts.tileUpstream
@@ -64,12 +64,12 @@ export async function openRenderPage(
   await page.goto(`${server.base}studio/?mode=render`)
   await page.waitForFunction(() => 'mapper' in window)
   await page.evaluate(
-    async ([p, ratio, layer]) => {
+    async ([p, ratio, layer, seaPaths]) => {
       const mapper = (window as unknown as { mapper: MapperPage }).mapper
       await mapper.ready
-      await mapper.load(p, { pixelRatio: ratio, layer })
+      await mapper.load(p, { pixelRatio: ratio, layer, seaPaths })
     },
-    [project, pixelRatio, opts.layer] as const,
+    [project, pixelRatio, opts.layer, opts.seaPaths] as const,
   )
   frames.set(page, { ...size, pixelRatio, transparent: opts.layer === 'route' || opts.layer === 'signs' })
   return {

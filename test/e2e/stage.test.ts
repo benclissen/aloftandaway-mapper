@@ -1,4 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtemp, rm } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import type { Page } from 'playwright'
 import { PNG } from 'pngjs'
@@ -14,7 +16,9 @@ import {
   type LngLat,
   type Project,
 } from '../../src/core/index.js'
-import { greekIslands, sceneOf } from '../fixtures/projects.js'
+import { planExport } from '../../src/render/export-plan.js'
+import { resolveSeaPaths } from '../../src/server/paths.js'
+import { cruise, greekIslands, sceneOf } from '../fixtures/projects.js'
 import type { MapperPage } from '../../src/studio/render-mode.js'
 import { closeAll, expectGolden, openRenderPage, pixelDiff, snapshot } from './helpers.js'
 
@@ -170,4 +174,35 @@ test.skipIf(process.env.MAPPER_NET !== '1')('paper theme draws water (MAPPER_NET
   expect(b).toBeGreaterThan(r + 20)
   expect(b).toBeGreaterThanOrEqual(g)
   await close()
+})
+
+describe('sea legs', () => {
+  test('golden: the cruise at its last frame goes around the islands', async () => {
+    const project = cruise()
+    const folder = await mkdtemp(path.join(os.tmpdir(), 'mapper-sea-golden-'))
+    try {
+      const seaPaths = await resolveSeaPaths(folder, project)
+      const { page, close } = await openRenderPage(project, 0.5, { seaPaths })
+      const last = await page.evaluate(() => (window as unknown as { mapper: MapperPage }).mapper.frameCount - 1)
+      const png = await snapshot(page, last)
+      expectGolden(`sea-${last}`, png)
+      await close()
+    } finally {
+      await rm(folder, { recursive: true, force: true })
+    }
+  })
+
+  test('render page frame count matches the plan for sea legs', async () => {
+    const project = cruise()
+    const folder = await mkdtemp(path.join(os.tmpdir(), 'mapper-sea-count-'))
+    try {
+      const seaPaths = await resolveSeaPaths(folder, project)
+      const expected = planExport(project, { seaPaths }).scenes[0]!.totalFrames
+      const { page, close } = await openRenderPage(project, 0.5, { seaPaths })
+      expect(await page.evaluate(() => (window as unknown as { mapper: MapperPage }).mapper.frameCount)).toBe(expected)
+      await close()
+    } finally {
+      await rm(folder, { recursive: true, force: true })
+    }
+  })
 })

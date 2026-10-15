@@ -71,11 +71,11 @@ describe('tools', () => {
 
     const got = await call('get_project', { folder })
     const data = got.structuredContent as {
-      project: { legs: unknown[] }
+      project: { scenes: { legs: unknown[] }[] }
       timeline: { arrivals: { name: string; frame: number }[]; totalFrames: number }
       validation: { errors: unknown[] }
     }
-    expect(data.project.legs.length).toBe(3)
+    expect(data.project.scenes[0]!.legs.length).toBe(3)
     expect(data.timeline.arrivals.map((a) => a.name)).toEqual(['Piraeus', 'Mykonos', 'Santorini', 'Rhodes'])
     expect(data.validation.errors).toEqual([])
     expect(text(got)).toContain('Mykonos [25.3289, 37.4467]')
@@ -105,7 +105,7 @@ describe('tools', () => {
 
     // A stored shot comes back as stored.
     const start = { center: [179.5, -16], zoom: 6, bearing: 0, pitch: 0 }
-    const updated = await call('update_project', { folder, set: { camera: { start } } })
+    const updated = await call('update_project', { folder, sceneSet: { camera: { start } } })
     expect((updated.structuredContent as { camera: { resolvedStart: unknown } }).camera.resolvedStart).toEqual(start)
   })
 
@@ -113,15 +113,22 @@ describe('tools', () => {
     const folder = path.join(tmp, 'p')
     await call('create_project', { folder, name: 'P', output: { height: 1080 } })
     await call('set_stops', { folder, stops: STOPS })
-    const updated = await call('update_project', { folder, set: { look: { theme: 'blank' } }, ops: [{ op: 'remove_stop', id: 'nope' }] })
+    const updated = await call('update_project', { folder, sceneSet: { look: { theme: 'blank' } }, ops: [{ op: 'remove_stop', id: 'nope' }] })
     expect(updated.isError).toBe(true)
     expect(text(updated)).toContain('ops.0.id')
 
-    const ok = await call('update_project', { folder, set: { look: { theme: 'blank' }, timing: { travel: 4 } } })
+    const ok = await call('update_project', { folder, set: { name: 'Q' }, sceneSet: { look: { theme: 'blank' }, timing: { travel: 4 } } })
     expect(ok.isError).toBeFalsy()
-    const project = (ok.structuredContent as { project: { look: { theme: string }; timing: { travel: number } } }).project
-    expect(project.look.theme).toBe('blank')
-    expect(project.timing.travel).toBe(4)
+    type Data = { project: { name: string; scenes: { look: { theme: string }; timing: { travel: number } }[] } }
+    const project = (ok.structuredContent as Data).project
+    expect(project.name).toBe('Q')
+    expect(project.scenes[0]!.look.theme).toBe('blank')
+    expect(project.scenes[0]!.timing.travel).toBe(4)
+
+    const misplaced = await call('update_project', { folder, set: { look: { theme: 'paper' } } })
+    expect(misplaced.isError).toBe(true)
+    expect(text(misplaced)).toContain('set.look')
+    expect(text(misplaced)).toContain('sceneSet')
   })
 
   test('bad update returns a tool error with a fix and leaves the file unchanged', async () => {

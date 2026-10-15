@@ -13,7 +13,7 @@ import {
   unwrapLng,
   type LngLat,
 } from '../../src/core/index.js'
-import { emptyProject, greekIslands, pacific, stopsAt } from '../fixtures/projects.js'
+import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 describe('geo', () => {
   test('clampLat keeps a latitude inside the schema, which stops short of MapLibre\'s 85.051129', () => {
@@ -68,7 +68,7 @@ describe('geo', () => {
 
 describe('buildRoute', () => {
   test('two-point line leg is straight with Mercator length', () => {
-    const r = buildRoute(stopsAt([[0, 0], [90, 0]]))
+    const r = buildRoute(sceneOf(stopsAt([[0, 0], [90, 0]])))
     expect(r.legs).toHaveLength(1)
     expect(r.length).toBeCloseTo(0.25, 6)
     expect(r.legs[0]!.path).toEqual([[0, 0], [90, 0]])
@@ -78,8 +78,8 @@ describe('buildRoute', () => {
   })
 
   test('via points are passed through', () => {
-    const base = stopsAt([[0, 0], [20, 0]])
-    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [[10, 10]] }] })
+    const base = sceneOf(stopsAt([[0, 0], [20, 0]]))
+    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [{ at: [10, 10] }] }] })
     const path = r.legs[0]!.path
     expect(path.some(([lng, lat]) => Math.abs(lng - 10) < 1e-9 && Math.abs(lat - 10) < 1e-9)).toBe(true)
     expect(path[0]).toEqual([0, 0])
@@ -90,8 +90,8 @@ describe('buildRoute', () => {
   })
 
   test('path is sampled from xy and cum is cumulative xy length', () => {
-    const base = stopsAt([[0, 0], [20, 0]])
-    const leg = buildRoute({ ...base, legs: [{ mode: 'line', via: [[10, 10]] }] }).legs[0]!
+    const base = sceneOf(stopsAt([[0, 0], [20, 0]]))
+    const leg = buildRoute({ ...base, legs: [{ mode: 'line', via: [{ at: [10, 10] }] }] }).legs[0]!
     expect(leg.xy).toHaveLength(leg.path.length)
     expect(leg.cum).toHaveLength(leg.path.length)
     let sum = 0
@@ -107,15 +107,15 @@ describe('buildRoute', () => {
   })
 
   test('land legs are curved like line legs and not flagged', () => {
-    const base = stopsAt([[0, 0], [20, 0]])
-    const r = buildRoute({ ...base, legs: [{ mode: 'land', via: [[10, 10]] }] })
+    const base = sceneOf(stopsAt([[0, 0], [20, 0]]))
+    const r = buildRoute({ ...base, legs: [{ mode: 'land', via: [{ at: [10, 10] }] }] })
     expect(r.legs[0]!.mode).toBe('land')
     expect(r.legs[0]!.notAvailable).toBeUndefined()
     expect(r.legs[0]!.path).toHaveLength(2 * 24 + 1)
   })
 
   test('crosses the antimeridian the short way', () => {
-    const r = buildRoute(pacific())
+    const r = buildRoute(sceneOf(pacific()))
     for (const [lng] of r.legs[0]!.path) {
       expect(lng).toBeGreaterThanOrEqual(178.4)
       expect(lng).toBeLessThanOrEqual(188.3)
@@ -127,7 +127,7 @@ describe('buildRoute', () => {
   })
 
   test('longitude stays continuous across several legs', () => {
-    const r = buildRoute(stopsAt([[170, 0], [-170, 0], [-150, 0], [170, 0]]))
+    const r = buildRoute(sceneOf(stopsAt([[170, 0], [-170, 0], [-150, 0], [170, 0]])))
     expect(r.legs[0]!.path.at(-1)![0]).toBe(190)
     expect(r.legs[1]!.path[0]![0]).toBe(190)
     expect(r.legs[1]!.path.at(-1)![0]).toBe(210)
@@ -136,7 +136,7 @@ describe('buildRoute', () => {
   })
 
   test('sea leg is drawn as line and flagged', () => {
-    const base = greekIslands()
+    const base = sceneOf(greekIslands())
     const r = buildRoute({ ...base, legs: base.legs.map((l, i) => (i === 1 ? { ...l, mode: 'sea' as const } : l)) })
     expect(r.legs[1]!.mode).toBe('sea')
     expect(r.legs[1]!.drawnAs).toBe('line')
@@ -145,14 +145,14 @@ describe('buildRoute', () => {
   })
 
   test('air leg is drawn as line and flagged', () => {
-    const base = stopsAt([[0, 0], [30, 10]])
+    const base = sceneOf(stopsAt([[0, 0], [30, 10]]))
     const r = buildRoute({ ...base, legs: [{ mode: 'air', via: [] }] })
     expect(r.legs[0]!.drawnAs).toBe('line')
     expect(r.legs[0]!.notAvailable).toBe(true)
   })
 
   test('route length is the sum of leg lengths and bounds cover every path point', () => {
-    const r = buildRoute(greekIslands())
+    const r = buildRoute(sceneOf(greekIslands()))
     expect(r.legs).toHaveLength(3)
     expect(r.length).toBeCloseTo(r.legs.reduce((a, l) => a + l.length, 0), 12)
     const [[w, s], [e, n]] = r.bounds
@@ -168,32 +168,32 @@ describe('buildRoute', () => {
   })
 
   test('bounds include a curve that bulges past the stops', () => {
-    const base = stopsAt([[0, 0], [20, 0]])
-    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [[10, 30]] }] })
+    const base = sceneOf(stopsAt([[0, 0], [20, 0]]))
+    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [{ at: [10, 30] }] }] })
     expect(r.bounds[1][1]).toBeGreaterThanOrEqual(30 - 1e-9)
   })
 
   test('duplicate control points do not produce NaN', () => {
-    const base = stopsAt([[0, 0], [10, 5]])
-    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [[0, 0], [10, 5]] }] })
+    const base = sceneOf(stopsAt([[0, 0], [10, 5]]))
+    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [{ at: [0, 0] }, { at: [10, 5] }] }] })
     for (const p of r.legs[0]!.path) expect(p.every(Number.isFinite)).toBe(true)
     expect(r.legs[0]!.path[0]).toEqual([0, 0])
     expect(r.legs[0]!.path.at(-1)).toEqual([10, 5])
   })
 
   test('fewer than two stops gives an empty route', () => {
-    expect(buildRoute(emptyProject())).toEqual({ legs: [], length: 0, bounds: [[0, 0], [0, 0]] })
-    const one = buildRoute(stopsAt([[12, 34]]))
+    expect(buildRoute(sceneOf(emptyProject()))).toEqual({ legs: [], length: 0, bounds: [[0, 0], [0, 0]] })
+    const one = buildRoute(sceneOf(stopsAt([[12, 34]])))
     expect(one).toEqual({ legs: [], length: 0, bounds: [[12, 34], [12, 34]] })
     expect(pointAt(one, 5)).toEqual({ at: [12, 34], heading: 0, legIndex: 0 })
-    expect(pointAt(buildRoute(emptyProject()), 0)).toEqual({ at: [0, 0], heading: 0, legIndex: 0 })
+    expect(pointAt(buildRoute(sceneOf(emptyProject())), 0)).toEqual({ at: [0, 0], heading: 0, legIndex: 0 })
     expect(slicePath(one, 1)).toEqual([])
   })
 })
 
 describe('pointAt', () => {
   test('hits stops at leg boundaries and clamps', () => {
-    const p = greekIslands()
+    const p = sceneOf(greekIslands())
     const r = buildRoute(p)
     const at = (d: number) => pointAt(r, d).at
     expect(at(0)).toEqual(p.stops[0]!.at)
@@ -205,7 +205,7 @@ describe('pointAt', () => {
   })
 
   test('a boundary belongs to the later leg except at the end of the route', () => {
-    const r = buildRoute(greekIslands())
+    const r = buildRoute(sceneOf(greekIslands()))
     expect(pointAt(r, 0).legIndex).toBe(0)
     expect(pointAt(r, r.legs[0]!.length).legIndex).toBe(1)
     expect(pointAt(r, r.legs[0]!.length - 1e-9).legIndex).toBe(0)
@@ -215,7 +215,7 @@ describe('pointAt', () => {
   })
 
   test('interpolates along a straight leg with the right heading', () => {
-    const r = buildRoute(stopsAt([[0, 0], [90, 0], [90, 40]]))
+    const r = buildRoute(sceneOf(stopsAt([[0, 0], [90, 0], [90, 40]])))
     const mid = pointAt(r, 0.125)
     expect(mid.at[0]).toBeCloseTo(45, 9)
     expect(mid.at[1]).toBeCloseTo(0, 9)
@@ -227,8 +227,8 @@ describe('pointAt', () => {
   })
 
   test('heading follows the curve and stays in [0, 360)', () => {
-    const base = stopsAt([[0, 0], [20, 0]])
-    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [[10, 10]] }] })
+    const base = sceneOf(stopsAt([[0, 0], [20, 0]]))
+    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [{ at: [10, 10] }] }] })
     const start = pointAt(r, 0.001).heading
     const end = pointAt(r, r.length - 0.001).heading
     expect(start).toBeGreaterThan(0)
@@ -241,26 +241,26 @@ describe('pointAt', () => {
     const a: LngLat = [10, 10]
     const b: LngLat = [20, 10]
     // A, A, B: the leading leg has no length.
-    const lead = buildRoute(stopsAt([a, a, b]))
+    const lead = buildRoute(sceneOf(stopsAt([a, a, b])))
     expect(lead.legs[0]!.length).toBe(0)
     const h0 = pointAt(lead, 0)
     expect(Number.isFinite(h0.heading)).toBe(true)
     expect(h0.heading).toBeCloseTo(90, 9)
     // A, B, B: the head ends on a zero-length leg and keeps the previous heading.
-    const tail = buildRoute(stopsAt([a, b, b]))
+    const tail = buildRoute(sceneOf(stopsAt([a, b, b])))
     const end = pointAt(tail, tail.length)
     expect(end.legIndex).toBe(1)
     expect(end.heading).toBeCloseTo(90, 9)
     expect(end.at).toEqual(b)
     // Everything at one point: heading 0.
-    const same = buildRoute(stopsAt([a, a, a]))
+    const same = buildRoute(sceneOf(stopsAt([a, a, a])))
     expect(pointAt(same, 0)).toEqual({ at: a, heading: 0, legIndex: 1 })
   })
 })
 
 describe('slicePath', () => {
   test('ends exactly at the head', () => {
-    const r = buildRoute(greekIslands())
+    const r = buildRoute(sceneOf(greekIslands()))
     for (const d of [0, 0.001, r.legs[0]!.length, r.legs[0]!.length + 0.0123, r.length * 0.9, r.length, 99, -1]) {
       const slice = slicePath(r, d)
       expect(slice.at(-1)).toEqual(pointAt(r, d).at)
@@ -268,7 +268,7 @@ describe('slicePath', () => {
   })
 
   test('starts at the first stop and has no repeated joints', () => {
-    const p = greekIslands()
+    const p = sceneOf(greekIslands())
     const r = buildRoute(p)
     const slice = slicePath(r, r.length)
     expect(slice[0]).toEqual(p.stops[0]!.at)
@@ -278,10 +278,10 @@ describe('slicePath', () => {
   })
 
   test('is a prefix of the full path up to the head', () => {
-    const base = stopsAt([[0, 0], [20, 0], [40, 10]])
+    const base = sceneOf(stopsAt([[0, 0], [20, 0], [40, 10]]))
     const r = buildRoute({
       ...base,
-      legs: [{ mode: 'line', via: [[10, 10]] }, { mode: 'line', via: [] }],
+      legs: [{ mode: 'line', via: [{ at: [10, 10] }] }, { mode: 'line', via: [] }],
     })
     const full = slicePath(r, r.length)
     const d = r.legs[0]!.length + r.legs[1]!.length / 2
@@ -291,12 +291,12 @@ describe('slicePath', () => {
   })
 
   test('at distance zero is just the first stop', () => {
-    const p = greekIslands()
+    const p = sceneOf(greekIslands())
     expect(slicePath(buildRoute(p), 0)).toEqual([p.stops[0]!.at])
   })
 
   test('at a leg boundary does not repeat the joint', () => {
-    const r = buildRoute(greekIslands())
+    const r = buildRoute(sceneOf(greekIslands()))
     const slice = slicePath(r, r.legs[0]!.length)
     expect(slice).toEqual(r.legs[0]!.path)
   })

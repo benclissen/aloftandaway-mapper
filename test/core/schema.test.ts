@@ -10,8 +10,10 @@ import {
   layoutSize,
   outputScale,
   parseProject,
+  SYMBOLS,
+  defaultModeFor,
 } from '../../src/core/index.js'
-import { emptyProject, greekIslands, pacific, stopsAt } from '../fixtures/projects.js'
+import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 describe('project schema', () => {
   test('default project is 4K 25p 16:9 and round-trips', () => {
@@ -23,11 +25,15 @@ describe('project schema', () => {
 
   test('default project carries the documented defaults and no stops', () => {
     const p = emptyProject()
-    expect(p.schemaVersion).toBe(1)
-    expect(p.stops).toEqual([])
-    expect(p.legs).toEqual([])
-    expect(p.timing).toEqual({ holdStart: 1, travel: 10, holdEnd: 2 })
-    expect(p.look).toEqual({
+    expect(p.schemaVersion).toBe(2)
+    expect(p.scenes).toHaveLength(1)
+    const scene = sceneOf(p)
+    expect(scene.id).toBe(p.id)
+    expect(scene.name).toBe(p.name)
+    expect(scene.stops).toEqual([])
+    expect(scene.legs).toEqual([])
+    expect(scene.timing).toEqual({ holdStart: 1, travel: 10, holdEnd: 2 })
+    expect(scene.look).toEqual({
       theme: 'paper',
       labels: 'en',
       terrain: false,
@@ -35,8 +41,14 @@ describe('project schema', () => {
       symbol: 'dot',
       signStyle: 'tag',
     })
-    expect(p.camera).toEqual({ mode: 'glide', easing: 'smooth' })
+    expect(scene.camera).toEqual({ mode: 'glide', easing: 'smooth' })
     expect(p.credit).toBe('burned')
+  })
+
+  test('default project takes a scene id', () => {
+    const sceneId = crypto.randomUUID()
+    const p = defaultProject({ id: crypto.randomUUID(), name: 'x', now: '2026-10-13T10:00:00Z', sceneId })
+    expect(sceneOf(p).id).toBe(sceneId)
   })
 
   test('default project applies output overrides', () => {
@@ -69,48 +81,48 @@ describe('project schema', () => {
     for (const p of [greekIslands(), pacific(), emptyProject(), stopsAt([[0, 0], [1, 1], [2, 2]])]) {
       expect(parseProject(JSON.parse(JSON.stringify(p)))).toEqual(p)
     }
-    expect(greekIslands().stops.map((s) => s.name)).toEqual(['Piraeus', 'Mykonos', 'Santorini', 'Rhodes'])
-    expect(greekIslands().legs).toHaveLength(3)
-    expect(pacific().stops[0]!.at).toEqual([178.4419, -18.1416])
-    expect(stopsAt([[0, 0], [1, 1]]).stops.map((s) => s.name)).toEqual(['S0', 'S1'])
+    expect(sceneOf(greekIslands()).stops.map((s) => s.name)).toEqual(['Piraeus', 'Mykonos', 'Santorini', 'Rhodes'])
+    expect(sceneOf(greekIslands()).legs).toHaveLength(3)
+    expect(sceneOf(pacific()).stops[0]!.at).toEqual([178.4419, -18.1416])
+    expect(sceneOf(stopsAt([[0, 0], [1, 1]])).stops.map((s) => s.name)).toEqual(['S0', 'S1'])
   })
 
   test('rejects unknown keys with a path', () => {
     expect(() => parseProject({ ...greekIslands(), extra: 1 })).toThrow(ProjectError)
     const p = greekIslands()
-    expect(() => parseProject({ ...p, look: { ...p.look, wat: 1 } })).toThrow(/look/)
+    expect(() => parseProject({ ...p, scenes: [{ ...sceneOf(p), look: { ...sceneOf(p).look, wat: 1 } }] })).toThrow(/scenes\.0\.look/)
   })
 
   test('rejects legs out of step with stops', () => {
     const p = greekIslands()
-    p.legs.pop()
-    expect(() => parseProject(p)).toThrow(/legs/)
+    sceneOf(p).legs.pop()
+    expect(() => parseProject(p)).toThrow(/scenes\.0\.legs/)
   })
 
   test('rejects fps outside the allowed list', () => {
     expect(() =>
-      parseProject(greekIslands({ output: { aspect: '16:9', height: 1080, fps: { num: 7, den: 1 } } })),
+      parseProject({ ...greekIslands(), output: { aspect: '16:9', height: 1080, fps: { num: 7, den: 1 } } }),
     ).toThrow(/output\.fps/)
   })
 
   test('accepts every allowed fps', () => {
     for (const fps of ALLOWED_FPS) {
-      expect(() => parseProject(greekIslands({ output: { aspect: '16:9', height: 1080, fps } }))).not.toThrow()
+      expect(() => parseProject({ ...greekIslands(), output: { aspect: '16:9', height: 1080, fps } })).not.toThrow()
     }
   })
 
   test('rejects lat beyond Mercator range and duplicate stop ids', () => {
-    expect(() => parseProject(stopsAt([[0, 89], [1, 1]]))).toThrow(/stops\.0\.at/)
-    expect(() => parseProject(stopsAt([[181, 0], [1, 1]]))).toThrow(/stops\.0\.at/)
+    expect(() => parseProject(stopsAt([[0, 89], [1, 1]]))).toThrow(/scenes\.0\.stops\.0\.at/)
+    expect(() => parseProject(stopsAt([[181, 0], [1, 1]]))).toThrow(/scenes\.0\.stops\.0\.at/)
     const p = stopsAt([[0, 0], [1, 1]])
-    p.stops[0]!.id = 'a'
-    p.stops[1]!.id = 'a'
-    expect(() => parseProject(p)).toThrow(/id/)
+    sceneOf(p).stops[0]!.id = 'a'
+    sceneOf(p).stops[1]!.id = 'a'
+    expect(() => parseProject(p)).toThrow(/scenes\.0\.stops\.1\.id/)
   })
 
   test('error lists path: message lines and exposes issues', () => {
     try {
-      parseProject(greekIslands({ output: { aspect: '16:9', height: 1080, fps: { num: 7, den: 1 } } }))
+      parseProject({ ...greekIslands(), output: { aspect: '16:9', height: 1080, fps: { num: 7, den: 1 } } })
       expect.unreachable()
     } catch (e) {
       expect(e).toBeInstanceOf(ProjectError)
@@ -123,14 +135,69 @@ describe('project schema', () => {
 
   test('rejects out-of-range values', () => {
     const base = greekIslands()
-    expect(() => parseProject({ ...base, timing: { ...base.timing, travel: -1 } })).toThrow(/timing\.travel/)
-    expect(() => parseProject({ ...base, look: { ...base.look, line: { ...base.look.line, width: 41 } } })).toThrow(/look\.line\.width/)
-    expect(() => parseProject({ ...base, look: { ...base.look, line: { ...base.look.line, color: 'red' } } })).toThrow(/look\.line\.color/)
-    expect(() => parseProject({ ...base, look: { ...base.look, theme: 'neon' } })).toThrow(/look\.theme/)
-    expect(() => parseProject({ ...base, look: { ...base.look, signStyle: 'fancy' } })).toThrow(/look\.signStyle/)
+    const scene = sceneOf(base)
+    const withScene = (changes: Record<string, unknown>) => ({ ...base, scenes: [{ ...scene, ...changes }] })
+    expect(() => parseProject(withScene({ timing: { ...scene.timing, travel: -1 } }))).toThrow(/scenes\.0\.timing\.travel/)
+    expect(() => parseProject(withScene({ look: { ...scene.look, line: { ...scene.look.line, width: 41 } } }))).toThrow(/scenes\.0\.look\.line\.width/)
+    expect(() => parseProject(withScene({ look: { ...scene.look, line: { ...scene.look.line, color: 'red' } } }))).toThrow(/scenes\.0\.look\.line\.color/)
+    expect(() => parseProject(withScene({ look: { ...scene.look, theme: 'neon' } }))).toThrow(/scenes\.0\.look\.theme/)
+    expect(() => parseProject(withScene({ look: { ...scene.look, signStyle: 'fancy' } }))).toThrow(/scenes\.0\.look\.signStyle/)
+    expect(() => parseProject(withScene({ look: { ...scene.look, symbol: 'ship' } }))).toThrow(/scenes\.0\.look\.symbol/)
     const shot = { center: [0, 0], zoom: 23, bearing: 0, pitch: 0 }
-    expect(() => parseProject({ ...base, camera: { mode: 'fixed', easing: 'linear', start: shot } })).toThrow(/camera\.start\.zoom/)
-    expect(() => parseProject({ ...base, camera: { mode: 'fixed', easing: 'linear', start: { ...shot, zoom: 5, pitch: 61 } } })).toThrow(/camera\.start\.pitch/)
-    expect(() => parseProject({ ...base, camera: { mode: 'fixed', easing: 'linear', start: { ...shot, zoom: 5, bearing: 181 } } })).toThrow(/camera\.start\.bearing/)
+    expect(() => parseProject(withScene({ camera: { mode: 'fixed', easing: 'linear', start: shot } }))).toThrow(/scenes\.0\.camera\.start\.zoom/)
+    expect(() => parseProject(withScene({ camera: { mode: 'fixed', easing: 'linear', start: { ...shot, zoom: 5, pitch: 61 } } }))).toThrow(/scenes\.0\.camera\.start\.pitch/)
+    expect(() => parseProject(withScene({ camera: { mode: 'fixed', easing: 'linear', start: { ...shot, zoom: 5, bearing: 181 } } }))).toThrow(/scenes\.0\.camera\.start\.bearing/)
+    expect(() => parseProject(withScene({ legs: [{ mode: 'line', via: [[24, 37]] }, ...scene.legs.slice(1)] }))).toThrow(/scenes\.0\.legs\.0\.via\.0/)
+  })
+
+  test('rejects a scene with the wrong leg count', () => {
+    const p = greekIslands()
+    sceneOf(p).legs.pop()
+    const e = (() => {
+      try {
+        parseProject(p)
+      } catch (err) {
+        return err as ProjectError
+      }
+      throw new Error('expected a ProjectError')
+    })()
+    expect(e).toBeInstanceOf(ProjectError)
+    expect(e.issues.map((i) => i.path)).toContainEqual(['scenes', 0, 'legs'])
+  })
+
+  test('rejects duplicate scene ids', () => {
+    const p = greekIslands()
+    const twice = { ...p, scenes: [sceneOf(p), { ...sceneOf(p), name: 'Again' }] }
+    expect(() => parseProject(twice)).toThrow(/scenes\.1\.id/)
+  })
+
+  test('rejects a project with no scenes', () => {
+    expect(() => parseProject({ ...greekIslands(), scenes: [] })).toThrow(/scenes/)
+  })
+
+  test('accepts sharp on stops and via points', () => {
+    const p = greekIslands()
+    const scene = sceneOf(p)
+    scene.stops[1]!.sharp = true
+    scene.legs[0] = { mode: 'line', via: [{ at: [24, 37], sharp: true }, { at: [24.5, 37.2] }] }
+    expect(parseProject(JSON.parse(JSON.stringify(p)))).toEqual(p)
+  })
+})
+
+describe('symbols', () => {
+  test('there are 22 symbols in the documented order', () => {
+    expect(SYMBOLS).toEqual([
+      'none', 'dot', 'arrow', 'walk', 'bike', 'motorcycle', 'scooter', 'car', 'campervan', 'bus', 'coach',
+      'train', 'tram', 'cable-car', 'ferry', 'cruise-ship', 'sailboat', 'speedboat', 'kayak',
+      'plane', 'helicopter', 'balloon',
+    ])
+  })
+
+  test('defaultModeFor gives each transport its leg mode', () => {
+    expect(defaultModeFor('ferry')).toBe('sea')
+    expect(defaultModeFor('balloon')).toBe('air')
+    expect(defaultModeFor('arrow')).toBe('line')
+    expect(defaultModeFor('campervan')).toBe('land')
+    for (const symbol of SYMBOLS) expect(['sea', 'air', 'land', 'line']).toContain(defaultModeFor(symbol))
   })
 })

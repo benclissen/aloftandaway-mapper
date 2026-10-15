@@ -6,7 +6,7 @@ import { RenderPage } from '../../src/render/page.js'
 import { closeServerIfStarted } from '../../src/server/server.js'
 import { capturePng } from '../../src/render/capture.js'
 import type { MapperPage } from '../../src/studio/render-mode.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, sceneOf } from '../fixtures/projects.js'
 import { closeAll, openRenderPage, pixelDiff, snapshot } from './helpers.js'
 
 afterAll(closeAll)
@@ -77,9 +77,9 @@ async function comparePasses(project: Project, ratio: number, frameNumbers: numb
 for (const mode of ['fixed', 'glide'] as const) {
   for (const credit of ['burned', 'description'] as const) {
     test(`1080p passes composite to all with ${mode} camera and ${credit} credit`, async () => {
-      const project = greekIslands({ credit })
-      project.look.line.glow = true
-      project.camera = {
+      const project = { ...greekIslands(), credit }
+      sceneOf(project).look.line.glow = true
+      sceneOf(project).camera = {
         mode, easing: 'smooth',
         start: { center: [25.8, 37.1], zoom: 6.5, bearing: 0, pitch: 0 },
         end: { center: [26.2, 36.9], zoom: 7, bearing: 10, pitch: 0 },
@@ -92,14 +92,14 @@ for (const mode of ['fixed', 'glide'] as const) {
 test('4K passes composite to all with glow and translucent signs', async () => {
   const project = greekIslands()
   project.output.height = 2160
-  project.look.line.glow = true
+  sceneOf(project).look.line.glow = true
   await comparePasses(project, 2, [175])
 })
 
 test('empty signs are fully transparent and an arriving sign keeps its fade', async () => {
   const project = greekIslands()
-  project.stops.forEach(stop => { stop.sign = 'on-arrival' })
-  const timeline = buildTimeline(project, buildRoute(project))
+  sceneOf(project).stops.forEach(stop => { stop.sign = 'on-arrival' })
+  const timeline = buildTimeline(sceneOf(project), project.output.fps, buildRoute(sceneOf(project)))
   const fadeFrame = timeline.arrivals[0]!.frame + 5
   expect(timeline.stateAt(fadeFrame).signs[0]!.opacity).toBe(.5)
   const view = await openRenderPage(project, 1, { layer: 'signs' })
@@ -121,7 +121,7 @@ test('description credit is absent from map and all; isolated artwork never carr
   for (const layer of ['map', 'all', 'route', 'signs'] as const) {
     const images: Buffer[] = []
     for (const credit of ['burned', 'description'] as const) {
-      const view = await openRenderPage(greekIslands({ credit }), 1, { layer })
+      const view = await openRenderPage({ ...greekIslands(), credit }, 1, { layer })
       try { images.push(await snapshot(view.page, 175)) } finally { await view.close() }
     }
     const [burned, described] = images.map(buffer => PNG.sync.read(buffer))
@@ -162,8 +162,8 @@ test('warm route to all to signs loads restore visibility and reset capture alph
       expect(alphas(warm)[0]).toBe(layer === 'all' ? 255 : 0)
     }
     // Rebuilding route layers in the same pass must not reveal them in signs.
-    project.look.line.glow = true
-    project.look.line.outline = false
+    sceneOf(project).look.line.glow = true
+    sceneOf(project).look.line.outline = false
     await view.page.evaluate(async p => {
       const mapper = (window as unknown as { mapper: MapperPage }).mapper
       await mapper.load(p, { pixelRatio: 1, layer: 'signs' })
@@ -178,8 +178,8 @@ test('warm route to all to signs loads restore visibility and reset capture alph
 
 test.skipIf(process.env.MAPPER_NET !== '1')('real paper tiles composite to all (MAPPER_NET only)', async () => {
   const project = greekIslands()
-  project.look.theme = 'paper'
-  project.look.line.glow = true
+  sceneOf(project).look.theme = 'paper'
+  sceneOf(project).look.line.glow = true
   await comparePasses(project, 1, [175])
 })
 

@@ -1,5 +1,5 @@
 import { toLngLat, toXY, unwrapLng, headingDeg, type XY } from './geo.js'
-import type { LegMode, LngLat, Project } from './schema.js'
+import type { LegMode, LngLat, Scene } from './schema.js'
 
 export interface RouteLeg {
   mode: LegMode
@@ -88,8 +88,8 @@ function buildLeg(mode: LegMode, points: LngLat[]): RouteLeg {
   return leg
 }
 
-export function buildRoute(project: Project): Route {
-  const { stops } = project
+export function buildRoute(scene: Scene): Route {
+  const { stops } = scene
   if (stops.length < 2) {
     const at = stops[0]?.at ?? [0, 0]
     return { legs: [], length: 0, bounds: [[...at], [...at]] }
@@ -104,8 +104,8 @@ export function buildRoute(project: Project): Route {
   let from = unwrap(stops[0]!.at)
   const legs: RouteLeg[] = []
   for (let i = 0; i < stops.length - 1; i++) {
-    const spec = project.legs[i] ?? { mode: 'line' as const, via: [] }
-    const via = spec.via.map(unwrap)
+    const spec = scene.legs[i] ?? { mode: 'line' as const, via: [] }
+    const via = spec.via.map((v) => unwrap(v.at))
     const to = unwrap(stops[i + 1]!.at)
     legs.push(buildLeg(spec.mode, [from, ...via, to]))
     from = to

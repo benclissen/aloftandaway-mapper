@@ -114,11 +114,16 @@ beforeEach(async () => {
   // Give it a stop to edit.
   const saved = await saveProject(folder, {
     ...project,
-    stops: [
-      { id: 'a', name: 'Piraeus', at: [23.6466, 37.942], pause: 0, sign: 'always' },
-      { id: 'b', name: 'Mykonos', at: [25.3289, 37.4467], pause: 0, sign: 'always' },
+    scenes: [
+      {
+        ...project.scenes[0]!,
+        stops: [
+          { id: 'a', name: 'Piraeus', at: [23.6466, 37.942], pause: 0, sign: 'always' },
+          { id: 'b', name: 'Mykonos', at: [25.3289, 37.4467], pause: 0, sign: 'always' },
+        ],
+        legs: [{ mode: 'line', via: [] }],
+      },
     ],
-    legs: [{ mode: 'line', via: [] }],
   })
   project = saved
   server = await startServer({ studioDir, cacheDir: path.join(tmp, 'cache') })
@@ -231,14 +236,21 @@ describe('project api', () => {
     const reply = await call(projectUrl())
     expect(reply.status).toBe(200)
     expect(reply.json().project.id).toBe(project.id)
-    expect(reply.json().project.stops).toHaveLength(2)
+    expect(reply.json().project.scenes[0]!.stops).toHaveLength(2)
   })
 
   test('patch applies and persists', async () => {
     const reply = await patchProject({ ops: [{ op: 'update_stop', id: 'a', changes: { name: 'Pireas' } }] })
     expect(reply.status).toBe(200)
-    expect(reply.json().project.stops[0].name).toBe('Pireas')
-    expect((await loadProject(folder)).stops[0]?.name).toBe('Pireas')
+    expect(reply.json().project.scenes[0]!.stops[0].name).toBe('Pireas')
+    expect((await loadProject(folder)).scenes[0]!.stops[0]?.name).toBe('Pireas')
+  })
+
+  test('sceneSet patches reach the scene', async () => {
+    const reply = await patchProject({ sceneSet: { camera: { mode: 'fixed' } } })
+    expect(reply.status).toBe(200)
+    expect(reply.json().project.scenes[0].camera.mode).toBe('fixed')
+    expect((await loadProject(folder)).scenes[0]!.camera.mode).toBe('fixed')
   })
 
   test('bad patch is 400 with a path and leaves the file unchanged', async () => {
@@ -316,17 +328,17 @@ describe('registerProject', () => {
     expect(copyKey).not.toBe(key)
     const reply = await patchProject({ ops: [{ op: 'update_stop', id: 'a', changes: { name: 'Original' } }] })
     expect(reply.status).toBe(200)
-    expect((await loadProject(folder)).stops[0]?.name).toBe('Original')
-    expect((await loadProject(copy)).stops[0]?.name).toBe('Piraeus')
+    expect((await loadProject(folder)).scenes[0]!.stops[0]?.name).toBe('Original')
+    expect((await loadProject(copy)).scenes[0]!.stops[0]?.name).toBe('Piraeus')
     // The original's socket still hears about the original.
-    expect((await next(1000)).project.stops[0]?.name).toBe('Original')
+    expect((await next(1000)).project.scenes[0]!.stops[0]?.name).toBe('Original')
 
     await call(projectUrl('/patch', copyKey), {
       method: 'POST',
       body: JSON.stringify({ ops: [{ op: 'update_stop', id: 'a', changes: { name: 'Copy' } }] }),
     })
-    expect((await loadProject(copy)).stops[0]?.name).toBe('Copy')
-    expect((await loadProject(folder)).stops[0]?.name).toBe('Original')
+    expect((await loadProject(copy)).scenes[0]!.stops[0]?.name).toBe('Copy')
+    expect((await loadProject(folder)).scenes[0]!.stops[0]?.name).toBe('Original')
     ws.close()
   })
 
@@ -338,7 +350,7 @@ describe('registerProject', () => {
     expect(await server.registerProject(folder)).toBe(key)
 
     await patchProject({ ops: [{ op: 'update_stop', id: 'b', changes: { name: 'Still here' } }] })
-    expect((await next(1000)).project.stops[1]?.name).toBe('Still here')
+    expect((await next(1000)).project.scenes[0]!.stops[1]?.name).toBe('Still here')
 
     const closed = new Promise<void>((resolve) => ws.once('close', () => resolve()))
     await server.close()
@@ -369,7 +381,7 @@ describe('websocket sync', () => {
     const { ws, next } = await connect()
     await next()
     await patchProject({ ops: [{ op: 'update_stop', id: 'b', changes: { name: 'Mykonos Town' } }] })
-    expect((await next(1000)).project.stops[1]?.name).toBe('Mykonos Town')
+    expect((await next(1000)).project.scenes[0]!.stops[1]?.name).toBe('Mykonos Town')
     ws.close()
   })
 

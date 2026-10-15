@@ -12,7 +12,7 @@ import { EnvironmentError } from '../../src/server/errors.js'
 import type { MapperServer } from '../../src/server/server.js'
 import { startServer } from '../../src/server/server.js'
 import { createProject, saveProject } from '../../src/server/store.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, sceneOf } from '../fixtures/projects.js'
 
 // The process-wide server always proxies tiles from OpenFreeMap. This file swaps in a server whose tile proxy
 // fetches from a local fake that can be told to fail, so a map error can be provoked and cleared on demand.
@@ -65,7 +65,7 @@ afterAll(async () => {
 
 async function writeFolder(): Promise<string> {
   const folder = await mkdtemp(path.join(tempDir, 'project-'))
-  const project = greekIslands({ look: { ...greekIslands().look, theme: 'paper' } })
+  const project = greekIslands({ look: { ...sceneOf(greekIslands()).look, theme: 'paper' } })
   await createProject(folder, project.name)
   await saveProject(folder, { ...project, id: randomUUID() })
   return folder

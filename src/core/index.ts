@@ -1,4 +1,5 @@
 export * from './schema.js'
+export * from './migrate.js'
 export * from './patch.js'
 export * from './geo.js'
 export * from './route.js'

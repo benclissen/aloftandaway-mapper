@@ -18,6 +18,7 @@ import {
   type Project,
   type Route,
   type RenderLayer,
+  type Scene,
   type Timeline,
 } from '../../core/index.js'
 import { CREDIT_FONT, drawOverlay, SIGN_FONT, signText } from './overlay.js'
@@ -41,6 +42,8 @@ const IDLE_TIMEOUT_MS = 60_000
 
 interface Loaded {
   project: Project
+  /** The scene the stage shows: the project's first. */
+  scene: Scene
   route: Route
   timeline: Timeline
 }
@@ -177,8 +180,9 @@ export class MapStage {
   /** Lays the stage out for `project`. Rebuilds the map style only when the theme or label language changes. */
   async load(project: Project): Promise<void> {
     await this.enqueue(async () => {
-      const route = buildRoute(project)
-      const timeline = buildTimeline(project, route)
+      const scene = project.scenes[0]!
+      const route = buildRoute(scene)
+      const timeline = buildTimeline(scene, project.output.fps, route)
       const { width, height } = layoutSize(project.output.aspect)
       if (this.container.clientWidth !== width || this.container.clientHeight !== height) {
         this.setLayoutSize({ width, height })
@@ -186,11 +190,11 @@ export class MapStage {
         this.sizeOverlay()
       }
 
-      const styleKey = `${project.look.theme}/${project.look.labels}`
+      const styleKey = `${scene.look.theme}/${scene.look.labels}`
       if (styleKey !== this.styleKey) {
         this.mapError = undefined
         const styled = new Promise<void>((resolve) => this.map.once('style.load', () => resolve()))
-        this.map.setStyle(buildStyle(project.look.theme, { tileBase: this.opts.tileBase, labels: project.look.labels }), {
+        this.map.setStyle(buildStyle(scene.look.theme, { tileBase: this.opts.tileBase, labels: scene.look.labels }), {
           diff: false,
         })
         await styled
@@ -203,13 +207,13 @@ export class MapStage {
         this.routeLayerIds = []
       }
       for (const id of this.routeLayerIds) this.map.removeLayer(id)
-      const layers = routeLayers(project.look)
+      const layers = routeLayers(scene.look)
       for (const layer of layers) this.map.addLayer(layer)
       this.routeLayerIds = layers.map((l) => l.id)
       this.applyLayerVisibility()
 
-      await this.loadFonts(project)
-      this.loaded = { project, route, timeline }
+      await this.loadFonts(scene)
+      this.loaded = { project, scene, route, timeline }
     })
   }
 
@@ -220,14 +224,14 @@ export class MapStage {
    */
   showFrame(n: number, opts: { camera?: boolean } = {}): Promise<void> {
     return this.enqueue(async () => {
-      const { project, route, timeline } = this.require()
+      const { project, scene, route, timeline } = this.require()
       const state = timeline.stateAt(n)
       this.throwMapError()
       // Listen before changing anything, so an idle from this frame can't be missed.
       const settled = this.settled()
       this.source(ROUTE_SOURCE).setData(lineFeature(slicePath(route, state.distance)))
       this.source(HEAD_SOURCE).setData(pointFeature(state.head.at))
-      if (opts.camera !== false) this.map.jumpTo(cameraAt(project, route, timeline, n))
+      if (opts.camera !== false) this.map.jumpTo(cameraAt(scene, project.output.aspect, route, timeline, n))
       // Makes the map render, and so go idle, even when nothing above changed.
       this.map.triggerRepaint()
       await settled
@@ -335,11 +339,12 @@ export class MapStage {
   }
 
   private drawOverlay(state: FrameState): void {
-    const { project } = this.require()
+    const { project, scene } = this.require()
     this.overlayState = state
     const center = this.map.getCenter().lng
     drawOverlay(this.ctx, {
-      project,
+      scene,
+      credit: project.credit,
       state,
       // Stops keep their stored longitude; take the world copy nearest the view.
       project2px: ([lng, lat]) => {
@@ -351,9 +356,9 @@ export class MapStage {
     })
   }
 
-  /** Loads exactly the Inter subsets this project's text needs, so nothing falls back while drawing. */
-  private async loadFonts(project: Project): Promise<void> {
-    const texts = project.stops.map(signText)
+  /** Loads exactly the Inter subsets this scene's text needs, so nothing falls back while drawing. */
+  private async loadFonts(scene: Scene): Promise<void> {
+    const texts = scene.stops.map(signText)
     await Promise.all([
       ...texts.map((text) => document.fonts.load(SIGN_FONT, text)),
       document.fonts.load(CREDIT_FONT, MAP_CREDIT),

@@ -1,7 +1,7 @@
 import { resolveShots } from './camera.js'
 import { haversineKm } from './geo.js'
 import { buildRoute } from './route.js'
-import { THEME_MAX_ZOOM, type Project } from './schema.js'
+import { THEME_MAX_ZOOM, type Aspect, type Project, type Scene } from './schema.js'
 import { legSeconds } from './timeline.js'
 
 export interface Issue {
@@ -19,13 +19,27 @@ const SAME_PLACE_KM = 0.5
 const MODE_NAME = { sea: 'Sea', air: 'Air' } as const
 
 /**
- * Checks a project for what blocks a render (errors) and what an agent should fix or explain (warnings). Every issue
- * carries a `path` into the project and a `fix` sentence for the agent.
+ * Checks a project for what blocks a render (errors) and what an agent should fix or explain (warnings). Every scene
+ * is checked. Every issue carries a `path` into the project, starting `['scenes', i]`, and a `fix` sentence for the
+ * agent.
  */
 export function validateProject(project: Project): { errors: Issue[]; warnings: Issue[] } {
   const errors: Issue[] = []
   const warnings: Issue[] = []
-  const { stops, legs, camera, look, timing } = project
+  project.scenes.forEach((scene, i) => {
+    const prefix = (issue: Issue): Issue => (issue.path ? { ...issue, path: ['scenes', i, ...issue.path] } : issue)
+    const found = validateScene(scene, project.output.aspect)
+    errors.push(...found.errors.map(prefix))
+    warnings.push(...found.warnings.map(prefix))
+  })
+  return { errors, warnings }
+}
+
+/** Checks one scene. Issue paths are relative to the scene. */
+function validateScene(scene: Scene, aspect: Aspect): { errors: Issue[]; warnings: Issue[] } {
+  const errors: Issue[] = []
+  const warnings: Issue[] = []
+  const { stops, legs, camera, look, timing } = scene
 
   if (stops.length < 2) {
     errors.push({
@@ -40,7 +54,7 @@ export function validateProject(project: Project): { errors: Issue[]; warnings: 
   const legName = (i: number) => `Leg ${i + 1} (${nameOf(i)} → ${nameOf(i + 1)})`
 
   if (stops.length >= 2) {
-    const route = buildRoute(project)
+    const route = buildRoute(scene)
 
     for (let i = 1; i < stops.length; i++) {
       const km = haversineKm(stops[i - 1]!.at, stops[i]!.at)
@@ -70,7 +84,7 @@ export function validateProject(project: Project): { errors: Issue[]; warnings: 
     })
 
     const max = THEME_MAX_ZOOM[look.theme]
-    const resolved = resolveShots(project, route)
+    const resolved = resolveShots(scene, aspect, route)
     const fitted: ('start' | 'end')[] = []
     for (const which of ['start', 'end'] as const) {
       const zoom = resolved[which].zoom

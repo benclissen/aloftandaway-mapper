@@ -65,7 +65,7 @@ test('create, set stops and validate through the tool commands', async () => {
   await writeFile(file, JSON.stringify({ ...STOPS, folder }))
   const set = await mapper('set-stops', '--json-file', file)
   expect(set.code, set.stderr).toBe(0)
-  expect(JSON.parse(set.stdout).project.stops).toHaveLength(3)
+  expect(JSON.parse(set.stdout).project.scenes[0].stops).toHaveLength(3)
 
   const validated = await mapper('validate-project', '--json', JSON.stringify({ folder }))
   expect(validated.code, validated.stderr).toBe(0)
@@ -91,7 +91,7 @@ test('large output reaches a pipe whole', async () => {
   const got = await mapper('get-project', '--json', JSON.stringify({ folder }))
   expect(got.code, got.stderr).toBe(0)
   expect(got.stdout.length).toBeGreaterThan(200_000)
-  expect(JSON.parse(got.stdout).project.stops).toHaveLength(500)
+  expect(JSON.parse(got.stdout).project.scenes[0].stops).toHaveLength(500)
 })
 
 test('--help lists every command', async () => {

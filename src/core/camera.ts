@@ -1,6 +1,6 @@
 import { toLngLat, toXY, unwrapLng, type XY } from './geo.js'
 import type { Route } from './route.js'
-import { layoutSize, type Aspect, type LngLat, type Project, type Shot } from './schema.js'
+import { layoutSize, type Aspect, type LngLat, type Scene, type Shot } from './schema.js'
 import { ease, type Timeline } from './timeline.js'
 
 /** Tile size in layout px. The world is `TILE_SIZE · 2^zoom` layout px across at `zoom`. */
@@ -46,10 +46,10 @@ export function fitShot(bounds: [LngLat, LngLat], aspect: Aspect, padding: numbe
   return { center, zoom, bearing: 0, pitch: 0 }
 }
 
-/** The camera's start and end shots. A missing one is fitted to the route's bounds in the output aspect. */
-export function resolveShots(project: Project, route: Route): { start: Shot; end: Shot } {
-  const { start, end } = project.camera
-  const fitted = () => fitShot(route.bounds, project.output.aspect)
+/** The scene camera's start and end shots. A missing one is fitted to the route's bounds in the output aspect. */
+export function resolveShots(scene: Scene, aspect: Aspect, route: Route): { start: Shot; end: Shot } {
+  const { start, end } = scene.camera
+  const fitted = () => fitShot(route.bounds, aspect)
   return { start: start ?? fitted(), end: end ?? fitted() }
 }
 
@@ -109,12 +109,12 @@ export function flyInterpolator(a: Shot, b: Shot, aspect: Aspect): (u: number) =
  * The map view on `frame`. `fixed` holds `start`. `glide` flies from `start` to `end` across the travel section with
  * `camera.easing` applied once to the overall travel progress, holding at both ends. `follow` acts as `glide` for now.
  */
-export function cameraAt(project: Project, route: Route, timeline: Timeline, frame: number): Shot {
-  const { start, end } = resolveShots(project, route)
-  if (project.camera.mode === 'fixed') {
+export function cameraAt(scene: Scene, aspect: Aspect, route: Route, timeline: Timeline, frame: number): Shot {
+  const { start, end } = resolveShots(scene, aspect, route)
+  if (scene.camera.mode === 'fixed') {
     const [lng, lat] = start.center
     return { center: [lng, lat], zoom: start.zoom, bearing: normaliseBearing(start.bearing), pitch: start.pitch }
   }
   const { travelT } = timeline.stateAt(frame)
-  return flyInterpolator(start, end, project.output.aspect)(ease(project.camera.easing, travelT))
+  return flyInterpolator(start, end, aspect)(ease(scene.camera.easing, travelT))
 }

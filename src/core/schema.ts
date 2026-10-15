@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ProjectV1Schema, upgradeV1 } from './migrate.js'
 
 // Constants
 
@@ -63,6 +64,8 @@ export const StopSchema = z.strictObject({
   pause: seconds,
   sign: SignVisibilitySchema,
   terminal: z.boolean().optional(),
+  /** The line makes a corner here instead of curving through. */
+  sharp: z.boolean().optional(),
   day: z.number().int().optional(),
   ref: z.string().optional(),
 })
@@ -71,12 +74,58 @@ export type Stop = z.infer<typeof StopSchema>
 export const LegModeSchema = z.enum(['sea', 'air', 'land', 'line'])
 export type LegMode = z.infer<typeof LegModeSchema>
 
-export const SymbolKindSchema = z.enum(['none', 'dot', 'arrow', 'ship', 'plane', 'car', 'train', 'walk'])
+/** Every transport symbol, in the order the studio lists them. */
+export const SYMBOLS = [
+  'none',
+  'dot',
+  'arrow',
+  'walk',
+  'bike',
+  'motorcycle',
+  'scooter',
+  'car',
+  'campervan',
+  'bus',
+  'coach',
+  'train',
+  'tram',
+  'cable-car',
+  'ferry',
+  'cruise-ship',
+  'sailboat',
+  'speedboat',
+  'kayak',
+  'plane',
+  'helicopter',
+  'balloon',
+] as const
+
+export const SymbolKindSchema = z.enum(SYMBOLS)
 export type SymbolKind = z.infer<typeof SymbolKindSchema>
+
+const SEA_SYMBOLS: ReadonlySet<SymbolKind> = new Set(['ferry', 'cruise-ship', 'sailboat', 'speedboat', 'kayak'])
+const AIR_SYMBOLS: ReadonlySet<SymbolKind> = new Set(['plane', 'helicopter', 'balloon'])
+const LINE_SYMBOLS: ReadonlySet<SymbolKind> = new Set(['none', 'dot', 'arrow'])
+
+/** The leg mode a transport implies when it is set without one: boats sail, aircraft fly, markers draw a line. */
+export function defaultModeFor(symbol: SymbolKind): LegMode {
+  if (SEA_SYMBOLS.has(symbol)) return 'sea'
+  if (AIR_SYMBOLS.has(symbol)) return 'air'
+  if (LINE_SYMBOLS.has(symbol)) return 'line'
+  return 'land'
+}
+
+export const ViaPointSchema = z.strictObject({
+  at: LngLatSchema,
+  /** A corner instead of a curve. */
+  sharp: z.boolean().optional(),
+})
+export type ViaPoint = z.infer<typeof ViaPointSchema>
 
 export const LegSchema = z.strictObject({
   mode: LegModeSchema,
-  via: z.array(LngLatSchema),
+  via: z.array(ViaPointSchema),
+  /** Overrides `look.symbol` for this leg. */
   symbol: SymbolKindSchema.optional(),
 })
 export type Leg = z.infer<typeof LegSchema>
@@ -123,36 +172,54 @@ export const CameraSchema = z.strictObject({
 })
 export type Camera = z.infer<typeof CameraSchema>
 
+export const SceneSchema = z.strictObject({
+  id: z.uuid(),
+  name: z.string(),
+  timing: TimingSchema,
+  /** In travel order. */
+  stops: z.array(StopSchema),
+  /** `stops.length - 1` of them; leg i joins stop i and stop i + 1. */
+  legs: z.array(LegSchema),
+  look: LookSchema,
+  camera: CameraSchema,
+})
+export type Scene = z.infer<typeof SceneSchema>
+
 export const ProjectSchema = z
   .strictObject({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     id: z.uuid(),
     name: z.string(),
     createdAt: z.iso.datetime({ offset: true }),
     updatedAt: z.iso.datetime({ offset: true }),
+    /** Shared by every scene. */
     output: OutputSchema,
-    timing: TimingSchema,
-    stops: z.array(StopSchema),
-    legs: z.array(LegSchema),
-    look: LookSchema,
-    camera: CameraSchema,
     credit: z.enum(['burned', 'description']),
+    /** In film order. */
+    scenes: z.array(SceneSchema).min(1),
   })
   .superRefine((project, ctx) => {
-    const expectedLegs = Math.max(0, project.stops.length - 1)
-    if (project.legs.length !== expectedLegs) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['legs'],
-        message: `expected ${expectedLegs} legs for ${project.stops.length} stops, got ${project.legs.length}`,
-      })
-    }
-    const seen = new Set<string>()
-    project.stops.forEach((stop, i) => {
-      if (seen.has(stop.id)) {
-        ctx.addIssue({ code: 'custom', path: ['stops', i, 'id'], message: `duplicate stop id '${stop.id}'` })
+    const sceneIds = new Set<string>()
+    project.scenes.forEach((scene, i) => {
+      if (sceneIds.has(scene.id)) {
+        ctx.addIssue({ code: 'custom', path: ['scenes', i, 'id'], message: `duplicate scene id '${scene.id}'` })
       }
-      seen.add(stop.id)
+      sceneIds.add(scene.id)
+      const expectedLegs = Math.max(0, scene.stops.length - 1)
+      if (scene.legs.length !== expectedLegs) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['scenes', i, 'legs'],
+          message: `expected ${expectedLegs} legs for ${scene.stops.length} stops, got ${scene.legs.length}`,
+        })
+      }
+      const stopIds = new Set<string>()
+      scene.stops.forEach((stop, j) => {
+        if (stopIds.has(stop.id)) {
+          ctx.addIssue({ code: 'custom', path: ['scenes', i, 'stops', j, 'id'], message: `duplicate stop id '${stop.id}'` })
+        }
+        stopIds.add(stop.id)
+      })
     })
   })
 export type Project = z.infer<typeof ProjectSchema>
@@ -198,35 +265,70 @@ export function zodIssues(error: z.ZodError): ProjectIssue[] {
   })
 }
 
-export function parseProject(json: unknown): Project {
-  const result = ProjectSchema.safeParse(json)
+/** The schema version this build of Mapper writes. */
+export const SCHEMA_VERSION = 2
+
+function parseWith<T>(schema: z.ZodType<T>, json: unknown): T {
+  const result = schema.safeParse(json)
   if (result.success) return result.data
   throw new ProjectError(zodIssues(result.error))
 }
 
+/**
+ * Parses a project file of any version this build reads. A version 1 file is checked against the version 1 schema,
+ * so its issues carry version 1 paths, and is then upgraded in memory to version 2. It is written as version 2 only
+ * on the next save.
+ */
+export function parseProject(json: unknown): Project {
+  const version = typeof json === 'object' && json !== null ? (json as { schemaVersion?: unknown }).schemaVersion : undefined
+  if (version === 1) return parseWith(ProjectSchema, upgradeV1(parseWith(ProjectV1Schema, json)))
+  if (typeof version === 'number' && version > SCHEMA_VERSION) {
+    throw new ProjectError([
+      {
+        path: ['schemaVersion'],
+        message: `This project was made by a newer version of Mapper (schema version ${version}). Update Mapper to open it.`,
+      },
+    ])
+  }
+  return parseWith(ProjectSchema, json)
+}
+
 // Defaults
 
-export function defaultProject(args: { id: string; name: string; now: string; output?: Partial<Output> }): Project {
+/** A new project with one empty scene named after it. The scene's id is `sceneId`, or the project's id. */
+export function defaultProject(args: {
+  id: string
+  name: string
+  now: string
+  output?: Partial<Output>
+  sceneId?: string
+}): Project {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: args.id,
     name: args.name,
     createdAt: args.now,
     updatedAt: args.now,
     output: { aspect: '16:9', height: 2160, fps: { num: 25, den: 1 }, ...args.output },
-    timing: { holdStart: 1, travel: 10, holdEnd: 2 },
-    stops: [],
-    legs: [],
-    look: {
-      theme: 'paper',
-      labels: 'en',
-      terrain: false,
-      line: { color: '#d9472b', width: 4, dash: 'solid', outline: true, glow: false },
-      symbol: 'dot',
-      signStyle: 'tag',
-    },
-    camera: { mode: 'glide', easing: 'smooth' },
     credit: 'burned',
+    scenes: [
+      {
+        id: args.sceneId ?? args.id,
+        name: args.name,
+        timing: { holdStart: 1, travel: 10, holdEnd: 2 },
+        stops: [],
+        legs: [],
+        look: {
+          theme: 'paper',
+          labels: 'en',
+          terrain: false,
+          line: { color: '#d9472b', width: 4, dash: 'solid', outline: true, glow: false },
+          symbol: 'dot',
+          signStyle: 'tag',
+        },
+        camera: { mode: 'glide', easing: 'smooth' },
+      },
+    ],
   }
 }
 

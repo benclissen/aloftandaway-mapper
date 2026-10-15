@@ -8,11 +8,12 @@ import {
   SIGN_FADE_SECONDS,
   type Project,
 } from '../../src/core/index.js'
-import { emptyProject, greekIslands, pacific, stopsAt } from '../fixtures/projects.js'
+import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 const timelineOf = (p: Project) => {
-  const route = buildRoute(p)
-  return { route, tl: buildTimeline(p, route) }
+  const scene = sceneOf(p)
+  const route = buildRoute(scene)
+  return { route, tl: buildTimeline(scene, p.output.fps, route) }
 }
 
 describe('legSeconds', () => {
@@ -85,9 +86,10 @@ describe('buildTimeline', () => {
   })
 
   test('29.97 fps boundaries', () => {
-    const p = stopsAt([[23.6466, 37.942], [25.3289, 37.4467]], {
-      output: { aspect: '16:9', height: 1080, fps: { num: 30000, den: 1001 } },
-    })
+    const p = {
+      ...stopsAt([[23.6466, 37.942], [25.3289, 37.4467]]),
+      output: { aspect: '16:9' as const, height: 1080 as const, fps: { num: 30000, den: 1001 } },
+    }
     const { tl } = timelineOf(p)
     expect(tl.totalFrames).toBe(390)
     expect(tl.arrivals[0]!.frame).toBe(30)
@@ -166,7 +168,7 @@ describe('buildTimeline', () => {
 
   test('on-arrival sign fades in over 0.4 s', () => {
     const p = greekIslands()
-    p.stops[1]!.sign = 'on-arrival'
+    sceneOf(p).stops[1]!.sign = 'on-arrival'
     const { tl } = timelineOf(p)
     expect(SIGN_FADE_SECONDS).toBe(0.4)
     const a = tl.arrivals[1]!.frame
@@ -180,8 +182,8 @@ describe('buildTimeline', () => {
 
   test('always signs are opaque from frame 0, none are omitted, order follows the stops', () => {
     const p = greekIslands()
-    p.stops[2]!.sign = 'none'
-    p.stops[3]!.sign = 'on-arrival'
+    sceneOf(p).stops[2]!.sign = 'none'
+    sceneOf(p).stops[3]!.sign = 'on-arrival'
     const { tl } = timelineOf(p)
     expect(tl.stateAt(0).signs).toEqual([
       { stopId: 'piraeus', opacity: 1 },
@@ -221,22 +223,22 @@ describe('buildTimeline', () => {
 
   test('one stop: its arrival, and the head stays on it', () => {
     const p = greekIslands()
-    p.stops = [{ ...p.stops[0]!, pause: 2 }]
-    p.legs = []
+    sceneOf(p).stops = [{ ...sceneOf(p).stops[0]!, pause: 2 }]
+    sceneOf(p).legs = []
     const { tl } = timelineOf(p)
     expect(tl.legFrames).toEqual([])
     expect(tl.arrivals).toEqual([{ stopId: 'piraeus', index: 0, frame: 25, seconds: 1 }])
     expect(tl.travelStartFrame).toBe(25)
     expect(tl.travelEndFrame).toBe(75)
     expect(tl.totalFrames).toBe((1 + 10 + 2 + 2) * 25)
-    expect(tl.stateAt(60).head.at).toEqual(p.stops[0]!.at)
+    expect(tl.stateAt(60).head.at).toEqual(sceneOf(p).stops[0]!.at)
     expect(tl.stateAt(60).distance).toBe(0)
     expect(tl.stateAt(60).progress).toBe(0)
   })
 
   test('the total is at least one frame', () => {
     const p = emptyProject()
-    p.timing = { holdStart: 0, travel: 0, holdEnd: 0 }
+    sceneOf(p).timing = { holdStart: 0, travel: 0, holdEnd: 0 }
     const { tl } = timelineOf(p)
     expect(tl.totalFrames).toBe(1)
     expect(tl.stateAt(0).frame).toBe(0)
@@ -246,13 +248,13 @@ describe('buildTimeline', () => {
     const base = greekIslands()
     const p = greekIslands({
       timing: { holdStart: 1, travel: 10, holdEnd: 0 },
-      camera: { ...base.camera, easing: 'linear' },
+      camera: { ...sceneOf(base).camera, easing: 'linear' },
     })
-    expect(p.stops.at(-1)!.pause).toBe(0)
+    expect(sceneOf(p).stops.at(-1)!.pause).toBe(0)
     const { route, tl } = timelineOf(p)
     expect(tl.arrivals.at(-1)!.frame).toBe(tl.totalFrames - 1)
     const last = tl.stateAt(tl.totalFrames - 1)
-    expect(last.head.at).toEqual(p.stops.at(-1)!.at)
+    expect(last.head.at).toEqual(sceneOf(p).stops.at(-1)!.at)
     expect(last.distance).toBe(route.length)
     expect(tl.durationSeconds).toBe(tl.totalFrames / 25)
   })

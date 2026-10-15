@@ -18,7 +18,7 @@ import {
 } from '../../src/render/preview.js'
 import { getServer } from '../../src/server/server.js'
 import { createProject, loadProject, saveProject } from '../../src/server/store.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, sceneOf } from '../fixtures/projects.js'
 import { pixelDiff } from './helpers.js'
 
 let tempDir: string
@@ -38,7 +38,7 @@ function size(png: Buffer): { width: number; height: number } {
 }
 
 function timelineOf(project: Project) {
-  return buildTimeline(project, buildRoute(project))
+  return buildTimeline(sceneOf(project), project.output.fps, buildRoute(sceneOf(project)))
 }
 
 beforeAll(async () => {
@@ -86,7 +86,7 @@ describe('previewFrame', () => {
   })
 
   test('width sets the PNG size and keeps the aspect, including 9:16', async () => {
-    const folder = await writeFolder(greekIslands({ output: { aspect: '9:16', height: 1080, fps: { num: 25, den: 1 } } }))
+    const folder = await writeFolder({ ...greekIslands(), output: { aspect: '9:16', height: 1080, fps: { num: 25, den: 1 } } })
     const { png } = await previewFrame({ folder, at: { frame: 0 }, width: 540 })
     expect(size(png)).toEqual({ width: 540, height: 960 })
   })
@@ -110,7 +110,7 @@ describe('previewFrame', () => {
     const before = await previewFrame({ folder, at: { progress: 1 } })
     expect(before.frame).toBe(349)
     const saved = await loadProject(folder)
-    await saveProject(folder, { ...saved, timing: { ...saved.timing, holdEnd: 4 } })
+    await saveProject(folder, { ...saved, scenes: [{ ...sceneOf(saved), timing: { ...sceneOf(saved).timing, holdEnd: 4 } }] })
     const after = await previewFrame({ folder, at: { progress: 1 } })
     expect(after.frame).toBe(399)
   })
@@ -199,7 +199,7 @@ describe('warm pages', () => {
     await closePreviews()
     const first = await writeFolder(greekIslands())
     const second = await writeFolder(greekIslands())
-    const portrait = await writeFolder(greekIslands({ output: { aspect: '9:16', height: 1080, fps: { num: 25, den: 1 } } }))
+    const portrait = await writeFolder({ ...greekIslands(), output: { aspect: '9:16', height: 1080, fps: { num: 25, den: 1 } } })
     await previewFrame({ folder: first, at: { frame: 0 } })
     await previewFrame({ folder: second, at: { frame: 0 } })
     expect(previewStats()).toEqual({ browserLaunches: 1, pageOpens: 1 })
@@ -265,7 +265,7 @@ describe('RenderPage crash reports', () => {
 
 describe.skipIf(!process.env.MAPPER_NET)('label determinism (needs the network)', () => {
   test('a frame looks the same before and after another frame, with real labels', async () => {
-    const folder = await writeFolder(greekIslands({ look: { ...greekIslands().look, theme: 'paper' } }))
+    const folder = await writeFolder(greekIslands({ look: { ...sceneOf(greekIslands()).look, theme: 'paper' } }))
     const a = await previewFrame({ folder, at: { frame: 40 }, width: 960 })
     await previewFrame({ folder, at: { frame: 10 }, width: 960 })
     const b = await previewFrame({ folder, at: { frame: 40 }, width: 960 })

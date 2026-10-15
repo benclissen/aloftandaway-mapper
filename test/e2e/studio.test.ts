@@ -5,7 +5,7 @@ import type { Page } from 'playwright'
 import { afterAll, expect, test } from 'vitest'
 import { buildRoute, buildTimeline, formatTimecode, type LngLat, type Project } from '../../src/core/index.js'
 import { loadProject, mutateProject } from '../../src/server/store.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, sceneOf } from '../fixtures/projects.js'
 import { closeAll, openStudioPage } from './helpers.js'
 
 afterAll(closeAll)
@@ -22,7 +22,7 @@ async function openStudio(): Promise<{ page: Page; folder: string; project: Proj
 }
 
 async function stopAt(folder: string, id: string): Promise<LngLat> {
-  const stop = (await loadProject(folder)).stops.find((s) => s.id === id)
+  const stop = sceneOf(await loadProject(folder)).stops.find((s) => s.id === id)
   if (!stop) throw new Error(`No stop ${id}`)
   return stop.at
 }
@@ -36,7 +36,7 @@ async function center(page: Page, testId: string): Promise<[number, number]> {
 test('scrubbing to an arrival tick shows its timecode', async () => {
   const { page, project, close } = await openStudio()
   try {
-    const arrival = buildTimeline(project, buildRoute(project)).arrivals.find((a) => a.stopId === 'mykonos')!
+    const arrival = buildTimeline(sceneOf(project), project.output.fps, buildRoute(sceneOf(project))).arrivals.find((a) => a.stopId === 'mykonos')!
     expect(await page.locator('[data-testid="scrubber-ticks"] [title="Mykonos"]').count()).toBe(1)
     await page.getByTestId('scrubber').fill(String(arrival.frame))
     await expect.poll(() => page.getByTestId('timecode').textContent()).toBe(formatTimecode(arrival.frame, project.output.fps))
@@ -161,8 +161,8 @@ test('use this view as start shot saves the camera', async () => {
     expect(dot[0]).toBeGreaterThan(180)
 
     await page.getByTestId('use-start').click()
-    await expect.poll(async () => (await loadProject(folder)).camera.start, { timeout: 2000, interval: 100 }).toBeDefined()
-    const start = (await loadProject(folder)).camera.start!
+    await expect.poll(async () => sceneOf(await loadProject(folder)).camera.start, { timeout: 2000, interval: 100 }).toBeDefined()
+    const start = sceneOf(await loadProject(folder)).camera.start!
     const view = await page.evaluate(() => {
       const map = (window as unknown as StudioWindow).mapperStudio.map
       const { lng, lat } = map.getCenter()
@@ -192,8 +192,8 @@ test('a start shot saved fully zoomed out is inside the schema', async () => {
     })
     expect(minZoom).toBe(0)
     await page.getByTestId('use-start').click()
-    await expect.poll(async () => (await loadProject(folder)).camera.start, { timeout: 2000, interval: 100 }).toBeDefined()
-    const start = (await loadProject(folder)).camera.start!
+    await expect.poll(async () => sceneOf(await loadProject(folder)).camera.start, { timeout: 2000, interval: 100 }).toBeDefined()
+    const start = sceneOf(await loadProject(folder)).camera.start!
     expect(start.zoom).toBeGreaterThanOrEqual(0)
     expect(Math.abs(start.center[1])).toBeLessThanOrEqual(85.0511)
     expect(await page.locator('.notice-error').count()).toBe(0)
@@ -209,7 +209,7 @@ test('external edits appear live', async () => {
     expect(await page.getAttribute(marker, 'title')).toBe('Mykonos')
     await mutateProject(folder, (p) => ({
       ...p,
-      stops: p.stops.map((s) => (s.id === 'mykonos' ? { ...s, name: 'Mykonos Town' } : s)),
+      scenes: [{ ...sceneOf(p), stops: sceneOf(p).stops.map((s) => (s.id === 'mykonos' ? { ...s, name: 'Mykonos Town' } : s)) }],
     }))
     await page.waitForFunction((sel) => document.querySelector(sel)?.getAttribute('title') === 'Mykonos Town', marker, {
       timeout: 1000,

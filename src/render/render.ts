@@ -18,7 +18,7 @@ import { launchBrowser, type LaunchedBrowser } from './chrome.js'
 import { assertCanValidateFcpxml } from './fcpxml-validation.js'
 import { pickH264Encoder, type Codec } from './encode.js'
 import { RenderError, RenderCancelled } from './errors.js'
-import { planExport, sceneMarkers, toPageProject } from './export-plan.js'
+import { planExport, sceneMarkers } from './export-plan.js'
 import type { CompletedPass, LayerRequest, MediaKind, RenderPass, SceneExport, SceneRenderInput } from './export-types.js'
 import { writeManifest, type ExportManifest } from './manifest.js'
 import { publishFcpxml, type PublishedFcpxml } from './publish.js'
@@ -258,8 +258,7 @@ function sceneExports(scenes: SceneRenderInput[], completed: CompletedPass[], di
     const layer = (name: RenderLayer) => completed.find((pass) => pass.sceneId === scene.id && pass.layer === name)
     const [map, route, signs] = [layer('map'), layer('route'), layer('signs')]
     if (!map || !route || !signs) return []
-    const project = toPageProject(scene)
-    const timeline = buildTimeline(project, buildRoute(project))
+    const timeline = buildTimeline(scene.scene, scene.output.fps, buildRoute(scene.scene))
     const sourceRange = { fromFrame: map.fromFrame, toFrame: map.toFrame }
     return [{
       id: scene.id,
@@ -267,7 +266,7 @@ function sceneExports(scenes: SceneRenderInput[], completed: CompletedPass[], di
       frames: map.frames,
       sourceRange,
       layers: { map: path.join(dir, map.path), route: path.join(dir, route.path), signs: path.join(dir, signs.path) },
-      markers: sceneMarkers(scene.content.stops, timeline.arrivals, sourceRange),
+      markers: sceneMarkers(scene.scene.stops, timeline.arrivals, sourceRange),
     }]
   })
 }

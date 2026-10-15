@@ -1,4 +1,4 @@
-import { MAP_CREDIT, type FrameState, type LngLat, type Project, type Stop, type RenderLayer } from '../../core/index.js'
+import { MAP_CREDIT, type FrameState, type LngLat, type Project, type Scene, type Stop, type RenderLayer } from '../../core/index.js'
 
 /** Fonts the overlay draws with. Callers load them before drawing so text never falls back mid-render. */
 export const SIGN_FONT = '600 26px Inter'
@@ -25,7 +25,8 @@ const CREDIT = { margin: 16, fill: 'rgba(255, 255, 255, 0.92)', halo: 'rgba(20, 
 
 export interface OverlayArgs {
   layer?: RenderLayer
-  project: Project
+  scene: Scene
+  credit: Project['credit']
   state: FrameState
   /** Layout-px position of a coordinate on the current map view. */
   project2px: (p: LngLat) => [number, number]
@@ -38,7 +39,7 @@ export const signText = (stop: Stop) => stop.label ?? stop.name
 
 /** Clears the overlay canvas and draws stop dots, signs and (when burned in) the map credit. */
 export function drawOverlay(ctx: CanvasRenderingContext2D, args: OverlayArgs): void {
-  const { project, state, project2px, pixelRatio } = args
+  const { scene, state, project2px, pixelRatio } = args
   const width = ctx.canvas.width / pixelRatio
   const height = ctx.canvas.height / pixelRatio
   ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -49,14 +50,14 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, args: OverlayArgs): v
   const dots = layer === 'route' || layer === 'all'
   const signs = layer === 'signs' || layer === 'all'
   const credit = layer === 'map' || layer === 'all'
-  const color = project.look.line.color
+  const color = scene.look.line.color
   if (dots) {
-    for (const stop of project.stops) {
+    for (const stop of scene.stops) {
       drawDot(ctx, project2px(stop.at), stop.terminal ? DOT_RADIUS * TERMINAL_SCALE : DOT_RADIUS, color)
     }
   }
 
-  const stops = new Map(project.stops.map((s) => [s.id, s]))
+  const stops = new Map(scene.stops.map((s) => [s.id, s]))
   if (signs) {
     for (const sign of state.signs) {
       const stop = stops.get(sign.stopId)
@@ -65,7 +66,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, args: OverlayArgs): v
     }
   }
 
-  if (credit && project.credit === 'burned') drawCredit(ctx, width, height)
+  if (credit && args.credit === 'burned') drawCredit(ctx, width, height)
 }
 
 function drawDot(ctx: CanvasRenderingContext2D, [x, y]: [number, number], radius: number, color: string): void {

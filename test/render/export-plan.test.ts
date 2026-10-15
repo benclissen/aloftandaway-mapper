@@ -2,9 +2,9 @@ import { expect, test } from 'vitest'
 import { buildRoute, buildTimeline, parseProject } from '../../src/core/index.js'
 import { adaptV1Scene, planExport, sceneMarkers, slug, toPageProject } from '../../src/render/export-plan.js'
 import type { LayerRequest } from '../../src/render/export-types.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, sceneOf } from '../fixtures/projects.js'
 
-test('adapts a v1 project without changing its schema', () => {
+test('adapts a project to one scene without changing it', () => {
   const project = greekIslands()
   const before = structuredClone(project)
   const plan = planExport(project, { layers: ['map', 'route', 'signs'] })
@@ -19,7 +19,8 @@ test('adapts a v1 project without changing its schema', () => {
   expect(project).toEqual(before)
   const page = toPageProject(plan.scenes[0])
   expect(parseProject(page)).toEqual(page)
-  expect(page.schemaVersion).toBe(1)
+  expect(page.schemaVersion).toBe(2)
+  expect(page.scenes).toEqual([sceneOf(project)])
   expect(adaptV1Scene(page)).toEqual(plan.scenes[0])
   expect(toPageProject(adaptV1Scene({ ...project, updatedAt: '2026-10-14T00:00:00.000Z' }))).toEqual(page)
 })
@@ -69,7 +70,7 @@ test.each([
   ['a'.repeat(79) + ' b', 'a'.repeat(79)],
 ])('makes safe slugs for %s', (name, expected) => {
   expect(slug(name)).toBe(expected)
-  expect(planExport(greekIslands({ name }), { layers: ['map'] }).passes[0].path).toBe(`01-${expected}/map.mov`)
+  expect(planExport({ ...greekIslands(), name }, { layers: ['map'] }).passes[0].path).toBe(`01-${expected}/map.mov`)
 })
 
 test('uses the existing fractional-rate frame boundaries for every pass', () => {
@@ -78,18 +79,18 @@ test('uses the existing fractional-rate frame boundaries for every pass', () => 
   const plan = planExport(project, { layers: ['map', 'route', 'signs', 'preview'], range: { from: 1, to: 2 } })
   expect(plan.passes.map(p => [p.fromFrame, p.toFrame])).toEqual(Array(4).fill([23, 48]))
   const full = planExport(project, {})
-  expect(full.passes[0].toFrame).toBe(buildTimeline(project, buildRoute(project)).totalFrames)
+  expect(full.passes[0].toFrame).toBe(buildTimeline(sceneOf(project), project.output.fps, buildRoute(sceneOf(project))).totalFrames)
   expect(() => planExport(project, { range: { from: 2, to: 1 } })).toThrow(/range/)
 })
 
 test('rebases only arrivals inside the requested range', () => {
-  const p = greekIslands()
+  const p = sceneOf(greekIslands())
   const arrivals = p.stops.map((s, index) => ({ stopId: s.id, index, frame: [24, 25, 49, 50][index]!, seconds: 0 }))
   expect(sceneMarkers(p.stops, arrivals, { fromFrame: 25, toFrame: 50 }).map(m => m.frame)).toEqual([0, 24])
 })
 
 test('marker values prefer label, then day and name, then name and preserve XML punctuation', () => {
-  const p = greekIslands()
+  const p = sceneOf(greekIslands())
   p.stops[0] = { ...p.stops[0], label: '<Port> & "harbour"', day: 1 }
   p.stops[1] = { ...p.stops[1], day: 0 }
   p.stops[3] = { ...p.stops[3], label: '' }

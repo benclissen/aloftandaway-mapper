@@ -11,6 +11,7 @@ import {
   type LegMode,
   type Project,
   type ProjectIssue,
+  type Scene,
   type Stop,
   type StopInput,
 } from './schema.js'
@@ -29,18 +30,32 @@ const StopOpSchema = z.discriminatedUnion('op', [
 export type StopOp = z.infer<typeof StopOpSchema>
 
 export const ProjectPatchSchema = z.strictObject({
-  /** JSON Merge Patch over the project. Not for stops, legs, schemaVersion, id or createdAt. */
+  /** JSON Merge Patch over the project's own fields: name, output and credit. */
   set: z.record(z.string(), z.unknown()).optional(),
+  /** JSON Merge Patch over the first scene's name, timing, look and camera. */
+  sceneSet: z.record(z.string(), z.unknown()).optional(),
+  /** Edits to the first scene's stops and legs, applied in order after `set` and `sceneSet`. */
   ops: z.array(StopOpSchema).optional(),
 })
 export type ProjectPatch = z.infer<typeof ProjectPatchSchema>
 
 const SET_FORBIDDEN = new Map(Object.entries({
+  timing: "'timing' belongs to the scene; change it with sceneSet",
+  look: "'look' belongs to the scene; change it with sceneSet",
+  camera: "'camera' belongs to the scene; change it with sceneSet",
   stops: "'stops' can't be changed with set; use ops or set_stops",
   legs: "'legs' can't be changed with set; use ops or set_stops (legs follow the stops)",
+  scenes: "'scenes' can't be changed with set; use sceneSet for the scene's name, timing, look and camera, and ops for its stops and legs",
   schemaVersion: "'schemaVersion' can't be changed",
   id: "'id' can't be changed",
   createdAt: "'createdAt' can't be changed",
+  updatedAt: "'updatedAt' is set when the project is saved",
+}))
+
+const SCENE_SET_FORBIDDEN = new Map(Object.entries({
+  id: "the scene's 'id' can't be changed",
+  stops: "'stops' can't be changed with sceneSet; use ops or set_stops",
+  legs: "'legs' can't be changed with sceneSet; use ops or set_stops (legs follow the stops)",
 }))
 
 // Merge patch (RFC 7396)
@@ -136,85 +151,98 @@ function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown, prefix: (string |
 
 // setStops
 
-/** Replaces the project's stops with `stops` (or appends them with `replace: false`) and rebuilds the legs. */
+/** Replaces the first scene's stops with `stops` (or appends them with `replace: false`) and rebuilds its legs. */
 export function setStops(
   project: Project,
   args: { stops: StopInput[]; legMode?: LegMode; replace?: boolean },
 ): Project {
   const inputs = parseOrThrow(z.array(StopInputSchema), args.stops, ['stops'])
   const legMode = parseOrThrow(LegModeSchema.optional(), args.legMode, ['legMode'])
-  const old = args.replace === false ? { stops: project.stops, legs: project.legs } : { stops: [], legs: [] }
+  const work = structuredClone(project)
+  const scene = work.scenes[0]!
+  const old = args.replace === false ? { stops: scene.stops, legs: scene.legs } : { stops: [], legs: [] }
   const added = inputs.map((input) => ({ stop: toStop(input), legMode: input.legMode }))
-  const stops = [...structuredClone(old.stops), ...added.map((a) => a.stop)]
+  const stops = [...old.stops, ...added.map((a) => a.stop)]
   const leaving = new Map<string, LegMode>()
   for (const { stop, legMode: mode } of added) if (mode) leaving.set(stop.id, mode)
-  return parseProject({ ...structuredClone(project), stops, legs: syncLegs(old, stops, { leaving, fallback: legMode }) })
+  work.scenes[0] = { ...scene, stops, legs: syncLegs(old, stops, { leaving, fallback: legMode }) }
+  return parseProject(work)
 }
 
 // applyPatch
 
-function applyOp(project: Project, op: StopOp, at: number): Project {
+function applyOp(scene: Scene, op: StopOp, at: number): Scene {
   const stopIndex = (id: string): number => {
-    const i = project.stops.findIndex((s) => s.id === id)
+    const i = scene.stops.findIndex((s) => s.id === id)
     if (i < 0) fail(['ops', at, 'id'], `unknown stop id '${id}'`)
     return i
   }
-  const old = { stops: project.stops, legs: project.legs }
+  const old = { stops: scene.stops, legs: scene.legs }
 
   switch (op.op) {
     case 'insert_stop': {
-      if (op.index > project.stops.length) {
-        fail(['ops', at, 'index'], `index ${op.index} is out of range; use 0 to ${project.stops.length}`)
+      if (op.index > scene.stops.length) {
+        fail(['ops', at, 'index'], `index ${op.index} is out of range; use 0 to ${scene.stops.length}`)
       }
       const stop = toStop(op.stop)
-      const stops = project.stops.toSpliced(op.index, 0, stop)
+      const stops = scene.stops.toSpliced(op.index, 0, stop)
       const leaving = op.stop.legMode ? new Map([[stop.id, op.stop.legMode]]) : undefined
-      return { ...project, stops, legs: syncLegs(old, stops, { leaving }) }
+      return { ...scene, stops, legs: syncLegs(old, stops, { leaving }) }
     }
     case 'update_stop': {
       const i = stopIndex(op.id)
-      return { ...project, stops: project.stops.map((s, j) => (j === i ? { ...s, ...op.changes } : s)) }
+      return { ...scene, stops: scene.stops.map((s, j) => (j === i ? { ...s, ...op.changes } : s)) }
     }
     case 'remove_stop': {
-      const stops = project.stops.toSpliced(stopIndex(op.id), 1)
-      return { ...project, stops, legs: syncLegs(old, stops) }
+      const stops = scene.stops.toSpliced(stopIndex(op.id), 1)
+      return { ...scene, stops, legs: syncLegs(old, stops) }
     }
     case 'move_stop': {
       const i = stopIndex(op.id)
-      if (op.index > project.stops.length - 1) {
-        fail(['ops', at, 'index'], `index ${op.index} is out of range; use 0 to ${project.stops.length - 1}`)
+      if (op.index > scene.stops.length - 1) {
+        fail(['ops', at, 'index'], `index ${op.index} is out of range; use 0 to ${scene.stops.length - 1}`)
       }
-      const stops = project.stops.toSpliced(i, 1).toSpliced(op.index, 0, project.stops[i]!)
-      return { ...project, stops, legs: syncLegs(old, stops) }
+      const stops = scene.stops.toSpliced(i, 1).toSpliced(op.index, 0, scene.stops[i]!)
+      return { ...scene, stops, legs: syncLegs(old, stops) }
     }
     case 'update_leg': {
-      if (op.index >= project.legs.length) {
-        const range = project.legs.length ? `use 0 to ${project.legs.length - 1}` : 'there are no legs'
+      if (op.index >= scene.legs.length) {
+        const range = scene.legs.length ? `use 0 to ${scene.legs.length - 1}` : 'there are no legs'
         fail(['ops', at, 'index'], `leg index ${op.index} is out of range; ${range}`)
       }
-      return { ...project, legs: project.legs.map((l, j) => (j === op.index ? { ...l, ...op.changes } : l)) }
+      return { ...scene, legs: scene.legs.map((l, j) => (j === op.index ? { ...l, ...op.changes } : l)) }
     }
   }
 }
 
+function checkKeys(patch: Record<string, unknown>, forbidden: Map<string, string>, name: string): void {
+  for (const key of Object.keys(patch)) {
+    const message = forbidden.get(key)
+    if (message) fail([name, key], message)
+  }
+}
+
 /**
- * Applies a merge patch (`set`) and then `ops`, in order. Pure and all or nothing:
- * the input is never modified, and any failure throws a `ProjectError`.
+ * Applies `set` (a merge patch over the project), then `sceneSet` (a merge patch over the first scene), then `ops`
+ * (on the first scene), in order. Pure and all or nothing: the input is never modified, and any failure throws a
+ * `ProjectError`.
  */
 export function applyPatch(project: Project, patch: ProjectPatch): Project {
   const { ops } = parseOrThrow(ProjectPatchSchema, patch)
-  // Read `set` from the caller's object: Zod's copy silently drops a `__proto__` key, and we want it rejected.
-  const set = patch.set
+  // Read `set` and `sceneSet` from the caller's object: Zod's copy silently drops a `__proto__` key, and we want it
+  // rejected.
+  const { set, sceneSet } = patch
   let work: Project = structuredClone(project)
   if (set) {
-    for (const key of Object.keys(set)) {
-      const message = SET_FORBIDDEN.get(key)
-      if (message) fail(['set', key], message)
-    }
+    checkKeys(set, SET_FORBIDDEN, 'set')
     work = mergePatch(work, set) as Project
   }
+  if (sceneSet) {
+    checkKeys(sceneSet, SCENE_SET_FORBIDDEN, 'sceneSet')
+    work.scenes[0] = mergePatch(work.scenes[0], sceneSet) as Scene
+  }
   ops?.forEach((op, i) => {
-    work = applyOp(work, op, i)
+    work.scenes[0] = applyOp(work.scenes[0]!, op, i)
   })
   return parseProject(work)
 }

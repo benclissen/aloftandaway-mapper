@@ -11,7 +11,7 @@ import {
   type StopInput,
   type StopOp,
 } from '../../src/core/index.js'
-import { emptyProject, greekIslands, stopsAt } from '../fixtures/projects.js'
+import { emptyProject, greekIslands, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 const s = (name: string, at: LngLat = [0, 0]): StopInput => ({ name, at })
 
@@ -28,50 +28,50 @@ function failure(fn: () => unknown): ProjectError {
 describe('setStops', () => {
   test('builds one leg per pair with per-stop legMode', () => {
     const p = setStops(emptyProject(), { stops: [s('A'), { ...s('B', [1, 1]), legMode: 'sea' }, s('C', [2, 2])], legMode: 'line' })
-    expect(p.stops.map((x) => x.name)).toEqual(['A', 'B', 'C'])
-    expect(p.legs.map((l) => l.mode)).toEqual(['line', 'sea'])
-    expect(p.stops[0]).toMatchObject({ pause: 0, sign: 'always' })
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['A', 'B', 'C'])
+    expect(sceneOf(p).legs.map((l) => l.mode)).toEqual(['line', 'sea'])
+    expect(sceneOf(p).stops[0]).toMatchObject({ pause: 0, sign: 'always' })
   })
 
   test('legMode on a stop is not stored on the stop', () => {
     const p = setStops(emptyProject(), { stops: [{ ...s('A'), legMode: 'air' }, s('B', [1, 1])] })
-    expect(p.stops[0]).not.toHaveProperty('legMode')
-    expect(p.legs).toEqual([{ mode: 'air', via: [] }])
+    expect(sceneOf(p).stops[0]).not.toHaveProperty('legMode')
+    expect(sceneOf(p).legs).toEqual([{ mode: 'air', via: [] }])
   })
 
   test('uses the call-level legMode, then line, for stops without their own', () => {
-    expect(setStops(emptyProject(), { stops: [s('A'), s('B', [1, 1])], legMode: 'sea' }).legs[0]?.mode).toBe('sea')
-    expect(setStops(emptyProject(), { stops: [s('A'), s('B', [1, 1])] }).legs[0]?.mode).toBe('line')
+    expect(sceneOf(setStops(emptyProject(), { stops: [s('A'), s('B', [1, 1])], legMode: 'sea' })).legs[0]?.mode).toBe('sea')
+    expect(sceneOf(setStops(emptyProject(), { stops: [s('A'), s('B', [1, 1])] })).legs[0]?.mode).toBe('line')
   })
 
   test('gives every stop a distinct generated id and keeps optional fields', () => {
     const p = setStops(emptyProject(), {
       stops: [{ ...s('A'), day: 2, label: 'Start', pause: 3, sign: 'none', terminal: true, ref: 'x' }, s('B', [1, 1])],
     })
-    expect(p.stops[0]).toMatchObject({ day: 2, label: 'Start', pause: 3, sign: 'none', terminal: true, ref: 'x' })
-    expect(new Set(p.stops.map((x) => x.id)).size).toBe(2)
-    expect(p.stops[0]?.id).toMatch(/^s_[0-9a-z]{8}$/)
+    expect(sceneOf(p).stops[0]).toMatchObject({ day: 2, label: 'Start', pause: 3, sign: 'none', terminal: true, ref: 'x' })
+    expect(new Set(sceneOf(p).stops.map((x) => x.id)).size).toBe(2)
+    expect(sceneOf(p).stops[0]?.id).toMatch(/^s_[0-9a-z]{8}$/)
   })
 
   test('replaces by default', () => {
     const p = setStops(greekIslands(), { stops: [s('A'), s('B', [1, 1])] })
-    expect(p.stops.map((x) => x.name)).toEqual(['A', 'B'])
-    expect(p.legs).toHaveLength(1)
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['A', 'B'])
+    expect(sceneOf(p).legs).toHaveLength(1)
   })
 
   test('replace:false appends', () => {
     const base = setStops(emptyProject(), { stops: [s('A'), { ...s('B', [1, 1]), legMode: 'sea' }] })
     const p = setStops(base, { stops: [s('C', [2, 2])], replace: false })
-    expect(p.stops.map((x) => x.name)).toEqual(['A', 'B', 'C'])
-    expect(p.legs).toHaveLength(2)
-    expect(p.legs[0]).toEqual(base.legs[0])
-    expect(p.stops[0]?.id).toBe(base.stops[0]?.id)
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['A', 'B', 'C'])
+    expect(sceneOf(p).legs).toHaveLength(2)
+    expect(sceneOf(p).legs[0]).toEqual(sceneOf(base).legs[0])
+    expect(sceneOf(p).stops[0]?.id).toBe(sceneOf(base).stops[0]?.id)
   })
 
   test('accepts an empty list', () => {
     const p = setStops(greekIslands(), { stops: [] })
-    expect(p.stops).toEqual([])
-    expect(p.legs).toEqual([])
+    expect(sceneOf(p).stops).toEqual([])
+    expect(sceneOf(p).legs).toEqual([])
   })
 
   test('rejects a bad stop with a path into the input', () => {
@@ -96,11 +96,18 @@ describe('setStops', () => {
 describe('applyPatch set', () => {
   test('merge patch sets nested fields and null deletes optional ones', () => {
     const base = greekIslands({ camera: { mode: 'glide', easing: 'smooth', start: { center: [24, 37], zoom: 6, bearing: 0, pitch: 0 } } })
-    const p = applyPatch(base, { set: { look: { line: { color: '#000000' } }, camera: { start: null } } })
-    expect(p.look.line.color).toBe('#000000')
-    expect(p.look.line.width).toBe(4)
-    expect(p.camera.start).toBeUndefined()
-    expect(p.camera.mode).toBe('glide')
+    const p = applyPatch(base, {
+      set: { name: 'Renamed', output: { height: 2160 } },
+      sceneSet: { look: { line: { color: '#000000' } }, camera: { start: null } },
+    })
+    expect(p.name).toBe('Renamed')
+    expect(p.output.height).toBe(2160)
+    expect(p.output.aspect).toBe('16:9')
+    expect(sceneOf(p).name).toBe('Greek Islands')
+    expect(sceneOf(p).look.line.color).toBe('#000000')
+    expect(sceneOf(p).look.line.width).toBe(4)
+    expect(sceneOf(p).camera.start).toBeUndefined()
+    expect(sceneOf(p).camera.mode).toBe('glide')
   })
 
   test.each(['stops', 'legs', 'schemaVersion', 'id', 'createdAt'])('set cannot touch %s', (key) => {
@@ -145,17 +152,17 @@ describe('applyPatch set', () => {
 })
 
 describe('applyPatch ops', () => {
-  const ids = (p: Project) => p.stops.map((x) => x.id)
+  const ids = (p: Project) => sceneOf(p).stops.map((x) => x.id)
 
   test('insert_stop adds a stop with defaults and syncs legs', () => {
     const base = greekIslands()
     const p = applyPatch(base, { ops: [{ op: 'insert_stop', index: 1, stop: { name: 'Naxos', at: [25.4, 37.1], legMode: 'sea' } }] })
-    expect(p.stops.map((x) => x.name)).toEqual(['Piraeus', 'Naxos', 'Mykonos', 'Santorini', 'Rhodes'])
-    expect(p.stops[1]).toMatchObject({ pause: 0, sign: 'always' })
-    expect(p.stops[1]).not.toHaveProperty('legMode')
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['Piraeus', 'Naxos', 'Mykonos', 'Santorini', 'Rhodes'])
+    expect(sceneOf(p).stops[1]).toMatchObject({ pause: 0, sign: 'always' })
+    expect(sceneOf(p).stops[1]).not.toHaveProperty('legMode')
     // Piraeus->Naxos has no legMode of its own, so it takes the mode of the old leg leaving Piraeus.
-    expect(p.legs.map((l) => l.mode)).toEqual(['line', 'sea', 'line', 'line'])
-    expect(p.legs).toHaveLength(4)
+    expect(sceneOf(p).legs.map((l) => l.mode)).toEqual(['line', 'sea', 'line', 'line'])
+    expect(sceneOf(p).legs).toHaveLength(4)
   })
 
   test('insert_stop at the end and at the start', () => {
@@ -165,14 +172,14 @@ describe('applyPatch ops', () => {
         { op: 'insert_stop', index: 0, stop: { ...s('Start'), legMode: 'air' } },
       ],
     })
-    expect(p.stops.map((x) => x.name)).toEqual(['Start', 'Piraeus', 'Mykonos', 'Santorini', 'Rhodes', 'End'])
-    expect(p.legs.map((l) => l.mode)).toEqual(['air', 'line', 'line', 'line', 'line'])
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['Start', 'Piraeus', 'Mykonos', 'Santorini', 'Rhodes', 'End'])
+    expect(sceneOf(p).legs.map((l) => l.mode)).toEqual(['air', 'line', 'line', 'line', 'line'])
   })
 
   test('insert_stop into an empty project makes no legs', () => {
     const p = applyPatch(emptyProject(), { ops: [{ op: 'insert_stop', index: 0, stop: s('A') }] })
-    expect(p.stops).toHaveLength(1)
-    expect(p.legs).toEqual([])
+    expect(sceneOf(p).stops).toHaveLength(1)
+    expect(sceneOf(p).legs).toEqual([])
   })
 
   test.each([-1, 5, 1.5])('insert_stop index %s is out of range', (index) => {
@@ -183,8 +190,8 @@ describe('applyPatch ops', () => {
   test('update_stop changes fields and keeps legs and id', () => {
     const base = greekIslands()
     const p = applyPatch(base, { ops: [{ op: 'update_stop', id: 'mykonos', changes: { name: 'Mýkonos', pause: 2, at: [25.33, 37.45] } }] })
-    expect(p.stops[1]).toMatchObject({ id: 'mykonos', name: 'Mýkonos', pause: 2, at: [25.33, 37.45] })
-    expect(p.legs).toEqual(base.legs)
+    expect(sceneOf(p).stops[1]).toMatchObject({ id: 'mykonos', name: 'Mýkonos', pause: 2, at: [25.33, 37.45] })
+    expect(sceneOf(p).legs).toEqual(sceneOf(base).legs)
   })
 
   test('update_stop rejects an unknown key and a changed id', () => {
@@ -215,54 +222,54 @@ describe('applyPatch ops', () => {
     const base = setStops(emptyProject(), {
       stops: [{ ...s('A'), legMode: 'air' }, { ...s('B', [1, 1]), legMode: 'sea' }, s('C', [2, 2])],
     })
-    const p = applyPatch(base, { ops: [{ op: 'remove_stop', id: base.stops[1]!.id }] })
-    expect(p.stops.map((x) => x.name)).toEqual(['A', 'C'])
-    expect(p.legs).toEqual([{ mode: 'air', via: [] }])
+    const p = applyPatch(base, { ops: [{ op: 'remove_stop', id: sceneOf(base).stops[1]!.id }] })
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['A', 'C'])
+    expect(sceneOf(p).legs).toEqual([{ mode: 'air', via: [] }])
   })
 
   test('remove_stop of the first or last stop drops its leg and keeps the others', () => {
     const base = greekIslands()
-    base.legs[1] = { mode: 'sea', via: [[25, 37]] }
+    sceneOf(base).legs[1] = { mode: 'sea', via: [{ at: [25, 37] }] }
     const first = applyPatch(base, { ops: [{ op: 'remove_stop', id: 'piraeus' }] })
-    expect(first.legs).toEqual([base.legs[1], base.legs[2]])
+    expect(sceneOf(first).legs).toEqual([sceneOf(base).legs[1], sceneOf(base).legs[2]])
     const last = applyPatch(base, { ops: [{ op: 'remove_stop', id: 'rhodes' }] })
-    expect(last.legs).toEqual([base.legs[0], base.legs[1]])
+    expect(sceneOf(last).legs).toEqual([sceneOf(base).legs[0], sceneOf(base).legs[1]])
   })
 
   test('remove_stop down to nothing leaves no legs', () => {
     const base = stopsAt([[0, 0], [1, 1]])
     const p = applyPatch(base, { ops: [{ op: 'remove_stop', id: 's0' }, { op: 'remove_stop', id: 's1' }] })
-    expect(p.stops).toEqual([])
-    expect(p.legs).toEqual([])
+    expect(sceneOf(p).stops).toEqual([])
+    expect(sceneOf(p).legs).toEqual([])
   })
 
   test('move_stop reuses legs whose endpoints survive', () => {
     const base = stopsAt([[0, 0], [1, 1], [2, 2], [3, 3]])
-    base.legs = [
+    sceneOf(base).legs = [
       { mode: 'line', via: [] },
-      { mode: 'sea', via: [[1, 1]] },
+      { mode: 'sea', via: [{ at: [1, 1] }] },
       { mode: 'air', via: [] },
     ]
     const p = applyPatch(base, { ops: [{ op: 'move_stop', id: 's0', index: 3 }] })
     expect(ids(p)).toEqual(['s1', 's2', 's3', 's0'])
-    expect(p.legs[0]).toEqual(base.legs[1])
-    expect(p.legs[1]).toEqual(base.legs[2])
-    expect(p.legs[2]).toEqual({ mode: 'line', via: [] })
+    expect(sceneOf(p).legs[0]).toEqual(sceneOf(base).legs[1])
+    expect(sceneOf(p).legs[1]).toEqual(sceneOf(base).legs[2])
+    expect(sceneOf(p).legs[2]).toEqual({ mode: 'line', via: [] })
   })
 
   test('move_stop to the same place changes nothing', () => {
     const base = greekIslands()
-    base.legs[1] = { mode: 'sea', via: [[25, 37]] }
+    sceneOf(base).legs[1] = { mode: 'sea', via: [{ at: [25, 37] }] }
     expect(applyPatch(base, { ops: [{ op: 'move_stop', id: 'mykonos', index: 1 }] })).toEqual(base)
   })
 
   test('move_stop into the middle takes the mode of the old leg leaving the previous stop', () => {
     const base = stopsAt([[0, 0], [1, 1], [2, 2]])
-    base.legs = [{ mode: 'air', via: [] }, { mode: 'sea', via: [] }]
+    sceneOf(base).legs = [{ mode: 'air', via: [] }, { mode: 'sea', via: [] }]
     const p = applyPatch(base, { ops: [{ op: 'move_stop', id: 's2', index: 1 }] })
     expect(ids(p)).toEqual(['s0', 's2', 's1'])
     // s0->s2: old leg leaving s0 (air). s2->s1: nothing leaves s2, old leg arriving at s1 is air.
-    expect(p.legs.map((l) => l.mode)).toEqual(['air', 'air'])
+    expect(sceneOf(p).legs.map((l) => l.mode)).toEqual(['air', 'air'])
   })
 
   test.each([-1, 4, 0.5])('move_stop index %s is out of range', (index) => {
@@ -271,9 +278,9 @@ describe('applyPatch ops', () => {
   })
 
   test('update_leg changes a leg', () => {
-    const p = applyPatch(greekIslands(), { ops: [{ op: 'update_leg', index: 1, changes: { mode: 'sea', via: [[25.4, 37]], symbol: 'ship' }}] })
-    expect(p.legs[1]).toEqual({ mode: 'sea', via: [[25.4, 37]], symbol: 'ship' })
-    expect(p.legs[0]).toEqual({ mode: 'line', via: [] })
+    const p = applyPatch(greekIslands(), { ops: [{ op: 'update_leg', index: 1, changes: { mode: 'sea', via: [{ at: [25.4, 37] }], symbol: 'cruise-ship' }}] })
+    expect(sceneOf(p).legs[1]).toEqual({ mode: 'sea', via: [{ at: [25.4, 37] }], symbol: 'cruise-ship' })
+    expect(sceneOf(p).legs[0]).toEqual({ mode: 'line', via: [] })
   })
 
   test('update_leg rejects a bad index, an unknown key and a bad value', () => {
@@ -293,22 +300,22 @@ describe('applyPatch ops', () => {
         { op: 'insert_stop', index: 1, stop: s('Naxos', [25.4, 37.1]) },
       ],
     })
-    expect(p.stops.map((x) => x.name)).toEqual(['Piraeus', 'Naxos', 'Santorini', 'Rhodes'])
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['Piraeus', 'Naxos', 'Santorini', 'Rhodes'])
     // Piraeus->Naxos follows the sea leg that left Piraeus; Naxos->Santorini follows the one that arrived at Santorini.
-    expect(p.legs.map((l) => l.mode)).toEqual(['sea', 'sea', 'line'])
+    expect(sceneOf(p).legs.map((l) => l.mode)).toEqual(['sea', 'sea', 'line'])
   })
 
   test('set and ops combine', () => {
     const p = applyPatch(greekIslands(), { set: { name: 'Cruise' }, ops: [{ op: 'remove_stop', id: 'rhodes' }] })
     expect(p.name).toBe('Cruise')
-    expect(p.stops).toHaveLength(3)
+    expect(sceneOf(p).stops).toHaveLength(3)
   })
 
   test('a failing op leaves the project unchanged', () => {
     const p = greekIslands()
     const before = structuredClone(p)
     expect(() =>
-      applyPatch(p, { ops: [{ op: 'update_stop', id: p.stops[0]!.id, changes: { name: 'X' } }, { op: 'remove_stop', id: 'nope' }] }),
+      applyPatch(p, { ops: [{ op: 'update_stop', id: sceneOf(p).stops[0]!.id, changes: { name: 'X' } }, { op: 'remove_stop', id: 'nope' }] }),
     ).toThrow(/nope/)
     expect(p).toEqual(before)
   })
@@ -338,11 +345,13 @@ describe('applyPatch ops', () => {
 describe('ProjectPatchSchema', () => {
   test('accepts set and ops', () => {
     expect(ProjectPatchSchema.safeParse({ set: { name: 'x' }, ops: [{ op: 'remove_stop', id: 'a' }] }).success).toBe(true)
+    expect(ProjectPatchSchema.safeParse({ sceneSet: { name: 'x' } }).success).toBe(true)
     expect(ProjectPatchSchema.safeParse({}).success).toBe(true)
   })
   test('rejects unknown keys, non-object set and bad ops', () => {
     expect(ProjectPatchSchema.safeParse({ extra: 1 }).success).toBe(false)
     expect(ProjectPatchSchema.safeParse({ set: [] }).success).toBe(false)
+    expect(ProjectPatchSchema.safeParse({ sceneSet: [] }).success).toBe(false)
     expect(ProjectPatchSchema.safeParse({ ops: [{ op: 'move_stop', id: 'a' }] }).success).toBe(false)
   })
 })
@@ -385,3 +394,30 @@ describe('newStopId', () => {
     expect(new Set(made).size).toBe(200)
   })
 })
+
+describe('applyPatch sceneSet', () => {
+  test('sceneSet patches the first scene', () => {
+    const p = applyPatch(greekIslands(), { sceneSet: { look: { theme: 'blank' } } })
+    expect(p.scenes[0]!.look.theme).toBe('blank')
+    const q = applyPatch(greekIslands(), { sceneSet: { look: { theme: 'paper' } } })
+    expect(q.scenes[0]!.look.theme).toBe('paper')
+    expect(q.scenes[0]!.look.line).toEqual(greekIslands().scenes[0]!.look.line)
+  })
+
+  test.each(['timing', 'look', 'camera', 'stops', 'legs'])('set rejects the scene field %s', (key) => {
+    const e = failure(() => applyPatch(greekIslands(), { set: { [key]: {} } }))
+    expect(e.issues[0]?.path).toEqual(['set', key])
+    expect(e.message).toMatch(/sceneSet|ops/)
+  })
+
+  test.each(['scenes', 'id', 'createdAt', 'schemaVersion'])('set rejects %s', (key) => {
+    const e = failure(() => applyPatch(greekIslands(), { set: { [key]: 'x' } }))
+    expect(e.issues[0]?.path).toEqual(['set', key])
+  })
+
+  test.each(['id', 'stops', 'legs'])('sceneSet rejects %s', (key) => {
+    const e = failure(() => applyPatch(greekIslands(), { sceneSet: { [key]: [] } }))
+    expect(e.issues[0]?.path).toEqual(['sceneSet', key])
+  })
+})
+

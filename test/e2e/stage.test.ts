@@ -14,7 +14,7 @@ import {
   type LngLat,
   type Project,
 } from '../../src/core/index.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, sceneOf } from '../fixtures/projects.js'
 import type { MapperPage } from '../../src/studio/render-mode.js'
 import { closeAll, expectGolden, openRenderPage, pixelDiff, snapshot } from './helpers.js'
 
@@ -22,8 +22,9 @@ afterAll(closeAll)
 
 /** The layout-px position of `at` on `frame`, for a shot with no bearing or pitch. */
 function layoutPx(project: Project, frame: number, at: LngLat): [number, number] {
-  const route = buildRoute(project)
-  const shot = cameraAt(project, route, buildTimeline(project, route), frame)
+  const scene = sceneOf(project)
+  const route = buildRoute(scene)
+  const shot = cameraAt(scene, project.output.aspect, route, buildTimeline(scene, project.output.fps, route), frame)
   const { width, height } = layoutSize(project.output.aspect)
   const scale = TILE_SIZE * 2 ** shot.zoom
   const [x, y] = toXY(at)
@@ -85,8 +86,8 @@ describe('render page, blank theme, pixelRatio 0.5', () => {
 
   test('the route reaches the head: drawn behind it, absent ahead of it', async () => {
     const project = greekIslands()
-    const route = buildRoute(project)
-    const timeline = buildTimeline(project, route)
+    const route = buildRoute(sceneOf(project))
+    const timeline = buildTimeline(sceneOf(project), project.output.fps, route)
     // Halfway through the first leg (Piraeus → Mykonos), the line runs from Piraeus to the head.
     const leg = timeline.legFrames[0]!
     const frame = Math.round((leg.start + leg.end) / 2)
@@ -104,7 +105,7 @@ describe('render page, blank theme, pixelRatio 0.5', () => {
 })
 
 test('4K canvas is 3840×2160 with pixelRatio 2', async () => {
-  const { page, close } = await openRenderPage(greekIslands({ output: { aspect: '16:9', height: 2160, fps: { num: 25, den: 1 } } }), 2)
+  const { page, close } = await openRenderPage({ ...greekIslands(), output: { aspect: '16:9', height: 2160, fps: { num: 25, den: 1 } } }, 2)
   const size = await page.evaluate(() => {
     const canvas = document.querySelector<HTMLCanvasElement>('canvas.maplibregl-canvas')!
     return [canvas.width, canvas.height]
@@ -117,8 +118,8 @@ test('4K canvas is 3840×2160 with pixelRatio 2', async () => {
 
 test('burned credit is drawn bottom-right', async () => {
   const region = (png: Buffer) => crop(png, 960 - 200, 540 - 20, 200, 20) // the bottom-right 400×40 layout px
-  const burned = await openRenderPage(greekIslands({ credit: 'burned' }), 0.5)
-  const described = await openRenderPage(greekIslands({ credit: 'description' }), 0.5)
+  const burned = await openRenderPage({ ...greekIslands(), credit: 'burned' }, 0.5)
+  const described = await openRenderPage({ ...greekIslands(), credit: 'description' }, 0.5)
   const withCredit = await snapshot(burned.page, 0)
   const without = await snapshot(described.page, 0)
   expect(pixelDiff(region(withCredit), region(without))).toBeGreaterThan(100)
@@ -131,7 +132,7 @@ test('burned credit is drawn bottom-right', async () => {
 
 test('renderFrame rejects when map data fails to load', async () => {
   // Nothing listens on port 9, so the tile proxy answers 502 after its retries.
-  const project = greekIslands({ look: { ...greekIslands().look, theme: 'paper' } })
+  const project = greekIslands({ look: { ...sceneOf(greekIslands()).look, theme: 'paper' } })
   const { page, close } = await openRenderPage(project, 0.5, { tileUpstream: 'http://127.0.0.1:9' })
   const error = await page.evaluate(() =>
     (window as unknown as { mapper: MapperPage }).mapper.renderFrame(0).then(
@@ -145,7 +146,7 @@ test('renderFrame rejects when map data fails to load', async () => {
 
 test.skipIf(process.env.MAPPER_NET !== '1')('paper theme draws water (MAPPER_NET only)', async () => {
   const project = greekIslands({
-    look: { ...greekIslands().look, theme: 'paper' },
+    look: { ...sceneOf(greekIslands()).look, theme: 'paper' },
   })
   const { page, close } = await openRenderPage(project, 0.5)
   const png = await snapshot(page, 0)

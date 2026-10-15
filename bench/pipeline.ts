@@ -125,10 +125,12 @@ async function main(): Promise<void> {
   process.env.MAPPER_CACHE_DIR = path.join(tempDir, 'cache')
   try {
     const base = greekIslands()
+    const scene = base.scenes[0]!
+    const id = randomUUID()
     const project = {
       ...base,
-      id: randomUUID(),
-      look: { ...base.look, theme: 'paper' as const },
+      id,
+      scenes: [{ ...scene, id, look: { ...scene.look, theme: 'paper' as const } }],
       output: { aspect: '16:9' as const, height: 2160 as const, fps: { num: 25, den: 1 } },
     }
     const folder = path.join(tempDir, 'greek-islands')

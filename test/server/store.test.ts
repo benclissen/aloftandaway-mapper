@@ -13,7 +13,7 @@ import {
   projectHash,
   saveProject,
 } from '../../src/server/store.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, sceneOf } from '../fixtures/projects.js'
 
 let tmp: string
 
@@ -96,6 +96,43 @@ describe('createProject and loadProject', () => {
   })
 })
 
+describe('version 1 files', () => {
+  test('load upgrades in memory, and the next save writes version 2', async () => {
+    const v2 = greekIslands()
+    const scene = sceneOf(v2)
+    const v1 = {
+      schemaVersion: 1,
+      id: v2.id,
+      name: v2.name,
+      createdAt: v2.createdAt,
+      updatedAt: v2.updatedAt,
+      output: v2.output,
+      timing: scene.timing,
+      stops: scene.stops,
+      legs: scene.legs.map((leg, i) => (i === 0 ? { mode: leg.mode, via: [[24, 37.5]] } : leg)),
+      look: scene.look,
+      camera: scene.camera,
+      credit: v2.credit,
+    }
+    const file = path.join(tmp, PROJECT_FILE)
+    await writeFile(file, JSON.stringify(v1))
+
+    const loaded = await loadProject(tmp)
+    expect(loaded.schemaVersion).toBe(2)
+    expect(sceneOf(loaded).id).toBe(v2.id)
+    expect(sceneOf(loaded).legs[0]!.via).toEqual([{ at: [24, 37.5] }])
+    // Loading alone leaves the file as it was.
+    expect(JSON.parse(await readFile(file, 'utf8')).schemaVersion).toBe(1)
+
+    await mutateProject(tmp, (p) => ({ ...p, name: 'Saved' }))
+    const written = JSON.parse(await readFile(file, 'utf8'))
+    expect(written.schemaVersion).toBe(2)
+    expect(written).not.toHaveProperty('stops')
+    expect(written.scenes).toHaveLength(1)
+    expect(written.scenes[0].id).toBe(v2.id)
+  })
+})
+
 describe('saveProject', () => {
   test('save is atomic and bumps updatedAt', async () => {
     const folder = path.join(tmp, 'atomic')
@@ -132,7 +169,7 @@ describe('mutateProject', () => {
         mutateProject(folder, (p) => setStops(p, { stops: [{ name: `Stop ${i}`, at: [i, 0] as LngLat }], replace: false })),
       ),
     )
-    expect((await loadProject(folder)).stops).toHaveLength(20)
+    expect(sceneOf(await loadProject(folder)).stops).toHaveLength(20)
   })
 
   test('a failing mutation releases the folder lock', async () => {
@@ -166,7 +203,8 @@ describe('projectHash', () => {
     const later: Project = { ...base, updatedAt: '2030-01-01T00:00:00.000Z' }
     expect(projectHash(later)).toBe(projectHash(base))
     expect(projectHash({ ...base, name: 'Other' })).not.toBe(projectHash(base))
-    expect(projectHash({ ...base, stops: [...base.stops].reverse() })).not.toBe(projectHash(base))
+    const reversed = { ...sceneOf(base), stops: [...sceneOf(base).stops].reverse() }
+    expect(projectHash({ ...base, scenes: [reversed] })).not.toBe(projectHash(base))
   })
 
   test('does not depend on key order', () => {

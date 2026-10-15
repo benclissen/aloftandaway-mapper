@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import { validateProject, type Issue, type Project } from '../../src/core/index.js'
-import { emptyProject, greekIslands, pacific, stopsAt } from '../fixtures/projects.js'
+import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
 
-const paperLook = { ...greekIslands().look, theme: 'paper' as const }
+const paperLook = { ...sceneOf(greekIslands()).look, theme: 'paper' as const }
 
 const codes = (issues: Issue[]) => issues.map((i) => i.code)
 
@@ -18,7 +18,7 @@ describe('validateProject', () => {
   test('an empty project gives exactly too-few-stops', () => {
     const { errors, warnings } = validateProject(emptyProject())
     expect(errors).toEqual([
-      expect.objectContaining({ code: 'too-few-stops', path: ['stops'] }),
+      expect.objectContaining({ code: 'too-few-stops', path: ['scenes', 0, 'stops'] }),
     ])
     expect(errors).toHaveLength(1)
     expect(warnings).toEqual([])
@@ -45,7 +45,7 @@ describe('validateProject', () => {
     expect(errors).toEqual([])
     const found = warnings.filter((w) => w.code === 'same-place')
     expect(found).toEqual([
-      expect.objectContaining({ path: ['stops', 1], fix: expect.stringContaining('pause') }),
+      expect.objectContaining({ path: ['scenes', 0, 'stops', 1], fix: expect.stringContaining('pause') }),
     ])
     expect(found[0]!.message).toContain('S0 and S1')
   })
@@ -62,7 +62,7 @@ describe('validateProject', () => {
     const { errors, warnings } = validateProject(project)
     expect(errors).toEqual([])
     const legs = warnings.filter((w) => w.code === 'short-leg')
-    expect(legs.map((w) => w.path)).toEqual([['legs', 0], ['legs', 1]])
+    expect(legs.map((w) => w.path)).toEqual([['scenes', 0, 'legs', 0], ['scenes', 0, 'legs', 1]])
     expect(legs[0]!.message).toBe('Leg 1 (S0 → S1) lasts 0.5 s')
     expect(legs[0]!.fix).toBeTruthy()
   })
@@ -82,7 +82,7 @@ describe('validateProject', () => {
     const { errors, warnings } = validateProject(project)
     expect(errors).toEqual([])
     expect(warnings).toEqual([
-      expect.objectContaining({ code: 'zoom-above-max', path: ['camera', 'start', 'zoom'] }),
+      expect.objectContaining({ code: 'zoom-above-max', path: ['scenes', 0, 'camera', 'start', 'zoom'] }),
     ])
   })
 
@@ -94,7 +94,7 @@ describe('validateProject', () => {
     const { errors, warnings } = validateProject(project)
     expect(errors).toEqual([])
     expect(warnings.filter((w) => w.code === 'zoom-above-max')).toEqual([
-      expect.objectContaining({ path: ['camera'], fix: expect.stringContaining('blank') }),
+      expect.objectContaining({ path: ['scenes', 0, 'camera'], fix: expect.stringContaining('blank') }),
     ])
     // The agent can't see a fitted shot in the project, so the fix says where to find it.
     const fix = warnings.find((w) => w.code === 'zoom-above-max')!.fix!
@@ -104,49 +104,49 @@ describe('validateProject', () => {
 
   test('a sea leg is a not-available-yet warning on its mode', () => {
     const project = greekIslands()
-    project.legs[0] = { ...project.legs[0]!, mode: 'sea' }
+    sceneOf(project).legs[0] = { ...sceneOf(project).legs[0]!, mode: 'sea' }
     const { errors, warnings } = validateProject(project)
     expect(errors).toEqual([])
     expect(warnings).toEqual([
-      expect.objectContaining({ code: 'not-available-yet', path: ['legs', 0, 'mode'] }),
+      expect.objectContaining({ code: 'not-available-yet', path: ['scenes', 0, 'legs', 0, 'mode'] }),
     ])
     expect(warnings[0]!.fix).toContain("Use 'line'")
   })
 
   test('an air leg is a not-available-yet warning too', () => {
     const project = greekIslands()
-    project.legs[1] = { ...project.legs[1]!, mode: 'air' }
+    sceneOf(project).legs[1] = { ...sceneOf(project).legs[1]!, mode: 'air' }
     expect(validateProject(project).warnings).toEqual([
-      expect.objectContaining({ code: 'not-available-yet', path: ['legs', 1, 'mode'] }),
+      expect.objectContaining({ code: 'not-available-yet', path: ['scenes', 0, 'legs', 1, 'mode'] }),
     ])
   })
 
   test('the follow camera is a not-available-yet warning', () => {
     const project = greekIslands()
-    project.camera = { ...project.camera, mode: 'follow' }
+    sceneOf(project).camera = { ...sceneOf(project).camera, mode: 'follow' }
     expect(validateProject(project).warnings).toEqual([
-      expect.objectContaining({ code: 'not-available-yet', path: ['camera', 'mode'] }),
+      expect.objectContaining({ code: 'not-available-yet', path: ['scenes', 0, 'camera', 'mode'] }),
     ])
   })
 
   test('terrain is a not-available-yet warning', () => {
     const project = greekIslands()
-    project.look = { ...project.look, terrain: true }
+    sceneOf(project).look = { ...sceneOf(project).look, terrain: true }
     expect(validateProject(project).warnings).toEqual([
-      expect.objectContaining({ code: 'not-available-yet', path: ['look', 'terrain'] }),
+      expect.objectContaining({ code: 'not-available-yet', path: ['scenes', 0, 'look', 'terrain'] }),
     ])
   })
 
   test('a symbol other than none or dot is a not-available-yet warning', () => {
     for (const symbol of ['none', 'dot'] as const) {
       const project = greekIslands()
-      project.look = { ...project.look, symbol }
+      sceneOf(project).look = { ...sceneOf(project).look, symbol }
       expect(validateProject(project).warnings).toEqual([])
     }
     const project = greekIslands()
-    project.look = { ...project.look, symbol: 'arrow' }
+    sceneOf(project).look = { ...sceneOf(project).look, symbol: 'arrow' }
     expect(validateProject(project).warnings).toEqual([
-      expect.objectContaining({ code: 'not-available-yet', path: ['look', 'symbol'] }),
+      expect.objectContaining({ code: 'not-available-yet', path: ['scenes', 0, 'look', 'symbol'] }),
     ])
   })
 
@@ -163,7 +163,7 @@ describe('validateProject', () => {
         timing: { holdStart: 1, travel: 1, holdEnd: 2 },
       },
     )
-    project.legs[1] = { ...project.legs[1]!, mode: 'sea' }
+    sceneOf(project).legs[1] = { ...sceneOf(project).legs[1]!, mode: 'sea' }
     const { errors, warnings } = validateProject(project)
     const issues = [...errors, ...warnings]
     expect(issues.length).toBeGreaterThan(3)
@@ -177,5 +177,13 @@ describe('validateProject', () => {
     const { errors, warnings } = validateProject(stopsAt([[25, 37], [25, 37]], { look: paperLook }))
     expect(errors).toEqual([])
     expect(codes(warnings)).toContain('same-place')
+  })
+
+  test('every scene is checked, with paths under its index', () => {
+    const project = greekIslands()
+    const second = { ...sceneOf(stopsAt([[25, 37]])), id: '1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f', name: 'Second' }
+    project.scenes.push(second)
+    const { errors } = validateProject(project)
+    expect(errors).toEqual([expect.objectContaining({ code: 'too-few-stops', path: ['scenes', 1, 'stops'] })])
   })
 })

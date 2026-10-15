@@ -204,13 +204,14 @@ class StageController {
   }
 
   private syncMarkers(map: MapLibreMap, project: Project): void {
-    const ids = new Set(project.stops.map((s) => s.id))
+    const { stops } = project.scenes[0]!
+    const ids = new Set(stops.map((s) => s.id))
     for (const [id, marker] of this.markers) {
       if (ids.has(id)) continue
       marker.remove()
       this.markers.delete(id)
     }
-    for (const stop of project.stops) {
+    for (const stop of stops) {
       let marker = this.markers.get(stop.id)
       if (!marker) {
         marker = this.createMarker(stop.id)
@@ -237,7 +238,7 @@ class StageController {
       const { lng, lat } = marker.getLngLat().wrap()
       void this.cb.onStopMoved(id, [round(lng, 5), clampLat(round(lat, 5))]).then((saved) => {
         // Nothing was saved, so no new project will move the marker: put it back over the stop.
-        const stop = this.project?.stops.find((s) => s.id === id)
+        const stop = this.project?.scenes[0]!.stops.find((s) => s.id === id)
         if (!saved && stop && this.markers.get(id) === marker && !this.dragging.has(id)) marker.setLngLat(stop.at)
       })
     })

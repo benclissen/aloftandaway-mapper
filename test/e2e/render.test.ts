@@ -12,7 +12,7 @@ import { closePreviews, previewFrame } from '../../src/render/preview.js'
 import { frameRange, renderProject } from '../../src/render/render.js'
 import { getServer } from '../../src/server/server.js'
 import { createProject, loadProject, mutateProject, projectHash, saveProject } from '../../src/server/store.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, sceneOf } from '../fixtures/projects.js'
 import { pixelDiff } from './helpers.js'
 
 const run = promisify(execFile)
@@ -139,7 +139,12 @@ test('renders the starting snapshot', async () => {
   await mutateProject(folder, (p) => ({
     ...p,
     name: 'Renamed mid-render',
-    stops: p.stops.map((s) => (s.id === 'rhodes' ? { ...s, at: [34.0, 31.0] as [number, number] } : s)),
+    scenes: [
+      {
+        ...sceneOf(p),
+        stops: sceneOf(p).stops.map((s) => (s.id === 'rhodes' ? { ...s, at: [34.0, 31.0] as [number, number] } : s)),
+      },
+    ],
   }))
   // The edit must land mid-render, or this test proves nothing.
   const during = renderStatus(jobId)
@@ -201,7 +206,7 @@ test('a queued job reports running until it starts, and can be cancelled', async
 
 test('validation errors block the render', async () => {
   const one = greekIslands()
-  const folder = await writeFolder({ ...one, stops: one.stops.slice(0, 1), legs: [] })
+  const folder = await writeFolder({ ...one, scenes: [{ ...sceneOf(one), stops: sceneOf(one).stops.slice(0, 1), legs: [] }] })
   await expect(renderProject({ folder })).rejects.toThrow(/too-few-stops/)
   expect(existsSync(path.join(folder, 'renders'))).toBe(false)
   const jobId = startRenderJob({ folder })

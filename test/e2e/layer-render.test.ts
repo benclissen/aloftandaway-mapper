@@ -14,7 +14,7 @@ import { closePreviews, previewFrame } from '../../src/render/preview.js'
 import { renderProject, type RenderProgress, type RenderResult } from '../../src/render/render.js'
 import { getServer } from '../../src/server/server.js'
 import { createProject, loadProject, mutateProject, projectHash, saveProject } from '../../src/server/store.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, sceneOf } from '../fixtures/projects.js'
 import { pixelDiff } from './helpers.js'
 
 const run = promisify(execFile)
@@ -172,7 +172,7 @@ test('exports map, route and signs as aligned ProRes layers', async () => {
 })
 
 test('the FCPXML references the three finished layers, a range starting after frame zero, notes and a preview', async () => {
-  const folder = await writeFolder(greekIslands({ credit: 'description' }))
+  const folder = await writeFolder({ ...greekIslands(), credit: 'description' })
   // Frames [12, 50): the Piraeus arrival at frame 25 lands at clip-local frame 13.
   const result = await renderProject({ folder, range: { from: 0.5, to: 2 }, layers: [...LAYERS, 'preview'] })
   expect(result.frames).toBe(38)
@@ -292,8 +292,13 @@ test('every pass renders the starting snapshot, and a queued job waits', async (
   await mutateProject(folder, (p) => ({
     ...p,
     name: 'Renamed mid-render',
-    stops: p.stops.map((s) =>
-      s.id === 'rhodes' ? { ...s, at: [34.0, 31.0] as [number, number] } : s.id === 'piraeus' ? { ...s, name: 'Edited' } : s),
+    scenes: [
+      {
+        ...sceneOf(p),
+        stops: sceneOf(p).stops.map((s) =>
+          s.id === 'rhodes' ? { ...s, at: [34.0, 31.0] as [number, number] } : s.id === 'piraeus' ? { ...s, name: 'Edited' } : s),
+      },
+    ],
   }))
   const during = renderStatus(jobId)
   expect(during.state).toBe('running')

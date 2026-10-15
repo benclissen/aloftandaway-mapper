@@ -90,7 +90,7 @@ describe('writeManifest', () => {
 describe('renderPass failures', () => {
   const project = greekIslands()
   const scene = adaptV1Scene(project)
-  const totalFrames = buildTimeline(project, buildRoute(project)).totalFrames
+  const totalFrames = buildTimeline(scene.scene, project.output.fps, buildRoute(scene.scene)).totalFrames
   const browser = {} as Browser
   let frame: Buffer
 

@@ -48,7 +48,11 @@ export function App() {
     return () => clearTimeout(timer)
   }, [notice])
 
-  const timeline = useMemo(() => (project ? buildTimeline(project, buildRoute(project)) : undefined), [project])
+  const scene = project?.scenes[0]
+  const timeline = useMemo(
+    () => (project && scene ? buildTimeline(scene, project.output.fps, buildRoute(scene)) : undefined),
+    [project, scene],
+  )
   const last = timeline ? timeline.totalFrames - 1 : 0
   const shown = Math.min(frame, last)
   const shownRef = useRef(shown)
@@ -73,9 +77,9 @@ export function App() {
   }, [playing, timeline])
 
   const ticks = useMemo<Tick[]>(() => {
-    if (!project || !timeline) return []
-    return timeline.arrivals.map((a) => ({ stopId: a.stopId, frame: a.frame, name: project.stops[a.index]?.name ?? '' }))
-  }, [project, timeline])
+    if (!scene || !timeline) return []
+    return timeline.arrivals.map((a) => ({ stopId: a.stopId, frame: a.frame, name: scene.stops[a.index]?.name ?? '' }))
+  }, [scene, timeline])
 
   /** Sends a patch and resolves to whether it was saved. A failure shows the server's message. */
   const send = useCallback(
@@ -100,11 +104,11 @@ export function App() {
   const onStageError = useCallback((message: string) => setNotice({ kind: 'error', text: message }), [])
 
   if (loadError) return <p className="studio-message">{loadError}</p>
-  if (!project || !timeline) return <p className="studio-message">Loading the project…</p>
+  if (!project || !scene || !timeline) return <p className="studio-message">Loading the project…</p>
 
   const saveShot = (which: 'start' | 'end') => {
     const shot = stage.current?.shot()
-    if (shot) void send({ set: { camera: { [which]: shot } } }, which === 'start' ? 'Start shot saved' : 'End shot saved')
+    if (shot) void send({ sceneSet: { camera: { [which]: shot } } }, which === 'start' ? 'Start shot saved' : 'End shot saved')
   }
 
   return (
@@ -137,17 +141,17 @@ export function App() {
         />
         <div className="controls-row">
           <ShotPanel
-            mode={project.camera.mode}
+            mode={scene.camera.mode}
             freeView={freeView}
             onMode={(mode) => {
               setFreeView(false)
-              void send({ set: { camera: { mode } } })
+              void send({ sceneSet: { camera: { mode } } })
             }}
             onUseStart={() => saveShot('start')}
             onUseEnd={() => saveShot('end')}
             onFit={() => {
               setFreeView(false)
-              void send({ set: { camera: { start: null, end: null } } }, 'Camera fits the route')
+              void send({ sceneSet: { camera: { start: null, end: null } } }, 'Camera fits the route')
             }}
           />
           {notice && (

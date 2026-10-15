@@ -1,5 +1,5 @@
 import { pointAt, type Route } from './route.js'
-import { fpsValue, type Camera, type Fps, type LngLat, type Project } from './schema.js'
+import { fpsValue, type Camera, type Fps, type LngLat, type Scene } from './schema.js'
 
 /** How long an `on-arrival` sign takes to fade in, starting on the arrival frame. */
 export const SIGN_FADE_SECONDS = 0.4
@@ -67,10 +67,9 @@ export interface Timeline {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi)
 
-export function buildTimeline(project: Project, route: Route): Timeline {
-  const { fps } = project.output
-  const { holdStart, travel, holdEnd } = project.timing
-  const { stops } = project
+export function buildTimeline(scene: Scene, fps: Fps, route: Route): Timeline {
+  const { holdStart, travel, holdEnd } = scene.timing
+  const { stops } = scene
   const toFrame = (seconds: number) => Math.round((seconds * fps.num) / fps.den)
   const rate = fpsValue(fps)
 
@@ -111,7 +110,7 @@ export function buildTimeline(project: Project, route: Route): Timeline {
     stop.sign === 'none' ? [] : [{ stopId: stop.id, always: stop.sign === 'always', arrival: arrivals[index]!.frame }],
   )
   const fadeFrames = SIGN_FADE_SECONDS * rate
-  const easing = project.camera.easing
+  const easing = scene.camera.easing
 
   /** Index of the last leg that has started by `frame`, or -1. */
   function legAt(frame: number): number {

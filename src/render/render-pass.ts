@@ -87,7 +87,7 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
   const { browser, scene, pass, dir, signal } = args
   throwIfAborted(signal)
   const project = toPageProject(scene)
-  const timeline = buildTimeline(project, buildRoute(project))
+  const timeline = buildTimeline(scene.scene, scene.output.fps, buildRoute(scene.scene))
   const size = frameSize(scene.output)
   const { fromFrame, toFrame } = pass
   const frames = toFrame - fromFrame

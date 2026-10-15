@@ -1,4 +1,4 @@
-import type { Output, Project, RenderLayer } from '../core/index.js'
+import type { Output, Project, RenderLayer, Scene } from '../core/index.js'
 
 export type LayerRequest = RenderLayer | 'preview'
 export type MediaKind = 'prores-hq' | 'prores-4444' | 'h264'
@@ -8,7 +8,7 @@ export interface SceneRenderInput {
   name: string
   output: Output
   credit: Project['credit']
-  content: Pick<Project, 'timing' | 'stops' | 'legs' | 'look' | 'camera'>
+  scene: Scene
 }
 
 export interface ExportMarker { frame: number; value: string }

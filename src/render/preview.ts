@@ -149,7 +149,8 @@ interface Loaded {
  */
 async function withProject<T>(folder: string, frameWidth: (aspect: Aspect) => number, use: (loaded: Loaded) => Promise<T>): Promise<T> {
   const project = await loadProject(folder)
-  const timeline = buildTimeline(project, buildRoute(project))
+  const scene = project.scenes[0]!
+  const timeline = buildTimeline(scene, project.output.fps, buildRoute(scene))
   if (timeline.totalFrames < 1) throw new Error('The project has no frames to preview.')
   const { aspect } = project.output
   const { page, entry } = await pageFor(aspect)
@@ -209,7 +210,7 @@ export async function previewFrame(args: { folder: string; at: PreviewAt; width?
 export function frameCaption(project: Project, timeline: Timeline, frame: number): string {
   const caption = `${formatTimecode(frame, timeline.fps)} · f${frame}`
   const arrival = timeline.arrivals.find((a) => a.frame === frame)
-  const stop = arrival && project.stops.find((s) => s.id === arrival.stopId)
+  const stop = arrival && project.scenes[0]!.stops.find((s) => s.id === arrival.stopId)
   return stop ? `${caption} · ${stop.name}` : caption
 }
 

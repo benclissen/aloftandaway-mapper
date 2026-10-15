@@ -61,7 +61,7 @@ test('agent flow end to end', async () => {
     const folder = path.join(tmp, 'Café Tour')
     await call('create_project', { folder, name: 'Café Tour' })
     await call('set_stops', { folder, stops: STOPS })
-    const updated = await call('update_project', { folder, set: { look: { theme: 'blank' }, output: { height: 1080 } } })
+    const updated = await call('update_project', { folder, set: { output: { height: 1080 } }, sceneSet: { look: { theme: 'blank' } } })
     expect((updated.structuredContent as { project: { output: { height: number } } }).project.output.height).toBe(1080)
 
     const validation = await call('validate_project', { folder })
@@ -117,7 +117,7 @@ test('a layered render returns the FCPXML and three layers', async () => {
     const folder = path.join(tmp, 'Layered')
     await call('create_project', { folder, name: 'Layered' })
     await call('set_stops', { folder, stops: STOPS })
-    await call('update_project', { folder, set: { look: { theme: 'blank' }, output: { height: 1080 } } })
+    await call('update_project', { folder, set: { output: { height: 1080 } }, sceneSet: { look: { theme: 'blank' } } })
 
     const bad = (await client.callTool({ name: 'render', arguments: { folder, layers: ['all', 'preview'] } })) as CallToolResult
     expect(bad.isError).toBe(true)
@@ -242,7 +242,7 @@ test.each(['SIGTERM', 'SIGHUP', 'SIGINT'] as const)('%s during a render cancels 
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
     await call('create_project', { folder, name: signal, output: { height: 1080 } })
     await call('set_stops', { folder, stops: STOPS })
-    await call('update_project', { folder, set: { look: { theme: 'blank' }, timing: { holdStart: 1, travel: 4, holdEnd: 1 } } })
+    await call('update_project', { folder, sceneSet: { look: { theme: 'blank' }, timing: { holdStart: 1, travel: 4, holdEnd: 1 } } })
     const { jobId, dir } = await call('render', { folder, codec: 'h264' })
     expect(dir).toBeTypeOf('string')
 

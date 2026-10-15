@@ -81,22 +81,23 @@ const wrapped = (shot: Shot): Shot => ({ ...shot, center: [unwrapLng(0, shot.cen
  * (fitted to the route where the project has none) and what validation says.
  */
 function projectResult(project: Project): ToolResult {
-  const route = buildRoute(project)
-  const timeline = buildTimeline(project, route)
-  const shots = resolveShots(project, route)
+  const scene = project.scenes[0]!
+  const route = buildRoute(scene)
+  const timeline = buildTimeline(scene, project.output.fps, route)
+  const shots = resolveShots(scene, project.output.aspect, route)
   const validation = validateProject(project)
   const arrivals = timeline.arrivals.map((a) => ({
     stopId: a.stopId,
-    name: project.stops.find((s) => s.id === a.stopId)?.name ?? '',
+    name: scene.stops.find((s) => s.id === a.stopId)?.name ?? '',
     seconds: a.seconds,
     frame: a.frame,
   }))
   const { width, height } = frameSize(project.output)
-  const stopLines = project.stops.map(
+  const stopLines = scene.stops.map(
     (s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}`,
   )
   const summary = [
-    `${project.name}: ${plural(project.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
+    `${project.name}: ${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
     ...(stopLines.length ? stopLines : ['No stops yet.']),
     validationLine(validation.errors, validation.warnings),
     ...issueLines('error', validation.errors),
@@ -322,10 +323,10 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'update_project',
     description:
-      "Change a project, all or nothing. 'set' is a JSON Merge Patch over any top-level field except stops and legs (for example look.theme, output.height, timing, camera, credit); null deletes a key. 'ops' edits stops and legs: insert_stop, update_stop, remove_stop, move_stop, update_leg. Coordinates are [lng, lat]. The folder must be absolute.",
+      "Change a project, all or nothing. 'set' merge-patches the project's name, output and credit. 'sceneSet' merge-patches the scene's name, timing, look and camera (such as look.theme). null deletes a key. 'ops' edits stops and legs: insert_stop, update_stop, remove_stop, move_stop, update_leg. Order: set, sceneSet, ops. Coordinates are [lng, lat]. The folder must be absolute.",
     input: z.strictObject({ folder, ...ProjectPatchSchema.shape }),
-    async run({ folder, set, ops }) {
-      return projectResult(await mutateProject(folder, (project) => applyPatch(project, { set, ops })))
+    async run({ folder, set, sceneSet, ops }) {
+      return projectResult(await mutateProject(folder, (project) => applyPatch(project, { set, sceneSet, ops })))
     },
   }),
 

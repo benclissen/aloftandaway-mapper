@@ -4,15 +4,14 @@ import type { ExportMarker, ExportPlan, LayerRequest, SceneRenderInput } from '.
 import { RenderError } from './errors.js'
 
 export function adaptV1Scene(p: Project): SceneRenderInput {
-  return { id: p.id, name: p.name, output: p.output, credit: p.credit,
-    content: { timing: p.timing, stops: p.stops, legs: p.legs, look: p.look, camera: p.camera } }
+  return { id: p.id, name: p.name, output: p.output, credit: p.credit, scene: p.scenes[0]! }
 }
 
-/** Temporary v1 browser boundary; metadata is fixed and is not render provenance. */
+/** Temporary browser boundary: a one-scene project for the render page. Metadata is fixed and is not render provenance. */
 export function toPageProject(scene: SceneRenderInput): Project {
-  return { schemaVersion: 1, id: scene.id, name: scene.name,
+  return { schemaVersion: 2, id: scene.id, name: scene.name,
     createdAt: '2000-01-01T00:00:00.000Z', updatedAt: '2000-01-01T00:00:00.000Z',
-    output: scene.output, credit: scene.credit, ...scene.content }
+    output: scene.output, credit: scene.credit, scenes: [scene.scene] }
 }
 
 export function slug(value: string): string {
@@ -42,8 +41,7 @@ export function planExport(project: Project, args: {
   }
 
   const scene = adaptV1Scene(project)
-  const page = toPageProject(scene)
-  const timeline = buildTimeline(page, buildRoute(page))
+  const timeline = buildTimeline(scene.scene, scene.output.fps, buildRoute(scene.scene))
   const range = frameRange(args.range, timeline.totalFrames, fpsValue(scene.output.fps))
   const directory = `01-${slug(project.name)}`
   const passes = ORDER.filter(layer => layers.includes(layer)).map(request => {

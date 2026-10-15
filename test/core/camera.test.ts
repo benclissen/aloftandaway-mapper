@@ -15,7 +15,7 @@ import {
   type Project,
   type Shot,
 } from '../../src/core/index.js'
-import { greekIslands, pacific } from '../fixtures/projects.js'
+import { greekIslands, pacific, sceneOf } from '../fixtures/projects.js'
 
 const shot = (center: LngLat, zoom: number, bearing = 0, pitch = 0): Shot => ({ center, zoom, bearing, pitch })
 
@@ -54,8 +54,8 @@ function expectFramed(s: Shot, bounds: [LngLat, LngLat], aspect: Aspect, padding
 }
 
 const timelineOf = (p: Project) => {
-  const route = buildRoute(p)
-  return { route, tl: buildTimeline(p, route) }
+  const route = buildRoute(sceneOf(p))
+  return { route, tl: buildTimeline(sceneOf(p), p.output.fps, route) }
 }
 
 describe('fitShot', () => {
@@ -94,7 +94,7 @@ describe('fitShot', () => {
 describe('resolveShots', () => {
   test('fits an antimeridian route', () => {
     const p = pacific()
-    const { start } = resolveShots(p, buildRoute(p))
+    const { start } = resolveShots(sceneOf(p), p.output.aspect, buildRoute(sceneOf(p)))
     expect(start.center[0]).toBeGreaterThan(178)
     expect(start.center[0]).toBeLessThan(189)
     expect(start.zoom).toBeGreaterThan(4)
@@ -103,16 +103,16 @@ describe('resolveShots', () => {
   test('fills only the missing shot and uses a supplied one as stored', () => {
     const stored = shot([24, 37], 9, 30, 20)
     const p = greekIslands({ camera: { mode: 'glide', easing: 'linear', start: stored } })
-    const route = buildRoute(p)
-    const { start, end } = resolveShots(p, route)
+    const route = buildRoute(sceneOf(p))
+    const { start, end } = resolveShots(sceneOf(p), p.output.aspect, route)
     expect(start).toEqual(stored)
     expect(end).toEqual(fitShot(route.bounds, '16:9'))
   })
 
   test('fits missing shots in the output aspect', () => {
-    const p = greekIslands({ output: { aspect: '9:16', height: 1080, fps: { num: 25, den: 1 } } })
-    const route = buildRoute(p)
-    expect(resolveShots(p, route).start).toEqual(fitShot(route.bounds, '9:16'))
+    const p = { ...greekIslands(), output: { aspect: '9:16' as const, height: 1080 as const, fps: { num: 25, den: 1 } } }
+    const route = buildRoute(sceneOf(p))
+    expect(resolveShots(sceneOf(p), p.output.aspect, route).start).toEqual(fitShot(route.bounds, '9:16'))
   })
 })
 
@@ -198,7 +198,7 @@ describe('cameraAt', () => {
     const start = shot([25, 37], 7, 15, 10)
     const p = greekIslands({ camera: { mode: 'fixed', easing: 'smooth', start, end: shot([20, 30], 3) } })
     const { route, tl } = timelineOf(p)
-    for (const f of [0, tl.travelStartFrame, 100, tl.totalFrames - 1]) expect(cameraAt(p, route, tl, f)).toEqual(start)
+    for (const f of [0, tl.travelStartFrame, 100, tl.totalFrames - 1]) expect(cameraAt(sceneOf(p), p.output.aspect, route, tl, f)).toEqual(start)
   })
 
   test('glide holds at both ends and passes through endpoints', () => {
@@ -208,9 +208,9 @@ describe('cameraAt', () => {
     const { route, tl } = timelineOf(p)
     expect(tl.travelStartFrame).toBeGreaterThan(0)
     expect(tl.travelEndFrame).toBeLessThan(tl.totalFrames - 1)
-    for (let f = 0; f <= tl.travelStartFrame; f++) expectShotClose(cameraAt(p, route, tl, f), start)
-    for (let f = tl.travelEndFrame; f < tl.totalFrames; f++) expectShotClose(cameraAt(p, route, tl, f), end)
-    const mid = cameraAt(p, route, tl, Math.round((tl.travelStartFrame + tl.travelEndFrame) / 2))
+    for (let f = 0; f <= tl.travelStartFrame; f++) expectShotClose(cameraAt(sceneOf(p), p.output.aspect, route, tl, f), start)
+    for (let f = tl.travelEndFrame; f < tl.totalFrames; f++) expectShotClose(cameraAt(sceneOf(p), p.output.aspect, route, tl, f), end)
+    const mid = cameraAt(sceneOf(p), p.output.aspect, route, tl, Math.round((tl.travelStartFrame + tl.travelEndFrame) / 2))
     expect(mid.center[0]).toBeGreaterThan(start.center[0])
     expect(mid.center[0]).toBeLessThan(end.center[0])
   })
@@ -222,7 +222,7 @@ describe('cameraAt', () => {
     const { route, tl } = timelineOf(p)
     const fly = flyInterpolator(start, end, '16:9')
     for (const f of [tl.travelStartFrame + 7, 120, tl.travelEndFrame - 3]) {
-      expect(cameraAt(p, route, tl, f)).toEqual(fly(ease('smooth', tl.stateAt(f).travelT)))
+      expect(cameraAt(sceneOf(p), p.output.aspect, route, tl, f)).toEqual(fly(ease('smooth', tl.stateAt(f).travelT)))
     }
   })
 
@@ -237,7 +237,7 @@ describe('cameraAt', () => {
     })
     const { route, tl } = timelineOf(glide)
     for (const f of [0, 60, 150, tl.totalFrames - 1]) {
-      expect(cameraAt(follow, route, tl, f)).toEqual(cameraAt(glide, route, tl, f))
+      expect(cameraAt(sceneOf(follow), follow.output.aspect, route, tl, f)).toEqual(cameraAt(sceneOf(glide), glide.output.aspect, route, tl, f))
     }
   })
 
@@ -247,10 +247,10 @@ describe('cameraAt', () => {
     })
     const { route: r, tl } = timelineOf(p)
     const frames = Array.from({ length: tl.totalFrames }, (_, i) => i)
-    const seq = frames.map((f) => cameraAt(p, r, tl, f))
+    const seq = frames.map((f) => cameraAt(sceneOf(p), p.output.aspect, r, tl, f))
     const shuffled = [...frames]
       .reverse()
-      .map((f) => cameraAt(p, r, tl, f))
+      .map((f) => cameraAt(sceneOf(p), p.output.aspect, r, tl, f))
       .reverse()
     expect(shuffled).toEqual(seq)
   })

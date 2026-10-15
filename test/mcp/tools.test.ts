@@ -51,12 +51,13 @@ interface SceneResult {
 }
 
 describe('tools', () => {
-  test('lists the eleven stage-1 tools', async () => {
+  test('lists the tools', async () => {
     const { tools } = await client.listTools()
     expect(tools.map((t) => t.name)).toEqual([
       'create_project',
       'get_project',
       'set_stops',
+      'import_gpx',
       'update_project',
       'validate_project',
       'preview_frame',
@@ -453,5 +454,53 @@ describe('render summaries', () => {
       fcpxmlValidation: 'passed',
     } as never)
     expect(text).toContain('FCPXML validated against the Final Cut Pro DTD.')
+  })
+
+  describe('import_gpx', () => {
+    const gpx = (name: string) => path.resolve(process.cwd(), 'test/fixtures/gpx', name)
+
+    test('import_gpx imports a track with waypoints', async () => {
+      const folder = path.join(tmp, 'gpx')
+      await call('create_project', { folder, name: 'Walk' })
+      const result = await call('import_gpx', { folder, path: gpx('track.gpx'), stops: 'waypoints' })
+      expect(result.isError, text(result)).toBeFalsy()
+      const sc = result.structuredContent as {
+        summary: string
+        project: { scenes: { stops: { name: string }[]; legs: { via: unknown[] }[] }[] }
+        import: { line: { name?: string }; stops: number; skipped: { name: string; km: number }[] }
+      }
+      expect(sc.summary.split('\n')[0]).toMatch(/^Imported \d+ stops from track "Coastal Walk"; skipped 1 waypoint more than 2 km from the track \(Inland Farm, [\d.]+ km\)\.$/)
+      expect(sc.import.stops).toBe(sc.project.scenes[0]!.stops.length)
+      expect(sc.import.line.name).toBe('Coastal Walk')
+      expect(sc.import.skipped.map((s) => s.name)).toEqual(['Inland Farm'])
+      expect(sc.project.scenes[0]!.stops.map((s) => s.name)).not.toContain('Inland Farm')
+    })
+
+    test('import_gpx rejects a relative path', async () => {
+      const folder = path.join(tmp, 'gpx')
+      await call('create_project', { folder, name: 'Walk' })
+      const result = await call('import_gpx', { folder, path: 'test/fixtures/gpx/track.gpx' })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toMatch(/Error: .*absolute/)
+      expect(text(result)).toContain('Fix:')
+    })
+
+    test('import_gpx rejects a non-GPX extension', async () => {
+      const folder = path.join(tmp, 'gpx')
+      await call('create_project', { folder, name: 'Walk' })
+      const result = await call('import_gpx', { folder, path: path.join(tmp, 'walk.txt') })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toMatch(/\.gpx/)
+      expect(text(result)).toContain('Fix:')
+    })
+
+    test('import_gpx turns a GpxError into a tool error with its fix', async () => {
+      const folder = path.join(tmp, 'gpx')
+      await call('create_project', { folder, name: 'Walk' })
+      const result = await call('import_gpx', { folder, path: gpx('track.gpx'), track: 'Nope' })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toContain("Error: No track 'Nope'")
+      expect(text(result)).toContain('Fix: Pass a number from 1 to 1')
+    })
   })
 })

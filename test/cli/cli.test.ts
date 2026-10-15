@@ -72,6 +72,18 @@ test('create, set stops and validate through the tool commands', async () => {
   expect(JSON.parse(validated.stdout).errors).toEqual([])
 })
 
+test('mapper import-gpx --json works', async () => {
+  const folder = path.join(tmp, 'gpx-project')
+  const created = await mapper('create-project', '--json', JSON.stringify({ folder, name: 'Walk' }))
+  expect(created.code, created.stderr).toBe(0)
+  const file = path.join(ROOT, 'test', 'fixtures', 'gpx', 'track.gpx')
+  const imported = await mapper('import-gpx', '--json', JSON.stringify({ folder, path: file }))
+  expect(imported.code, imported.stderr).toBe(0)
+  const out = JSON.parse(imported.stdout)
+  expect(out.import.stops).toBe(2)
+  expect(out.project.scenes[0].stops).toHaveLength(2)
+})
+
 test.each(['render-job', 'render-status', 'cancel-render', 'open-studio'])('%s is not a command', async (name) => {
   const { code, stderr } = await mapper(name)
   expect(code).toBe(2)

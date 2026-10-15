@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
@@ -8,15 +8,20 @@ import {
   buildTimeline,
   formatTimecode,
   frameSize,
+  GpxError,
+  gpxToStops,
+  importGpx,
   LegModeSchema,
   MAP_CREDIT,
   OutputSchema,
+  parseGpx,
   ProjectError,
   ProjectPatchSchema,
   resolveFollow,
   resolveShots,
   setStops,
   StopInputSchema,
+  SymbolKindSchema,
   unwrapLng,
   validateProject,
   zodIssues,
@@ -25,6 +30,7 @@ import {
   type Route,
   type Scene,
   type SeaPaths,
+  type GpxImport,
   type Shot,
 } from '../core/index.js'
 import { contactSheet, PreviewAtSchema, previewFrame } from '../render/preview.js'
@@ -150,6 +156,43 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
 /** `projectResult` for a project just read or written in `folder`, with its sea legs routed first. */
 async function withPaths(folder: string, project: Project): Promise<ToolResult> {
   return projectResult(project, await resolveSeaPaths(folder, project))
+}
+
+// GPX
+
+const MAX_GPX_BYTES = 20 * 1024 * 1024
+
+async function readGpxFile(file: string): Promise<string> {
+  if (!path.isAbsolute(file)) {
+    throw new ToolError(`The GPX path '${file}' is not absolute.`, 'Pass the full path to the file, starting with /.')
+  }
+  if (path.extname(file).toLowerCase() !== '.gpx') {
+    throw new ToolError(`'${path.basename(file)}' does not end in .gpx.`, 'Choose a GPX file, whose name ends in .gpx.')
+  }
+  let size: number
+  try {
+    const info = await stat(file)
+    if (!info.isFile()) throw new Error('not a file')
+    size = info.size
+  } catch {
+    throw new ToolError(`There is no GPX file at ${file}.`, 'Check the path. It must be absolute and point to a file.')
+  }
+  if (size > MAX_GPX_BYTES) {
+    throw new ToolError(
+      `${path.basename(file)} is ${(size / 1024 / 1024).toFixed(1)} MB, more than the 20 MB limit.`,
+      'Trim the track in your GPS app or route planner, then export it again.',
+    )
+  }
+  return readFile(file, 'utf8')
+}
+
+function importLine(imported: GpxImport): string {
+  const { line, stops, skipped } = imported
+  const source = line ? `${line.kind}${line.name ? ` "${line.name}"` : ''}` : 'waypoints'
+  const head = `Imported ${plural(stops.length, 'stop')} from ${source}`
+  if (!skipped.length) return `${head}.`
+  const list = skipped.map((s) => `${s.name}, ${s.km.toFixed(1)} km`).join('; ')
+  return `${head}; skipped ${plural(skipped.length, 'waypoint')} more than 2 km from the track (${list}).`
 }
 
 // Errors
@@ -355,6 +398,36 @@ export const TOOLS: ToolDef<any>[] = [
     }),
     async run({ folder, stops, legMode, replace }) {
       return withPaths(folder, await mutateProject(folder, (project) => setStops(project, { stops, legMode, replace })))
+    },
+  }),
+
+  tool({
+    name: 'import_gpx',
+    description:
+      "Read a local GPX file into the scene's stops, replacing them. stops: 'ends' (default) makes a stop at the start and end of the track; 'waypoints' makes a stop of each named waypoint within 2 km of it. The track between stops becomes simplified via points. track picks a track or route by 1-based index or name. legMode (default 'line') and symbol set every leg. path and folder must be absolute.",
+    input: z.strictObject({
+      folder,
+      path: z.string().describe('Absolute path of a .gpx file, at most 20 MB'),
+      track: z.union([z.number().int().min(1), z.string()]).optional().describe('Track or route, by 1-based index or name'),
+      stops: z.enum(['waypoints', 'ends']).optional().describe("Default 'ends'"),
+      legMode: LegModeSchema.optional().describe("Mode of every leg; default 'line'"),
+      symbol: SymbolKindSchema.optional().describe('Symbol of every leg'),
+    }),
+    async run({ folder, path: file, track, stops, legMode, symbol }) {
+      const text = await readGpxFile(file)
+      let imported: GpxImport
+      try {
+        imported = gpxToStops(parseGpx(text), { track, stops })
+      } catch (e) {
+        if (e instanceof GpxError) throw new ToolError(e.message, e.fix)
+        throw e
+      }
+      const project = await mutateProject(folder, (p) => importGpx(p, imported, { legMode, symbol }))
+      const result = await withPaths(folder, project)
+      return {
+        summary: `${importLine(imported)}\n${result.summary}`,
+        data: { ...result.data, import: { line: imported.line, stops: imported.stops.length, skipped: imported.skipped } },
+      }
     },
   }),
 

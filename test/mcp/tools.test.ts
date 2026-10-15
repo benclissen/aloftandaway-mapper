@@ -39,6 +39,13 @@ function text(result: CallToolResult): string {
   return result.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n')
 }
 
+interface SceneResult {
+  id: string
+  name: string
+  timeline: { durationSeconds: number; totalFrames: number; arrivals: { name: string; frame: number }[] }
+  camera: { resolvedStart: { center: [number, number]; zoom: number }; resolvedEnd: { center: [number, number] } }
+}
+
 describe('tools', () => {
   test('lists the eleven stage-1 tools', async () => {
     const { tools } = await client.listTools()
@@ -55,7 +62,7 @@ describe('tools', () => {
       'render_status',
       'cancel_render',
     ])
-    for (const tool of TOOLS) expect(tool.description.length, tool.name).toBeLessThan(400)
+    for (const tool of TOOLS) expect(tool.description.length, tool.name).toBeLessThan(600)
     expect(tools.find((t) => t.name === 'render')!.description).toContain('Look at a contact sheet before rendering.')
   })
 
@@ -72,11 +79,14 @@ describe('tools', () => {
     const got = await call('get_project', { folder })
     const data = got.structuredContent as {
       project: { scenes: { legs: unknown[] }[] }
-      timeline: { arrivals: { name: string; frame: number }[]; totalFrames: number }
+      scenes: { id: string; timeline: { arrivals: { name: string; frame: number }[]; totalFrames: number } }[]
       validation: { errors: unknown[] }
     }
     expect(data.project.scenes[0]!.legs.length).toBe(3)
-    expect(data.timeline.arrivals.map((a) => a.name)).toEqual(['Piraeus', 'Mykonos', 'Santorini', 'Rhodes'])
+    expect(data).not.toHaveProperty('timeline')
+    expect(data).not.toHaveProperty('camera')
+    expect(data.scenes[0]!.timeline.arrivals.length).toBe(4)
+    expect(data.scenes[0]!.timeline.arrivals.map((a) => a.name)).toEqual(['Piraeus', 'Mykonos', 'Santorini', 'Rhodes'])
     expect(data.validation.errors).toEqual([])
     expect(text(got)).toContain('Mykonos [25.3289, 37.4467]')
     expect(text(got)).toContain('0 errors, 0 warnings')
@@ -93,9 +103,7 @@ describe('tools', () => {
       ],
     })
     for (const result of [set, await call('get_project', { folder })]) {
-      const { camera } = result.structuredContent as {
-        camera: { resolvedStart: { center: [number, number]; zoom: number }; resolvedEnd: { center: [number, number] } }
-      }
+      const { camera } = (result.structuredContent as { scenes: SceneResult[] }).scenes[0]!
       // The fitted centre lies across the antimeridian from Suva, at about −176.7.
       expect(camera.resolvedStart.center[0]).toBeGreaterThan(-180)
       expect(camera.resolvedStart.center[0]).toBeLessThan(-176)
@@ -106,7 +114,7 @@ describe('tools', () => {
     // A stored shot comes back as stored.
     const start = { center: [179.5, -16], zoom: 6, bearing: 0, pitch: 0 }
     const updated = await call('update_project', { folder, sceneSet: { camera: { start } } })
-    expect((updated.structuredContent as { camera: { resolvedStart: unknown } }).camera.resolvedStart).toEqual(start)
+    expect((updated.structuredContent as { scenes: SceneResult[] }).scenes[0]!.camera.resolvedStart).toEqual(start)
   })
 
   test('update_project applies a patch', async () => {
@@ -129,6 +137,49 @@ describe('tools', () => {
     expect(misplaced.isError).toBe(true)
     expect(text(misplaced)).toContain('set.look')
     expect(text(misplaced)).toContain('sceneSet')
+  })
+
+  test('update_project applies sceneSet and via ops', async () => {
+    const folder = path.join(tmp, 'v')
+    await call('create_project', { folder, name: 'V' })
+    await call('set_stops', { folder, stops: STOPS })
+    const via = { at: [24.5, 37.9], sharp: true }
+    const ok = await call('update_project', {
+      folder,
+      sceneSet: { look: { theme: 'blank' } },
+      ops: [{ op: 'insert_via', leg: 0, index: 0, point: via }],
+    })
+    expect(ok.isError, text(ok)).toBeFalsy()
+    const got = await call('get_project', { folder })
+    const project = (got.structuredContent as { project: { scenes: { look: { theme: string }; legs: { via: { at: number[] }[] }[] }[] } }).project
+    expect(project.scenes[0]!.look.theme).toBe('blank')
+    expect(project.scenes[0]!.legs[0]!.via[0]!.at).toEqual([24.5, 37.9])
+  })
+
+  test('the summary lists shaped legs', async () => {
+    const folder = path.join(tmp, 's')
+    await call('create_project', { folder, name: 'S' })
+    await call('set_stops', { folder, stops: STOPS })
+    const result = await call('update_project', {
+      folder,
+      ops: [
+        { op: 'insert_via', leg: 0, index: 0, point: { at: [24, 37.9] } },
+        { op: 'insert_via', leg: 0, index: 1, point: { at: [24.5, 37.8], sharp: true } },
+        { op: 'update_leg', index: 0, changes: { symbol: 'ferry' } },
+        { op: 'update_leg', index: 2, changes: { symbol: 'plane' } },
+      ],
+    })
+    expect(result.isError, text(result)).toBeFalsy()
+    expect(text(result)).toContain('Leg 1 Piraeus → Mykonos: ferry (sea), 2 via points, 1 sharp')
+    expect(text(result)).toContain('Leg 3 Santorini → Rhodes: plane (air)')
+    expect(text(result)).not.toContain('Leg 2')
+  })
+
+  test('descriptions describe version 2', () => {
+    const get = TOOLS.find((t) => t.name === 'get_project')!.description
+    expect(get).toContain('scenes')
+    expect(get).toContain('scenes[0]')
+    expect(TOOLS.find((t) => t.name === 'set_stops')!.description).toContain('symbol')
   })
 
   test('bad update returns a tool error with a fix and leaves the file unchanged', async () => {

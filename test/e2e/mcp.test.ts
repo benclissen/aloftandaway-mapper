@@ -67,6 +67,15 @@ test('agent flow end to end', async () => {
     const validation = await call('validate_project', { folder })
     expect((validation.structuredContent as { errors: unknown[] }).errors).toEqual([])
 
+    const got = await call('get_project', { folder })
+    const data = got.structuredContent as {
+      project: { scenes: { look: { theme: string }; stops: unknown[] }[] }
+      scenes: { timeline: { arrivals: unknown[] } }[]
+    }
+    expect(data.project.scenes[0]!.look.theme).toBe('blank')
+    expect(data.project.scenes[0]!.stops.length).toBe(4)
+    expect(data.scenes[0]!.timeline.arrivals.length).toBe(4)
+
     const frame = await call('preview_frame', { folder, at: { progress: 0.5 }, width: 480 })
     expectImage(frame)
     expect(frame.structuredContent).toMatchObject({ frame: expect.any(Number), path: expect.stringContaining('.mapper') })

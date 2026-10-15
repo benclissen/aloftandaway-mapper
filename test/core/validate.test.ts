@@ -98,6 +98,7 @@ describe('validateProject', () => {
     ])
     // The agent can't see a fitted shot in the project, so the fix says where to find it.
     const fix = warnings.find((w) => w.code === 'zoom-above-max')!.fix!
+    expect(fix).toContain('update_project sceneSet')
     expect(fix).toContain('camera.resolvedStart')
     expect(fix).toContain('camera.resolvedEnd')
   })
@@ -111,6 +112,7 @@ describe('validateProject', () => {
       expect.objectContaining({ code: 'not-available-yet', path: ['scenes', 0, 'legs', 0, 'mode'] }),
     ])
     expect(warnings[0]!.fix).toContain("Use 'line'")
+    expect(warnings[0]!.fix).toContain('update_project')
   })
 
   test('an air leg is a not-available-yet warning too', () => {

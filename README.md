@@ -26,6 +26,10 @@ Stage 1 (agent-driven MVP) built. What works today:
   separate ProRes layers, with an FCPXML that rebuilds them in Final Cut Pro.
   The default MP4 path is done; the Final Cut import check is still
   outstanding for the layered export only. See below.
+- Route editing: via points bend a leg, `sharp` makes a corner, and each leg
+  can have its own transport. The agent changes scene settings (timing, look,
+  camera) with `update_project` `sceneSet`, and the project name, output and
+  credit with `set`.
 - Not yet: sea and air routing (those legs draw as straight lines), the follow
   camera, terrain, vehicle symbols, GPX import.
 

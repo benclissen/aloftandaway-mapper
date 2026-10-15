@@ -20,7 +20,10 @@ page.
 4. `validate_project`. Fix every warning, or explain it to the user.
 5. `preview_contact_sheet` and look at it: framing, labels, stop timing. Use
    `preview_frame` for a closer look at one moment.
-6. Tweak with `update_project`, then check the contact sheet again.
+6. Tweak with `update_project`, then check the contact sheet again. `set`
+   changes the project's name, output and credit. `sceneSet` changes the
+   scene's name, timing, look and camera (for example `look.theme`). `ops`
+   edits stops, legs and via points. Passing `null` removes a key.
 7. `open_studio` and give the user the link. They can scrub the preview, drag
    stops and set start and end shots. It doesn't open a browser itself.
 8. When the user says they're done, call `get_project` and look at the contact
@@ -33,6 +36,26 @@ page.
 10. Report the output paths and the required credit.
 
 `get_project` reads the current state at any point.
+
+## Shaping routes
+
+- Add via points to bend a line around land or a coastline: `insert_via` with
+  `{ "op": "insert_via", "leg": 0, "index": 0, "point": { "at": [lng, lat] } }`.
+  `leg` and `index` count from 0. `update_via` moves or changes one, and
+  `remove_via` deletes it.
+- Mark a stop or a via point `sharp` for a corner. Without it, the line curves
+  through.
+- Set the transport per leg with `update_leg`, for example
+  `{ "op": "update_leg", "index": 1, "changes": { "symbol": "ferry" } }`. A
+  symbol without a mode also sets that transport's usual mode (a ferry sails,
+  a plane flies). In `set_stops`, a stop's `symbol` does the same for the leg
+  leaving it.
+- Check the result with `preview_contact_sheet`.
+- The user may have reshaped the route in the studio. Read `get_project`
+  before changing legs, so you don't undo their edits.
+- Stops, legs, look, camera and timing live in `project.scenes[0]`. The
+  per-scene timeline and resolved camera shots are in `scenes[0]` of the
+  result, next to `project`.
 
 ## Rules
 
@@ -51,7 +74,7 @@ page.
 ## What Mapper can't do yet
 
 - Sea and air legs are drawn as straight lines, with a warning. Add `via`
-  points through `update_project` to steer a leg, or use `line`.
+  points through `update_project` `ops` to steer a leg, or use `line`.
 - The `follow` camera acts as `glide`, with a warning.
 - Terrain isn't available, and neither is any symbol other than `dot` or
   `none` (ship, plane, car, train, walk and arrow). They warn too.

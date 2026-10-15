@@ -21,6 +21,7 @@ import {
   zodIssues,
   type Issue,
   type Project,
+  type Scene,
   type Shot,
 } from '../core/index.js'
 import { contactSheet, PreviewAtSchema, previewFrame } from '../render/preview.js'
@@ -76,42 +77,57 @@ function validationLine(errors: Issue[], warnings: Issue[]): string {
 /** `shot` with its longitude wrapped to ±180, as the schema stores it. Fitted shots can lie beyond 180. */
 const wrapped = (shot: Shot): Shot => ({ ...shot, center: [unwrapLng(0, shot.center[0]), shot.center[1]] })
 
+/** One line for a leg that has a transport or via points; nothing for a plain leg. */
+function legLine(scene: Scene, i: number): string | undefined {
+  const leg = scene.legs[i]!
+  const parts: string[] = []
+  if (leg.symbol) parts.push(`${leg.symbol} (${leg.mode})`)
+  if (leg.via.length) parts.push(plural(leg.via.length, 'via point'))
+  const sharp = leg.via.filter((v) => v.sharp).length
+  if (sharp) parts.push(`${sharp} sharp`)
+  if (!parts.length) return undefined
+  return `Leg ${i + 1} ${scene.stops[i]?.name ?? ''} → ${scene.stops[i + 1]?.name ?? ''}: ${parts.join(', ')}`
+}
+
 /**
- * What every project-changing tool returns: the project, its timeline, the camera's start and end shots as rendered
- * (fitted to the route where the project has none) and what validation says.
+ * What every project-changing tool returns: the project, one entry per scene with its timeline and the camera's start
+ * and end shots as rendered (fitted to the route where the scene has none), and what validation says.
  */
 function projectResult(project: Project): ToolResult {
-  const scene = project.scenes[0]!
-  const route = buildRoute(scene)
-  const timeline = buildTimeline(scene, project.output.fps, route)
-  const shots = resolveShots(scene, project.output.aspect, route)
-  const validation = validateProject(project)
-  const arrivals = timeline.arrivals.map((a) => ({
-    stopId: a.stopId,
-    name: scene.stops.find((s) => s.id === a.stopId)?.name ?? '',
-    seconds: a.seconds,
-    frame: a.frame,
-  }))
   const { width, height } = frameSize(project.output)
-  const stopLines = scene.stops.map(
-    (s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}`,
-  )
+  const lines: string[] = []
+  const scenes = project.scenes.map((scene) => {
+    const route = buildRoute(scene)
+    const timeline = buildTimeline(scene, project.output.fps, route)
+    const shots = resolveShots(scene, project.output.aspect, route)
+    const arrivals = timeline.arrivals.map((a) => ({
+      stopId: a.stopId,
+      name: scene.stops.find((s) => s.id === a.stopId)?.name ?? '',
+      seconds: a.seconds,
+      frame: a.frame,
+    }))
+    lines.push(
+      `${project.name}: ${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
+      ...(scene.stops.length
+        ? scene.stops.map((s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}`)
+        : ['No stops yet.']),
+      ...scene.legs.flatMap((_, i) => legLine(scene, i) ?? []),
+    )
+    return {
+      id: scene.id,
+      name: scene.name,
+      timeline: { durationSeconds: timeline.durationSeconds, totalFrames: timeline.totalFrames, arrivals },
+      camera: { resolvedStart: wrapped(shots.start), resolvedEnd: wrapped(shots.end) },
+    }
+  })
+  const validation = validateProject(project)
   const summary = [
-    `${project.name}: ${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
-    ...(stopLines.length ? stopLines : ['No stops yet.']),
+    ...lines,
     validationLine(validation.errors, validation.warnings),
     ...issueLines('error', validation.errors),
     ...issueLines('warning', validation.warnings),
   ].join('\n')
-  return {
-    summary,
-    data: {
-      project,
-      timeline: { durationSeconds: timeline.durationSeconds, totalFrames: timeline.totalFrames, arrivals },
-      camera: { resolvedStart: wrapped(shots.start), resolvedEnd: wrapped(shots.end) },
-      validation,
-    },
-  }
+  return { summary, data: { project, scenes, validation } }
 }
 
 // Errors
@@ -298,7 +314,7 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'get_project',
     description:
-      'Read a project: stops, legs, look, camera, timing and output, plus arrival times, validation and the shots the camera starts and ends on (camera.resolvedStart and resolvedEnd, fitted to the route when not stored). Stop positions are [lng, lat]. Use it to check the current state before changing anything. The folder must be absolute.',
+      'Read a project: name, output and credit, plus scenes. Stops, legs, look, camera and timing live in project.scenes[0]. The result also has scenes[0].timeline (arrival times) and scenes[0].camera (resolvedStart and resolvedEnd, the shots fitted to the route when none are stored), and validation. Positions are [lng, lat]. Read it before changing anything; the user may have edited in the studio. The folder must be absolute.',
     input: z.strictObject({ folder }),
     async run({ folder }) {
       return projectResult(await loadProject(folder))
@@ -308,7 +324,7 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'set_stops',
     description:
-      "Set a project's stops in travel order. Each stop's 'at' is [lng, lat], longitude first. Replaces all stops unless replace is false, which appends. Makes one leg per pair, with legMode (default 'line'). The folder must be absolute.",
+      "Set a project's stops in travel order. Each stop's 'at' is [lng, lat], longitude first. Replaces all stops unless replace is false, which appends. Makes one leg per pair, with legMode (default 'line'). A stop's 'symbol' is the transport for the leg leaving it, and sets that leg's usual mode when legMode is missing. The folder must be absolute.",
     input: z.strictObject({
       folder,
       stops: z.array(StopInputSchema),
@@ -323,7 +339,7 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'update_project',
     description:
-      "Change a project, all or nothing. 'set' merge-patches the project's name, output and credit. 'sceneSet' merge-patches the scene's name, timing, look and camera (such as look.theme). null deletes a key. 'ops' edits stops and legs: insert_stop, update_stop, remove_stop, move_stop, update_leg. Order: set, sceneSet, ops. Coordinates are [lng, lat]. The folder must be absolute.",
+      "Change a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. 'sceneSet' is a JSON Merge Patch over the scene's name, timing, look and camera. 'ops' edits stops, legs and via points: insert_stop, update_stop, remove_stop, move_stop, update_leg, insert_via, update_via, remove_via. null removes a key. Setting a leg's symbol without a mode also sets that transport's usual mode. Coordinates are [lng, lat]. The folder must be absolute.",
     input: z.strictObject({ folder, ...ProjectPatchSchema.shape }),
     async run({ folder, set, sceneSet, ops }) {
       return projectResult(await mutateProject(folder, (project) => applyPatch(project, { set, sceneSet, ops })))

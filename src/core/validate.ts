@@ -78,7 +78,7 @@ function validateScene(scene: Scene, aspect: Aspect): { errors: Issue[]; warning
           code: 'short-leg',
           message: `${legName(i)} lasts ${+s.toFixed(2)} s`,
           path: ['legs', i],
-          fix: `Raise timing.travel, or merge ${nameOf(i)} and ${nameOf(i + 1)} into one stop.`,
+          fix: `Raise timing.travel with update_project sceneSet, or merge ${nameOf(i)} and ${nameOf(i + 1)} into one stop.`,
         })
       }
     })
@@ -94,7 +94,7 @@ function validateScene(scene: Scene, aspect: Aspect): { errors: Issue[]; warning
           code: 'zoom-above-max',
           message: `The ${look.theme} theme's tiles stop at zoom ${max}, but the camera's ${which} view is at zoom ${zoom.toFixed(1)}`,
           path: ['camera', which, 'zoom'],
-          fix: `Set camera.${which}.zoom to ${max} or less, or set look.theme to 'blank' if you need the deeper zoom.`,
+          fix: `With update_project sceneSet, set camera.${which}.zoom to ${max} or less, or set look.theme to 'blank' if you need the deeper zoom.`,
         })
       } else {
         fitted.push(which)
@@ -109,8 +109,8 @@ function validateScene(scene: Scene, aspect: Aspect): { errors: Issue[]; warning
         message: `The ${look.theme} theme's tiles stop at zoom ${max}, but the fitted ${which} ${fitted.length > 1 ? 'views are' : 'view is'} at zoom ${zoom}`,
         path: ['camera'],
         fix:
-          `Store ${fitted.map((w) => `camera.${w}`).join(' and ')} with a zoom of ${max} or less, or set look.theme to 'blank' if you need the deeper zoom. ` +
-          'get_project shows the fitted shots as camera.resolvedStart and camera.resolvedEnd; start from those.',
+          `With update_project sceneSet, store ${fitted.map((w) => `camera.${w}`).join(' and ')} with a zoom of ${max} or less, or set look.theme to 'blank' if you need the deeper zoom. ` +
+          'get_project shows the fitted shots as scenes[0].camera.resolvedStart and scenes[0].camera.resolvedEnd; start from those.',
       })
     }
   }
@@ -122,7 +122,7 @@ function validateScene(scene: Scene, aspect: Aspect): { errors: Issue[]; warning
         code: 'not-available-yet',
         message: `${legName(i)} is a ${leg.mode} leg, and ${leg.mode} routing isn't available yet`,
         path: ['legs', i, 'mode'],
-        fix: `${name} routing isn't available yet; this leg is drawn as a straight line. Use 'line', or add via points to steer it.`,
+        fix: `${name} routing isn't available yet; this leg is drawn as a straight line. Use 'line' (update_project ops update_leg), or add via points with insert_via to steer it.`,
       })
     }
   })
@@ -132,7 +132,7 @@ function validateScene(scene: Scene, aspect: Aspect): { errors: Issue[]; warning
       code: 'not-available-yet',
       message: "The follow camera isn't available yet",
       path: ['camera', 'mode'],
-      fix: "Follow isn't available yet, so the camera glides instead. Set camera.mode to 'glide'.",
+      fix: "Follow isn't available yet, so the camera glides instead. Set camera.mode to 'glide' with update_project sceneSet.",
     })
   }
 
@@ -141,7 +141,7 @@ function validateScene(scene: Scene, aspect: Aspect): { errors: Issue[]; warning
       code: 'not-available-yet',
       message: "Terrain isn't available yet",
       path: ['look', 'terrain'],
-      fix: "Set look.terrain to false, because terrain isn't available yet.",
+      fix: "Set look.terrain to false with update_project sceneSet, because terrain isn't available yet.",
     })
   }
 
@@ -150,7 +150,7 @@ function validateScene(scene: Scene, aspect: Aspect): { errors: Issue[]; warning
       code: 'not-available-yet',
       message: `The '${look.symbol}' symbol isn't available yet`,
       path: ['look', 'symbol'],
-      fix: "Set look.symbol to 'dot' or 'none'; other symbols aren't available yet.",
+      fix: "Set look.symbol to 'dot' or 'none' with update_project sceneSet; other symbols aren't available yet.",
     })
   }
 

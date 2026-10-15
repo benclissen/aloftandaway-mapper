@@ -15,6 +15,30 @@ interface PointMenuProps {
 /** Gap kept between the menu and the window's edges, in CSS px. */
 const EDGE = 8
 
+/** How long a dismissing press may take to become a click before the click is let through again. */
+const SWALLOW_MS = 1000
+
+/**
+ * Stops the click that follows the press which dismissed the menu, so dismissing never also edits the map (MapLibre's
+ * click comes from the DOM click). The guard goes on the next press or after a while, so it never eats a later click.
+ */
+function swallowNextClick(): void {
+  const stop = (e: MouseEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    done()
+  }
+  const done = () => {
+    clearTimeout(timer)
+    window.removeEventListener('click', stop, true)
+    window.removeEventListener('mousedown', done, true)
+  }
+  const timer = setTimeout(done, SWALLOW_MS)
+  window.addEventListener('click', stop, true)
+  // Added while this press is being dispatched, so it first hears the next one.
+  window.addEventListener('mousedown', done, true)
+}
+
 /** A small menu for one stop or via point. Closes on Escape, a click outside it, or a choice. */
 export function PointMenu({ target, at, sharp, onToggleSharp, onRemove, onClose }: PointMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
@@ -38,7 +62,9 @@ export function PointMenu({ target, at, sharp, onToggleSharp, onRemove, onClose 
       onClose()
     }
     const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onClose()
+      if (ref.current?.contains(e.target as Node)) return
+      onClose()
+      swallowNextClick()
     }
     window.addEventListener('keydown', onKey, true)
     window.addEventListener('mousedown', onDown, true)

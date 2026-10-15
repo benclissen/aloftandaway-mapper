@@ -27,11 +27,11 @@ async function stopAt(folder: string, id: string): Promise<LngLat> {
   return stop.at
 }
 
-/** The point halfway along leg `leg` of the project's route, unwrapped as the route draws it. */
-function legMiddle(project: Project, leg: number): LngLat {
+/** The point `fraction` of the way along leg `leg` of the project's route, unwrapped as the route draws it. */
+function legMiddle(project: Project, leg: number, fraction = 0.5): LngLat {
   const route = buildRoute(sceneOf(project))
   const before = route.legs.slice(0, leg).reduce((sum, l) => sum + l.length, 0)
-  return pointAt(route, before + route.legs[leg]!.length / 2).at
+  return pointAt(route, before + route.legs[leg]!.length * fraction).at
 }
 
 async function center(page: Page, testId: string): Promise<[number, number]> {
@@ -331,6 +331,19 @@ describe('route editing on the map', () => {
     // Alt-click curves the stop through again, which removes the key.
     await page.getByTestId('stop-marker-mykonos').click({ modifiers: ['Alt'] })
     await expect.poll(async () => 'sharp' in sceneOf(await loadProject(folder)).stops.find((s) => s.id === 'mykonos')!).toBe(false)
+  })
+
+  test('a click that dismisses the menu does not edit the route', async () => {
+    const { page, folder } = studio
+    await page.getByTestId('via-marker-1-0').click({ button: 'right' })
+    const menu = page.getByTestId('point-menu')
+    await menu.waitFor()
+    // On the selected leg, away from the handle: without the menu open this click would add a via point.
+    await page.mouse.click(...(await screenPx(legMiddle(await loadProject(folder), 1, 0.25))))
+    await menu.waitFor({ state: 'detached' })
+    await page.waitForTimeout(500)
+    expect(via(await loadProject(folder)).length).toBe(1)
+    expect(await selectedLeg()).toBe('1')
   })
 
   test('removes a via point with Delete', async () => {

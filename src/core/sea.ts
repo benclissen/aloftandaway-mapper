@@ -19,6 +19,8 @@ import {
 
 /** Bump when routing changes, so cached paths are recomputed. */
 export const ROUTER_VERSION = 2
+/** The fallback reason when there is no land data to route with. */
+export const NO_LAND_DATA = "Mapper's land data could not be loaded"
 /** How far a stop or via point may be from the nearest water cell. */
 export const MAX_SNAP_KM = 30
 

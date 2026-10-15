@@ -136,6 +136,18 @@ describe('tools', () => {
     expect(text(set)).toContain('sea route failed: The start stop is more than 30 km from the sea')
   })
 
+  test('a sea leg pulled ashore names the place to 4 decimals', async () => {
+    const folder = path.join(tmp, 'ashore')
+    await call('create_project', { folder, name: 'Ashore' })
+    await call('set_stops', { folder, stops: [STOPS[0], STOPS[3]], legMode: 'sea' })
+    // A via point on Naxos.
+    const updated = await call('update_project', { folder, ops: [{ op: 'insert_via', leg: 0, index: 0, point: { at: [25.45, 37.05] } }] })
+    const line = text(updated)
+      .split('\n')
+      .find((l) => l.startsWith('Leg 1'))
+    expect(line).toMatch(/sea route crosses land near \[-?\d+\.\d{4}, -?\d+\.\d{4}\]/)
+  })
+
   test('project results include the resolved camera shots, wrapped to ±180', async () => {
     const folder = path.join(tmp, 'pacific')
     await call('create_project', { folder, name: 'Pacific' })

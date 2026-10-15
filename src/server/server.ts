@@ -12,6 +12,7 @@ import {
   BASE_HEADER,
   CLIENT_HEADER,
   CLIENT_ID_PATTERN,
+  NO_LAND_DATA,
   ProjectError,
   STALE_BASE_MESSAGE,
   type PatchRequest,
@@ -21,7 +22,7 @@ import {
   type ServerMessage,
 } from '../core/index.js'
 import { loadLand } from './land.js'
-import { resolveSeaPaths } from './paths.js'
+import { resolveSeaPaths, seaLegsOf } from './paths.js'
 import { assertAbsolute, loadProject, mutateProject, PROJECT_FILE, StoreError } from './store.js'
 import { createTileProxy } from './tiles.js'
 
@@ -268,21 +269,37 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   ]
 
   /**
-   * The sea routes for `project`. When they can't be worked out (the land data is missing, say) this answers `{}`, so
-   * sea legs draw as pending lines, and logs the error the first time for each project.
+   * The sea routes for `project`. When they can't be worked out (the land data is missing, say) every sea leg falls
+   * back with the reason, so it draws as a line and the studio and validation say why, and the error is logged the
+   * first time for each project.
    */
   async function seaPathsFor(entry: Registered, project: Project): Promise<SeaPaths> {
     if (!project.scenes.some((scene) => scene.legs.some((leg) => leg.mode === 'sea'))) return {}
-    const work = (async () => resolveSeaPaths(entry.folder, project, { land: await land() }))()
-    resolving.add(work)
-    try {
-      return await work
-    } catch (e) {
+    const failed = (e: unknown, reason: string): SeaPaths => {
       if (!entry.seaPathsFailed) {
         entry.seaPathsFailed = true
         console.error(`Mapper could not work out sea routes for ${entry.folder}:`, e)
       }
-      return {}
+      const paths: SeaPaths = {}
+      for (const key of seaLegsOf(project).keys()) paths[key] = { status: 'fallback', reason, path: [], knots: [] }
+      return paths
+    }
+    const work = (async (): Promise<SeaPaths> => {
+      let source: LandSource
+      try {
+        source = await land()
+      } catch (e) {
+        return failed(e, NO_LAND_DATA)
+      }
+      try {
+        return await resolveSeaPaths(entry.folder, project, { land: source })
+      } catch (e) {
+        return failed(e, 'Mapper could not work out the sea route')
+      }
+    })()
+    resolving.add(work)
+    try {
+      return await work
     } finally {
       resolving.delete(work)
     }

@@ -2,7 +2,7 @@ import { cameraAt, projectToLayout, resolveShots } from './camera.js'
 import { haversineKm } from './geo.js'
 import { buildRoute } from './route.js'
 import { THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
-import type { SeaPaths } from './sea.js'
+import { NO_LAND_DATA, type SeaPaths } from './sea.js'
 import { signBox, signText } from './signs.js'
 import { buildTimeline, formatTimecode, legSeconds, SIGN_FADE_SECONDS } from './timeline.js'
 
@@ -212,7 +212,10 @@ function validateScene(
             code: 'sea-fallback',
             message: `${legName(i)} has no sea route: ${leg.sea.reason ?? 'routing failed'}`,
             path: ['legs', i, 'mode'],
-            fix: "Add via points over open water with insert_via to guide it, move the stop nearer the coast, or set the leg's mode to 'line' with update_leg. It is drawn as a straight line until then.",
+            fix:
+              leg.sea.reason === NO_LAND_DATA
+                ? 'Reinstall Mapper, or run npm run build:land in its folder, then reopen the project. The leg is drawn as a straight line until then.'
+                : "Add via points over open water with insert_via to guide it, move the stop nearer the coast, or set the leg's mode to 'line' with update_leg. It is drawn as a straight line until then.",
           })
         }
       })

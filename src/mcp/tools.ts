@@ -100,7 +100,7 @@ function legLine(scene: Scene, i: number, route: Route): string | undefined {
   else if (drawn?.sea) {
     const { status, reason, crossesLand } = drawn.sea
     if (status === 'fallback') parts.push(`sea route failed: ${reason ?? 'no route found'}`)
-    else if (crossesLand) parts.push(`sea route crosses land near [${crossesLand[0]}, ${crossesLand[1]}]`)
+    else if (crossesLand) parts.push(`sea route crosses land near [${crossesLand[0].toFixed(4)}, ${crossesLand[1].toFixed(4)}]`)
     else parts.push('sea route')
   }
   if (!parts.length) return undefined

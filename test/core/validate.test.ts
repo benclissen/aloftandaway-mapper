@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { seaLegKey, validateProject, type Issue, type Project, type SeaPaths } from '../../src/core/index.js'
+import { NO_LAND_DATA, seaLegKey, validateProject, type Issue, type Project, type SeaPaths } from '../../src/core/index.js'
 import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 const paperLook = { ...sceneOf(greekIslands()).look, theme: 'paper' as const }
@@ -223,6 +223,15 @@ describe('validateProject', () => {
           fix: expect.stringContaining('insert_via'),
         }),
       ])
+    })
+
+    test('points at the land data when a sea leg falls back for lack of it', () => {
+      const { project, key } = seaProject()
+      const seaPaths: SeaPaths = { [key]: { status: 'fallback', reason: NO_LAND_DATA, path: [], knots: [] } }
+      const [found] = validateProject(project, { seaPaths }).warnings.filter((w) => w.code === 'sea-fallback')
+      expect(found?.message).toBe(`Leg 1 (Piraeus → Mykonos) has no sea route: ${NO_LAND_DATA}`)
+      expect(found?.fix).toContain('build:land')
+      expect(found?.fix).not.toContain('insert_via')
     })
 
     test('warns when a sea route crosses land', () => {

@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { WebSocket } from 'ws'
-import { decodeLand, encodeLand, landIndex, seaLegKey, type LandSource, type LngLat, type Project, type ServerMessage } from '../../src/core/index.js'
+import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, seaLegKey, validateProject, type LandSource, type LngLat, type Project, type ServerMessage } from '../../src/core/index.js'
 import { PROJECT_FILE, createProject, loadProject, mutateProject, saveProject } from '../../src/server/store.js'
 import { getServer, startServer, type MapperServer } from '../../src/server/server.js'
 
@@ -576,7 +576,7 @@ describe('sea paths', () => {
     }
   })
 
-  test("sends empty seaPaths when the land data can't load", async () => {
+  test("falls back on every sea leg when the land data can't load", async () => {
     await saveProject(folder, withSeaLeg(await loadProject(folder)))
     const error = console.error
     let logged = 0
@@ -589,9 +589,13 @@ describe('sea paths', () => {
       })
       const body = (await call(seaUrl())).json()
       expect(body.project.id).toBe(project.id)
-      expect(body.seaPaths).toEqual({})
-      expect((await call(seaUrl())).json().seaPaths).toEqual({})
+      const fallback = { status: 'fallback', reason: NO_LAND_DATA, path: [], knots: [] }
+      expect(body.seaPaths).toEqual({ [legKey]: fallback })
+      expect((await call(seaUrl())).json().seaPaths).toEqual({ [legKey]: fallback })
       expect(logged).toBe(1)
+      // Validation says why, so the studio and agents don't wait on a route that won't come.
+      const { warnings } = validateProject(body.project, { seaPaths: body.seaPaths })
+      expect(warnings.find((w) => w.code === 'sea-fallback')?.message).toContain(NO_LAND_DATA)
     } finally {
       console.error = error
     }

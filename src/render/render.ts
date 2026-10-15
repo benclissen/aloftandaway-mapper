@@ -9,7 +9,9 @@ import {
   validateProject,
   type Project,
   type RenderLayer,
+  type SeaPaths,
 } from '../core/index.js'
+import { resolveSeaPaths } from '../server/paths.js'
 import { packageRoot } from '../server/server.js'
 import { assertAbsolute, loadProject, projectHash } from '../server/store.js'
 import { launchBrowser, type LaunchedBrowser } from './chrome.js'
@@ -122,8 +124,10 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
 
   const snapshot = await loadProject(folder)
   const hash = projectHash(snapshot)
-  assertRenderable(snapshot)
-  const plan = planExport(snapshot, { layers: args.layers, codec: args.codec, range: args.range })
+  // Resolved once: validation, the plan and every page load share these paths, so the frame counts agree.
+  const seaPaths = await resolveSeaPaths(folder, snapshot)
+  assertRenderable(snapshot, seaPaths)
+  const plan = planExport(snapshot, { seaPaths, layers: args.layers, codec: args.codec, range: args.range })
   const { fromFrame, toFrame } = plan.passes[0]!
   const frames = toFrame - fromFrame
   const size = frameSize(snapshot.output)
@@ -205,7 +209,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
       active = pass
       const base = completedWork
       const faults = pass === faultPass ? { faultAtFrame: args.faultAtFrame, faultAfterRenderFrame: args.faultAfterRenderFrame } : {}
-      const done = await renderPass({ browser, project: snapshot, scene, pass, dir, signal, h264Encoder, ...faults, onFrame: (n) => report(base + n) })
+      const done = await renderPass({ browser, project: snapshot, seaPaths, scene, pass, dir, signal, h264Encoder, ...faults, onFrame: (n) => report(base + n) })
       completed.push(done)
       completedWork = base + done.frames
       await writeManifest(manifestFile, makeManifest('running'))
@@ -270,8 +274,8 @@ function sceneExports(scenes: PlannedScene[], completed: CompletedPass[], dir: s
   })
 }
 
-function assertRenderable(project: Project): void {
-  const { errors } = validateProject(project)
+function assertRenderable(project: Project, seaPaths: SeaPaths): void {
+  const { errors } = validateProject(project, { seaPaths })
   if (errors.length === 0) return
   throw new RenderError(
     `The project has ${errors.length === 1 ? 'an error' : `${errors.length} errors`} that block a render:\n` +

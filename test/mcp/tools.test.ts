@@ -92,6 +92,30 @@ describe('tools', () => {
     expect(text(got)).toContain('0 errors, 0 warnings')
   })
 
+  test('set_stops with legMode sea reports the sea route', async () => {
+    const folder = path.join(tmp, 'sea')
+    await call('create_project', { folder, name: 'Sea' })
+    const set = await call('set_stops', { folder, stops: STOPS.slice(0, 2), legMode: 'sea' })
+    expect(set.isError).toBeFalsy()
+    expect(text(set)).toContain('sea route')
+    const data = set.structuredContent as { validation: { warnings: { code: string }[] } }
+    expect(data.validation.warnings.map((w) => w.code)).not.toContain('not-available-yet')
+  })
+
+  test('a landlocked sea leg reports the fallback', async () => {
+    const folder = path.join(tmp, 'landlocked')
+    await call('create_project', { folder, name: 'Landlocked' })
+    const set = await call('set_stops', {
+      folder,
+      stops: [
+        { name: 'Bern', at: [7.4474, 46.948] },
+        { name: 'Prague', at: [14.4378, 50.0755] },
+      ],
+      legMode: 'sea',
+    })
+    expect(text(set)).toContain('sea route failed: The start stop is more than 30 km from the sea')
+  })
+
   test('project results include the resolved camera shots, wrapped to ±180', async () => {
     const folder = path.join(tmp, 'pacific')
     await call('create_project', { folder, name: 'Pacific' })
@@ -352,7 +376,7 @@ describe('render tool description', () => {
   test('a layers-only render with no codec is accepted by the planner', async () => {
     const { planExport } = await import('../../src/render/export-plan.js')
     const { greekIslands } = await import('../fixtures/projects.js')
-    expect(() => planExport(greekIslands(), { layers: ['map', 'route', 'signs'] })).not.toThrow()
+    expect(() => planExport(greekIslands(), { seaPaths: {}, layers: ['map', 'route', 'signs'] })).not.toThrow()
   })
 })
 

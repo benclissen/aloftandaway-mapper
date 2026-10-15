@@ -12,6 +12,7 @@ import {
   type Project,
   type Timeline,
 } from '../core/index.js'
+import { resolveSeaPaths } from '../server/paths.js'
 import { loadProject } from '../server/store.js'
 import { launchBrowser } from './chrome.js'
 import { RenderPage } from './page.js'
@@ -149,13 +150,14 @@ interface Loaded {
  */
 async function withProject<T>(folder: string, frameWidth: (aspect: Aspect) => number, use: (loaded: Loaded) => Promise<T>): Promise<T> {
   const project = await loadProject(folder)
+  const seaPaths = await resolveSeaPaths(folder, project)
   const scene = project.scenes[0]!
-  const timeline = buildTimeline(scene, project.output.fps, buildRoute(scene))
+  const timeline = buildTimeline(scene, project.output.fps, buildRoute(scene, seaPaths))
   if (timeline.totalFrames < 1) throw new Error('The project has no frames to preview.')
   const { aspect } = project.output
   const { page, entry } = await pageFor(aspect)
   try {
-    await page.load(project, frameWidth(aspect) / layoutSize(aspect).width, { scene: scene.id })
+    await page.load(project, frameWidth(aspect) / layoutSize(aspect).width, { scene: scene.id, seaPaths })
     return await use({ project, timeline, page })
   } catch (e) {
     evict(aspect, entry, page)

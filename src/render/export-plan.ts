@@ -1,4 +1,4 @@
-import { buildRoute, buildTimeline, fpsValue, type Project, type Scene, type Stop, type Timeline } from '../core/index.js'
+import { buildRoute, buildTimeline, fpsValue, type Project, type Scene, type SeaPaths, type Stop, type Timeline } from '../core/index.js'
 import type { Codec } from './encode.js'
 import type { ExportMarker, ExportPlan, LayerRequest, PlannedScene } from './export-types.js'
 import { RenderError } from './errors.js'
@@ -12,6 +12,8 @@ export function slug(value: string): string {
 const ORDER: LayerRequest[] = ['map', 'route', 'signs', 'all', 'preview']
 
 export function planExport(project: Project, args: {
+  /** The project's resolved sea paths. They change the length of a sea leg, so the arrival frames. */
+  seaPaths: SeaPaths
   layers?: LayerRequest[]
   /** Codec of the flattened `all` clip. Unset means H.264; isolated layers are always ProRes. */
   codec?: Codec
@@ -30,7 +32,7 @@ export function planExport(project: Project, args: {
   }
 
   // Stage 3 renders the first scene. The route and timeline are built once here and carried in the plan.
-  const scene = planScene(project, project.scenes[0]!)
+  const scene = planScene(project, project.scenes[0]!, args.seaPaths)
   const range = frameRange(args.range, scene.totalFrames, fpsValue(project.output.fps))
   const directory = `01-${slug(project.name)}`
   const passes = ORDER.filter(layer => layers.includes(layer)).map(request => {
@@ -44,8 +46,8 @@ export function planExport(project: Project, args: {
   return { scenes: [scene], passes, fcpxml: ['map', 'route', 'signs'].every(layer => layers.includes(layer as LayerRequest)) }
 }
 
-function planScene(project: Project, scene: Scene): PlannedScene {
-  const timeline = buildTimeline(scene, project.output.fps, buildRoute(scene))
+function planScene(project: Project, scene: Scene, seaPaths: SeaPaths): PlannedScene {
+  const timeline = buildTimeline(scene, project.output.fps, buildRoute(scene, seaPaths))
   return { id: scene.id, name: scene.name, scene, totalFrames: timeline.totalFrames, arrivals: timeline.arrivals }
 }
 

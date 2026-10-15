@@ -69,7 +69,7 @@ export function startRenderMode(root: HTMLElement): void {
     get frameCount() {
       return stage ? stage.frameCount : 0
     },
-    async load(input, { pixelRatio, layer = 'all', scene: sceneId, faultAtFrame: fault, faultAfterRenderFrame: faultAfter }) {
+    async load(input, { pixelRatio, layer = 'all', scene: sceneId, seaPaths, faultAtFrame: fault, faultAfterRenderFrame: faultAfter }) {
       if (!(pixelRatio > 0)) throw new RangeError(`pixelRatio must be positive, got ${pixelRatio}`)
       const project = parseProject(input)
       // Checked before the stage is touched, so a bad id leaves the loaded scene as it was.
@@ -90,7 +90,7 @@ export function startRenderMode(root: HTMLElement): void {
       }
       faultAtFrame = fault
       faultAfterRenderFrame = faultAfter
-      await stage.load(project, sceneId)
+      await stage.load(project, sceneId, seaPaths)
       return { frameCount: stage.frameCount }
     },
     async renderFrame(n) {

@@ -104,7 +104,7 @@ describe('writeManifest', () => {
 
 describe('renderPass failures', () => {
   const project = greekIslands()
-  const scene = planExport(project, {}).scenes[0]!
+  const scene = planExport(project, { seaPaths: {} }).scenes[0]!
   const totalFrames = scene.totalFrames
   const browser = {} as Browser
   let frame: Buffer
@@ -145,7 +145,7 @@ describe('renderPass failures', () => {
 
   test('gives up after three recoveries, with every page closed', async () => {
     const dir = await mkdtemp(path.join(tmp, 'exhausted-'))
-    const pass = planExport(project, { layers: ['route'], range: { from: 0, to: 0.4 } }).passes[0]!
+    const pass = planExport(project, { seaPaths: {}, layers: ['route'], range: { from: 0, to: 0.4 } }).passes[0]!
     const pages = fakePages(2)
     const encoders: { out: string; frames: number; finished: boolean }[] = []
     const startEncoder = (args: string[]): PassEncoder => {
@@ -157,15 +157,15 @@ describe('renderPass failures', () => {
         kill: () => undefined,
       }
     }
-    const e = await renderPass({ browser, project, scene, pass, dir, faultAtFrame: 7 }, { openPage: pages.openPage, startEncoder })
+    const e = await renderPass({ browser, project, seaPaths: {}, scene, pass, dir, faultAtFrame: 7 }, { openPage: pages.openPage, startEncoder })
       .then(() => undefined, (error: unknown) => error)
     expect(e).toBeInstanceOf(RenderError)
     expect((e as Error).message).toMatch(/Frame 2 of the route layer failed 4 times, after 3 recoveries/)
     expect(pages.loads).toEqual([
-      { layer: 'route', scene: scene.id, faultAtFrame: 7, faultAfterRenderFrame: undefined },
-      { layer: 'route', scene: scene.id },
-      { layer: 'route', scene: scene.id },
-      { layer: 'route', scene: scene.id },
+      { layer: 'route', scene: scene.id, seaPaths: {}, faultAtFrame: 7, faultAfterRenderFrame: undefined },
+      { layer: 'route', scene: scene.id, seaPaths: {} },
+      { layer: 'route', scene: scene.id, seaPaths: {} },
+      { layer: 'route', scene: scene.id, seaPaths: {} },
     ])
     expect(pages.openPages()).toBe(0)
     // Frames 0 and 1 went to the first segment, which was finished before the first recovery.
@@ -184,9 +184,9 @@ describe('renderPass failures', () => {
       { mode: 0o755 },
     )
     process.env.PATH = `${bin}:${previousPath}`
-    const pass = planExport(project, { layers: ['map'], range: { from: 0, to: 0.4 } }).passes[0]!
+    const pass = planExport(project, { seaPaths: {}, layers: ['map'], range: { from: 0, to: 0.4 } }).passes[0]!
     const pages = fakePages(Infinity)
-    const e = await renderPass({ browser, project, scene, pass, dir }, { openPage: pages.openPage, startEncoder: Encoder.start })
+    const e = await renderPass({ browser, project, seaPaths: {}, scene, pass, dir }, { openPage: pages.openPage, startEncoder: Encoder.start })
       .then(() => undefined, (error: unknown) => error)
     expect(e).toBeInstanceOf(Error)
     expect((e as Error).message).toMatch(/ffmpeg exited with code 1[\s\S]*fake encoder failure/)

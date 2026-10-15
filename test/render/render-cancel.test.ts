@@ -102,7 +102,7 @@ describe('cancelling a pass', () => {
       '../../src/render/render-pass.js',
     )
     const project = greekIslands()
-    const plan = planExport(project, { layers: ['route'], range: { from: 0, to: 0.2 } })
+    const plan = planExport(project, { seaPaths: {}, layers: ['route'], range: { from: 0, to: 0.2 } })
     const pass = plan.passes[0]!
     const controller = new AbortController()
     let closed!: () => void

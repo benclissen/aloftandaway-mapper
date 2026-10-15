@@ -7,6 +7,7 @@ import {
   type Aspect,
   type Project,
   type RenderPageOptions,
+  type SeaPaths,
 } from '../core/index.js'
 import { Encoder, ffmpegArgs, joinSegments, pickH264Encoder, type Codec, type H264Encoder, type ProresProfile } from './encode.js'
 import { RenderCancelled, RenderError } from './errors.js'
@@ -58,6 +59,8 @@ export interface RenderPassArgs {
   browser: Browser
   /** The project snapshot the render was planned from. The page loads it and shows `scene`. */
   project: Project
+  /** The sea paths the render was planned with. Every page loads them so its frame count matches the plan's. */
+  seaPaths: SeaPaths
   scene: PlannedScene
   pass: RenderPass
   /** The render folder. `pass.path` is relative to it. */
@@ -83,7 +86,7 @@ export interface RenderPassArgs {
  * An ffmpeg failure is not a page fault and fails the pass at once. A failed pass leaves its segments behind.
  */
 export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_DEPS): Promise<CompletedPass> {
-  const { browser, project, scene, pass, dir, signal } = args
+  const { browser, project, seaPaths, scene, pass, dir, signal } = args
   throwIfAborted(signal)
   const { output } = project
   const size = frameSize(output)
@@ -122,7 +125,7 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
     loading = opened
     try {
       throwIfAborted(signal)
-      const frameCount = await opened.load(project, outputScale(output), { layer: pass.layer, scene: scene.id, ...faults })
+      const frameCount = await opened.load(project, outputScale(output), { layer: pass.layer, scene: scene.id, seaPaths, ...faults })
       if (frameCount !== scene.totalFrames) {
         throw new Error(`The render page counted ${frameCount} frames, but the timeline has ${scene.totalFrames}.`)
       }

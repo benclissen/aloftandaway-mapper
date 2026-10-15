@@ -1,5 +1,6 @@
 import type { ProjectPatch } from './patch.js'
 import type { Project } from './schema.js'
+import type { SeaPaths } from './sea.js'
 
 /** How render mode's error for map data that failed to load begins. Node recognises it by this text. */
 export const MAP_DATA_ERROR = 'The map could not load its data'
@@ -42,6 +43,8 @@ export interface RenderPageOptions {
   layer?: RenderLayer
   /** The id of the scene to show. The project's first scene when left out. */
   scene?: string
+  /** The resolved sea paths of the project, so the page draws the routes Node resolved. Plain JSON. */
+  seaPaths?: SeaPaths
   faultAtFrame?: number
   faultAfterRenderFrame?: number
 }

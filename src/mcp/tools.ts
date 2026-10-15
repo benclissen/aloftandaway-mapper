@@ -21,12 +21,15 @@ import {
   zodIssues,
   type Issue,
   type Project,
+  type Route,
   type Scene,
+  type SeaPaths,
   type Shot,
 } from '../core/index.js'
 import { contactSheet, PreviewAtSchema, previewFrame } from '../render/preview.js'
 import { cancelRender, renderStatus, startRenderJob, type RenderStatus } from '../render/jobs.js'
 import type { RenderResult } from '../render/render.js'
+import { resolveSeaPaths } from '../server/paths.js'
 import { fixOf } from '../server/errors.js'
 import { getServer } from '../server/server.js'
 import { assertAbsolute, createProject, loadProject, mutateProject } from '../server/store.js'
@@ -78,13 +81,21 @@ function validationLine(errors: Issue[], warnings: Issue[]): string {
 const wrapped = (shot: Shot): Shot => ({ ...shot, center: [unwrapLng(0, shot.center[0]), shot.center[1]] })
 
 /** One line for a leg that has a transport or via points; nothing for a plain leg. */
-function legLine(scene: Scene, i: number): string | undefined {
+function legLine(scene: Scene, i: number, route: Route): string | undefined {
   const leg = scene.legs[i]!
   const parts: string[] = []
   if (leg.symbol) parts.push(`${leg.symbol} (${leg.mode})`)
   if (leg.via.length) parts.push(plural(leg.via.length, 'via point'))
   const sharp = leg.via.filter((v) => v.sharp).length
   if (sharp) parts.push(`${sharp} sharp`)
+  const drawn = route.legs[i]
+  if (drawn?.drawnAs === 'air') parts.push('flight arc')
+  else if (drawn?.sea) {
+    const { status, reason, crossesLand } = drawn.sea
+    if (status === 'fallback') parts.push(`sea route failed: ${reason ?? 'no route found'}`)
+    else if (crossesLand) parts.push(`sea route crosses land near [${crossesLand[0]}, ${crossesLand[1]}]`)
+    else parts.push('sea route')
+  }
   if (!parts.length) return undefined
   return `Leg ${i + 1} ${scene.stops[i]?.name ?? ''} → ${scene.stops[i + 1]?.name ?? ''}: ${parts.join(', ')}`
 }
@@ -93,11 +104,11 @@ function legLine(scene: Scene, i: number): string | undefined {
  * What every project-changing tool returns: the project, one entry per scene with its timeline and the camera's start
  * and end shots as rendered (fitted to the route where the scene has none), and what validation says.
  */
-function projectResult(project: Project): ToolResult {
+function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
   const { width, height } = frameSize(project.output)
   const lines: string[] = []
   const scenes = project.scenes.map((scene) => {
-    const route = buildRoute(scene)
+    const route = buildRoute(scene, seaPaths)
     const timeline = buildTimeline(scene, project.output.fps, route)
     const shots = resolveShots(scene, project.output.aspect, route)
     const arrivals = timeline.arrivals.map((a) => ({
@@ -111,7 +122,7 @@ function projectResult(project: Project): ToolResult {
       ...(scene.stops.length
         ? scene.stops.map((s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}`)
         : ['No stops yet.']),
-      ...scene.legs.flatMap((_, i) => legLine(scene, i) ?? []),
+      ...scene.legs.flatMap((_, i) => legLine(scene, i, route) ?? []),
     )
     return {
       id: scene.id,
@@ -120,7 +131,7 @@ function projectResult(project: Project): ToolResult {
       camera: { resolvedStart: wrapped(shots.start), resolvedEnd: wrapped(shots.end) },
     }
   })
-  const validation = validateProject(project)
+  const validation = validateProject(project, { seaPaths })
   const summary = [
     ...lines,
     validationLine(validation.errors, validation.warnings),
@@ -128,6 +139,11 @@ function projectResult(project: Project): ToolResult {
     ...issueLines('warning', validation.warnings),
   ].join('\n')
   return { summary, data: { project, scenes, validation } }
+}
+
+/** `projectResult` for a project just read or written in `folder`, with its sea legs routed first. */
+async function withPaths(folder: string, project: Project): Promise<ToolResult> {
+  return projectResult(project, await resolveSeaPaths(folder, project))
 }
 
 // Errors
@@ -307,7 +323,7 @@ export const TOOLS: ToolDef<any>[] = [
       output: OutputSchema.partial().optional().describe('Aspect, height (the short side) or fps'),
     }),
     async run({ folder, name, output }) {
-      return projectResult(await createProject(folder, name, output))
+      return withPaths(folder, await createProject(folder, name, output))
     },
   }),
 
@@ -317,7 +333,7 @@ export const TOOLS: ToolDef<any>[] = [
       'Read a project: name, output and credit, plus scenes. Stops, legs, look, camera and timing live in project.scenes[0]. The result also has scenes[0].timeline (arrival times) and scenes[0].camera (resolvedStart and resolvedEnd, the shots fitted to the route when none are stored), and validation. Positions are [lng, lat]. Read it before changing anything; the user may have edited in the studio. The folder must be absolute.',
     input: z.strictObject({ folder }),
     async run({ folder }) {
-      return projectResult(await loadProject(folder))
+      return withPaths(folder, await loadProject(folder))
     },
   }),
 
@@ -332,7 +348,7 @@ export const TOOLS: ToolDef<any>[] = [
       replace: z.boolean().optional().describe('Default true; false appends to the existing stops'),
     }),
     async run({ folder, stops, legMode, replace }) {
-      return projectResult(await mutateProject(folder, (project) => setStops(project, { stops, legMode, replace })))
+      return withPaths(folder, await mutateProject(folder, (project) => setStops(project, { stops, legMode, replace })))
     },
   }),
 
@@ -342,7 +358,7 @@ export const TOOLS: ToolDef<any>[] = [
       "Change a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. 'sceneSet' is a JSON Merge Patch over the scene's name, timing, look and camera. 'ops' edits stops, legs and via points: insert_stop, update_stop, remove_stop, move_stop, update_leg, insert_via, update_via, remove_via. null removes a key. Setting a leg's symbol without a mode also sets that transport's usual mode. Coordinates are [lng, lat]. The folder must be absolute.",
     input: z.strictObject({ folder, ...ProjectPatchSchema.shape }),
     async run({ folder, set, sceneSet, ops }) {
-      return projectResult(await mutateProject(folder, (project) => applyPatch(project, { set, sceneSet, ops })))
+      return withPaths(folder, await mutateProject(folder, (project) => applyPatch(project, { set, sceneSet, ops })))
     },
   }),
 
@@ -352,7 +368,8 @@ export const TOOLS: ToolDef<any>[] = [
       "Check a project for problems before you preview or render it. Errors block a render; warnings don't. Every issue says how to fix it. The folder must be absolute.",
     input: z.strictObject({ folder }),
     async run({ folder }) {
-      const { errors, warnings } = validateProject(await loadProject(folder))
+      const project = await loadProject(folder)
+      const { errors, warnings } = validateProject(project, { seaPaths: await resolveSeaPaths(folder, project) })
       const summary = [validationLine(errors, warnings), ...issueLines('error', errors), ...issueLines('warning', warnings)].join('\n')
       return { summary, data: { errors, warnings } }
     },

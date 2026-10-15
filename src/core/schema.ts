@@ -234,6 +234,8 @@ export const StopInputSchema = z.strictObject({
   sign: SignVisibilitySchema.optional(),
   terminal: z.boolean().optional(),
   ref: z.string().optional(),
+  /** Sets the symbol of the leg leaving this stop; unless `legMode` is given, also its mode. */
+  symbol: SymbolKindSchema.optional(),
   legMode: LegModeSchema.optional(),
 })
 export type StopInput = z.infer<typeof StopInputSchema>

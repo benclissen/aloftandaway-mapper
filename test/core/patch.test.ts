@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   ProjectError,
+  buildRoute,
   ProjectPatchSchema,
   applyPatch,
   mergePatch,
@@ -11,7 +12,7 @@ import {
   type StopInput,
   type StopOp,
 } from '../../src/core/index.js'
-import { emptyProject, greekIslands, sceneOf, stopsAt } from '../fixtures/projects.js'
+import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 const s = (name: string, at: LngLat = [0, 0]): StopInput => ({ name, at })
 
@@ -421,3 +422,105 @@ describe('applyPatch sceneSet', () => {
   })
 })
 
+
+describe('via ops and clearing fields', () => {
+  const via = (p: Project, leg = 0) => sceneOf(p).legs[leg]!.via
+  const ins = (p: Project, index: number, point: { at: LngLat; sharp?: boolean }) =>
+    applyPatch(p, { ops: [{ op: 'insert_via', leg: 0, index, point }] })
+
+  test('insert_via adds a point at the index', () => {
+    let p = ins(greekIslands(), 0, { at: [24, 37.5] })
+    p = ins(p, 1, { at: [24.5, 37.6], sharp: true })
+    p = ins(p, 1, { at: [24.2, 37.55] })
+    expect(via(p).map((v) => v.at[0])).toEqual([24, 24.2, 24.5])
+    expect(via(p)[2]).toEqual({ at: [24.5, 37.6], sharp: true })
+    expect(via(greekIslands())).toEqual([])
+  })
+
+  test('update_via moves and toggles sharp', () => {
+    let p = ins(greekIslands(), 0, { at: [24, 37.5] })
+    p = applyPatch(p, { ops: [{ op: 'update_via', leg: 0, index: 0, changes: { at: [24.1, 37.6], sharp: true } }] })
+    expect(via(p)).toEqual([{ at: [24.1, 37.6], sharp: true }])
+  })
+
+  test('update_via with sharp null removes the key', () => {
+    let p = ins(greekIslands(), 0, { at: [24, 37.5], sharp: true })
+    p = applyPatch(p, { ops: [{ op: 'update_via', leg: 0, index: 0, changes: { sharp: null } }] })
+    expect(via(p)[0]).toEqual({ at: [24, 37.5] })
+    expect(via(p)[0]).not.toHaveProperty('sharp')
+  })
+
+  test('remove_via removes the point', () => {
+    let p = ins(greekIslands(), 0, { at: [24, 37.5] })
+    p = ins(p, 1, { at: [24.5, 37.6] })
+    p = applyPatch(p, { ops: [{ op: 'remove_via', leg: 0, index: 0 }] })
+    expect(via(p).map((v) => v.at[0])).toEqual([24.5])
+  })
+
+  test('via ops reject out-of-range leg and via indexes', () => {
+    const base = ins(greekIslands(), 0, { at: [24, 37.5] })
+    const withVia = applyPatch(base, { ops: [{ op: 'insert_via', leg: 0, index: 1, point: { at: [24.5, 37.5] } }, { op: 'insert_via', leg: 0, index: 2, point: { at: [24.6, 37.5] } }] })
+    const e1 = failure(() => applyPatch(withVia, { ops: [{ op: 'insert_via', leg: 3, index: 0, point: { at: [1, 1] } }] }))
+    expect(e1.issues[0]).toMatchObject({ path: ['ops', 0, 'leg'], message: 'leg index 3 is out of range; use 0 to 2' })
+    const e2 = failure(() => applyPatch(withVia, { ops: [{ op: 'insert_via', leg: 0, index: 4, point: { at: [1, 1] } }] }))
+    expect(e2.issues[0]).toMatchObject({ path: ['ops', 0, 'index'], message: 'via index 4 is out of range; use 0 to 3' })
+    const e3 = failure(() => applyPatch(withVia, { ops: [{ op: 'remove_via', leg: 0, index: 3 }] }))
+    expect(e3.issues[0]).toMatchObject({ path: ['ops', 0, 'index'], message: 'via index 3 is out of range; use 0 to 2' })
+    const e5 = failure(() => applyPatch(greekIslands(), { ops: [{ op: 'remove_via', leg: 0, index: 0 }] }))
+    expect(e5.issues[0]).toMatchObject({ path: ['ops', 0, 'index'], message: 'via index 0 is out of range; there are no via points' })
+    const e4 = failure(() => applyPatch(greekIslands(), { ops: [{ op: 'insert_via', leg: 0, index: 1, point: { at: [1, 1] } }] }))
+    expect(e4.issues[0]).toMatchObject({ path: ['ops', 0, 'index'], message: 'via index 1 is out of range; use 0 to 0' })
+  })
+
+  test('update_stop with label null removes the label', () => {
+    let p = applyPatch(greekIslands(), { ops: [{ op: 'update_stop', id: 'piraeus', changes: { label: 'Port', sharp: true, day: 1 } }] })
+    expect(sceneOf(p).stops[0]).toMatchObject({ label: 'Port', sharp: true, day: 1 })
+    p = applyPatch(p, { ops: [{ op: 'update_stop', id: 'piraeus', changes: { label: null, sharp: null, day: null, terminal: null, ref: null } }] })
+    for (const k of ['label', 'sharp', 'day', 'terminal', 'ref']) expect(sceneOf(p).stops[0]).not.toHaveProperty(k)
+  })
+
+  test('null for a required key is a schema error at the op path', () => {
+    const e1 = failure(() => applyPatch(greekIslands(), { ops: [{ op: 'update_stop', id: 'piraeus', changes: { name: null } as never }] }))
+    expect(e1.issues[0]?.path.slice(0, 3)).toEqual(['ops', 0, 'changes'])
+    const e2 = failure(() => applyPatch(greekIslands(), { ops: [{ op: 'update_leg', index: 0, changes: { mode: null } as never }] }))
+    expect(e2.issues[0]?.path.slice(0, 3)).toEqual(['ops', 0, 'changes'])
+  })
+
+  test('update_leg symbol sets the default mode', () => {
+    const leg = (changes: object) => sceneOf(applyPatch(greekIslands(), { ops: [{ op: 'update_leg', index: 0, changes }] })).legs[0]
+    expect(leg({ symbol: 'ferry' })).toMatchObject({ mode: 'sea', symbol: 'ferry' })
+    expect(leg({ symbol: 'plane', mode: 'line' })).toMatchObject({ mode: 'line', symbol: 'plane' })
+    const withSym = applyPatch(greekIslands(), { ops: [{ op: 'update_leg', index: 0, changes: { symbol: 'ferry' } }] })
+    const cleared = sceneOf(applyPatch(withSym, { ops: [{ op: 'update_leg', index: 0, changes: { symbol: null } }] })).legs[0]!
+    expect(cleared).not.toHaveProperty('symbol')
+    expect(cleared.mode).toBe('sea')
+  })
+
+  test('update_leg via replaces the via list', () => {
+    const p = applyPatch(greekIslands(), { ops: [{ op: 'update_leg', index: 0, changes: { via: [{ at: [24, 37.5], sharp: true }] } }] })
+    expect(via(p)).toEqual([{ at: [24, 37.5], sharp: true }])
+  })
+
+  test('set_stops symbol sets the leaving leg', () => {
+    const two = (extra: object) =>
+      sceneOf(setStops(emptyProject(), { stops: [{ ...s('A'), ...extra }, s('B', [1, 1])] })).legs[0]
+    expect(two({ symbol: 'train' })).toEqual({ mode: 'land', symbol: 'train', via: [] })
+    expect(two({ symbol: 'train', legMode: 'line' })).toEqual({ mode: 'line', symbol: 'train', via: [] })
+  })
+
+  test('insert_via with a wrapped point keeps the Pacific route continuous', () => {
+    const base = pacific()
+    const before = buildRoute(sceneOf(base)).length
+    const after = buildRoute(sceneOf(ins(base, 0, { at: [-179.9, -17.4] }))).length
+    expect(Math.abs(after - before) / before).toBeLessThan(0.01)
+  })
+
+  test('ops are all or nothing', () => {
+    const base = greekIslands()
+    const copy = structuredClone(base)
+    failure(() =>
+      applyPatch(base, { ops: [{ op: 'insert_via', leg: 0, index: 0, point: { at: [24, 37.5] } }, { op: 'remove_via', leg: 0, index: 5 }] }),
+    )
+    expect(base).toEqual(copy)
+  })
+})

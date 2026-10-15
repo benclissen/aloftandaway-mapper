@@ -2,6 +2,10 @@ import { z } from 'zod'
 import {
   LegModeSchema,
   LegSchema,
+  LngLatSchema,
+  SymbolKindSchema,
+  ViaPointSchema,
+  defaultModeFor,
   ProjectError,
   StopInputSchema,
   StopSchema,
@@ -13,6 +17,8 @@ import {
   type ProjectIssue,
   type Scene,
   type Stop,
+  type SymbolKind,
+  type ViaPoint,
   type StopInput,
 } from './schema.js'
 
@@ -20,12 +26,44 @@ import {
 
 const index = z.number().int().min(0)
 
+const clearable = <T extends z.ZodType>(schema: T) => schema.nullable().optional()
+
+const StopChangesSchema = StopSchema.omit({ id: true })
+  .partial()
+  .extend({
+    label: clearable(z.string()),
+    terminal: clearable(z.boolean()),
+    sharp: clearable(z.boolean()),
+    day: clearable(z.number().int()),
+    ref: clearable(z.string()),
+  })
+
+const LegChangesSchema = LegSchema.partial().extend({ symbol: clearable(SymbolKindSchema) })
+
+/** Applies `changes` over `target`: a `null` removes an (optional) key. Required keys never reach here as null. */
+function withChanges<T extends object>(target: T, changes: object): T {
+  const result = { ...target } as Record<string, unknown>
+  for (const [key, value] of Object.entries(changes)) {
+    if (value === null) delete result[key]
+    else if (value !== undefined) result[key] = value
+  }
+  return result as T
+}
+
 const StopOpSchema = z.discriminatedUnion('op', [
   z.strictObject({ op: z.literal('insert_stop'), index, stop: StopInputSchema }),
-  z.strictObject({ op: z.literal('update_stop'), id: z.string(), changes: StopSchema.omit({ id: true }).partial() }),
+  z.strictObject({ op: z.literal('update_stop'), id: z.string(), changes: StopChangesSchema }),
   z.strictObject({ op: z.literal('remove_stop'), id: z.string() }),
   z.strictObject({ op: z.literal('move_stop'), id: z.string(), index }),
-  z.strictObject({ op: z.literal('update_leg'), index, changes: LegSchema.partial() }),
+  z.strictObject({ op: z.literal('update_leg'), index, changes: LegChangesSchema }),
+  z.strictObject({ op: z.literal('insert_via'), leg: index, index, point: ViaPointSchema }),
+  z.strictObject({
+    op: z.literal('update_via'),
+    leg: index,
+    index,
+    changes: z.strictObject({ at: LngLatSchema.optional(), sharp: clearable(z.boolean()) }),
+  }),
+  z.strictObject({ op: z.literal('remove_via'), leg: index, index }),
 ])
 export type StopOp = z.infer<typeof StopOpSchema>
 
@@ -98,7 +136,7 @@ export function newStopId(): string {
 }
 
 function toStop(input: StopInput): Stop {
-  const { legMode: _legMode, pause, sign, ...rest } = input
+  const { legMode: _legMode, symbol: _symbol, pause, sign, ...rest } = input
   return { id: newStopId(), ...rest, pause: pause ?? 0, sign: sign ?? 'always' }
 }
 
@@ -107,6 +145,8 @@ function toStop(input: StopInput): Stop {
 interface LegHints {
   /** Mode for the leg leaving each of these stops (from a new stop's `legMode`). */
   leaving?: Map<string, LegMode>
+  /** Symbol for the leg leaving each of these stops (from a new stop's `symbol`). */
+  symbols?: Map<string, SymbolKind>
   /** Mode for any other new leg, ahead of the old project's legs. */
   fallback?: LegMode
 }
@@ -132,8 +172,9 @@ function syncLegs(old: { stops: Stop[]; legs: Leg[] }, stops: Stop[], hints: Leg
     const a = stops[i]!
     const kept = byPair.get(JSON.stringify([a.id, b.id]))
     if (kept) return kept
-    const mode = hints.leaving?.get(a.id) ?? hints.fallback ?? leaving.get(a.id)?.mode ?? arriving.get(b.id)?.mode ?? 'line'
-    return { mode, via: [] }
+    const symbol = hints.symbols?.get(a.id)
+    const mode = hints.leaving?.get(a.id) ?? (symbol && defaultModeFor(symbol)) ?? hints.fallback ?? leaving.get(a.id)?.mode ?? arriving.get(b.id)?.mode ?? 'line'
+    return symbol ? { mode, via: [], symbol } : { mode, via: [] }
   })
 }
 
@@ -161,11 +202,15 @@ export function setStops(
   const work = structuredClone(project)
   const scene = work.scenes[0]!
   const old = args.replace === false ? { stops: scene.stops, legs: scene.legs } : { stops: [], legs: [] }
-  const added = inputs.map((input) => ({ stop: toStop(input), legMode: input.legMode }))
+  const added = inputs.map((input) => ({ stop: toStop(input), legMode: input.legMode, symbol: input.symbol }))
   const stops = [...old.stops, ...added.map((a) => a.stop)]
   const leaving = new Map<string, LegMode>()
-  for (const { stop, legMode: mode } of added) if (mode) leaving.set(stop.id, mode)
-  work.scenes[0] = { ...scene, stops, legs: syncLegs(old, stops, { leaving, fallback: legMode }) }
+  const symbols = new Map<string, SymbolKind>()
+  for (const { stop, legMode: mode, symbol } of added) {
+    if (mode) leaving.set(stop.id, mode)
+    if (symbol) symbols.set(stop.id, symbol)
+  }
+  work.scenes[0] = { ...scene, stops, legs: syncLegs(old, stops, { leaving, symbols, fallback: legMode }) }
   return parseProject(work)
 }
 
@@ -187,11 +232,12 @@ function applyOp(scene: Scene, op: StopOp, at: number): Scene {
       const stop = toStop(op.stop)
       const stops = scene.stops.toSpliced(op.index, 0, stop)
       const leaving = op.stop.legMode ? new Map([[stop.id, op.stop.legMode]]) : undefined
-      return { ...scene, stops, legs: syncLegs(old, stops, { leaving }) }
+      const symbols = op.stop.symbol ? new Map([[stop.id, op.stop.symbol]]) : undefined
+      return { ...scene, stops, legs: syncLegs(old, stops, { leaving, symbols }) }
     }
     case 'update_stop': {
       const i = stopIndex(op.id)
-      return { ...scene, stops: scene.stops.map((s, j) => (j === i ? { ...s, ...op.changes } : s)) }
+      return { ...scene, stops: scene.stops.map((s, j) => (j === i ? withChanges(s, op.changes) : s)) }
     }
     case 'remove_stop': {
       const stops = scene.stops.toSpliced(stopIndex(op.id), 1)
@@ -210,7 +256,28 @@ function applyOp(scene: Scene, op: StopOp, at: number): Scene {
         const range = scene.legs.length ? `use 0 to ${scene.legs.length - 1}` : 'there are no legs'
         fail(['ops', at, 'index'], `leg index ${op.index} is out of range; ${range}`)
       }
-      return { ...scene, legs: scene.legs.map((l, j) => (j === op.index ? { ...l, ...op.changes } : l)) }
+      const { symbol, mode } = op.changes
+      const changes = symbol && !mode ? { ...op.changes, mode: defaultModeFor(symbol) } : op.changes
+      return { ...scene, legs: scene.legs.map((l, j) => (j === op.index ? withChanges(l, changes) : l)) }
+    }
+    case 'insert_via':
+    case 'update_via':
+    case 'remove_via': {
+      if (op.leg >= scene.legs.length) {
+        const range = scene.legs.length ? `use 0 to ${scene.legs.length - 1}` : 'there are no legs'
+        fail(['ops', at, 'leg'], `leg index ${op.leg} is out of range; ${range}`)
+      }
+      const via = scene.legs[op.leg]!.via
+      const max = op.op === 'insert_via' ? via.length : via.length - 1
+      if (op.index > max) {
+        const range = max >= 0 ? `use 0 to ${max}` : 'there are no via points'
+        fail(['ops', at, 'index'], `via index ${op.index} is out of range; ${range}`)
+      }
+      let next: ViaPoint[]
+      if (op.op === 'insert_via') next = via.toSpliced(op.index, 0, op.point)
+      else if (op.op === 'remove_via') next = via.toSpliced(op.index, 1)
+      else next = via.map((v, j) => (j === op.index ? withChanges(v, op.changes) : v))
+      return { ...scene, legs: scene.legs.map((l, j) => (j === op.leg ? { ...l, via: next } : l)) }
     }
   }
 }

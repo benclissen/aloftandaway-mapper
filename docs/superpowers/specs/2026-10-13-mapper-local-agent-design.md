@@ -16,6 +16,27 @@ only to the flattened clip. The layers are always ProRes, and an explicit
 `h264` codec with them is an error. The rendering and output sections below
 describe the layered export unless they say otherwise.
 
+**Revision, 2026-10-15 (stage 3 decisions):**
+
+- Version 2 carries the full `SymbolKind` list now, so files migrate only
+  once. Transports without their own drawing yet show as the dot. `ThemeId`
+  stays `paper | blank` until stage 5 adds themes.
+- The version 1 upgrade gives the one scene the project's id, so its id is
+  stable across loads before the file is first saved as version 2.
+- `update_project`'s `set` covers only `name`, `output` and `credit`;
+  `sceneSet` covers the scene's `name`, `timing`, `look` and `camera`.
+  `update_leg` takes `symbol: null` to clear a leg's transport.
+- The curve runs smoothly through stops between neighbouring `line` or `land`
+  legs, not just within a leg. A `sharp` stop or via point makes a corner.
+- Studio: via handles show only for the selected leg. Click a leg's line or
+  its row in the legs panel to select it; click the selected leg's line to
+  insert a via point there. Escape deselects. A faint line shows the whole
+  route in the studio (never in renders).
+- Undo is kept in the studio. Each edit stores the inverse patch computed by
+  `core`. Every patch carries the studio's client id and the server echoes it
+  as the broadcast's `origin`; a broadcast from any other origin clears the
+  history.
+
 ## Purpose
 
 Mapper turns a trip into an animated map clip for a travel film. An AI agent

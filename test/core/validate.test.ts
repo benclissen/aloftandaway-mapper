@@ -123,12 +123,26 @@ describe('validateProject', () => {
     expect(codes(validateProject(project, { seaPaths }).warnings)).toContain('short-leg')
   })
 
-  test('the follow camera is a not-available-yet warning', () => {
+  test('follow no longer warns as unavailable', () => {
     const project = greekIslands()
     sceneOf(project).camera = { ...sceneOf(project).camera, mode: 'follow' }
+    expect(validateProject(project)).toEqual({ errors: [], warnings: [] })
+  })
+
+  test('follow.zoom above the theme maximum warns', () => {
+    const project = greekIslands({
+      look: paperLook,
+      camera: { mode: 'follow', easing: 'smooth', follow: { zoom: 15, orient: 'north', lookAhead: 1, smoothing: 0.5 } },
+    })
     expect(validateProject(project).warnings).toEqual([
-      expect.objectContaining({ code: 'not-available-yet', path: ['scenes', 0, 'camera', 'mode'] }),
+      expect.objectContaining({
+        code: 'zoom-above-max',
+        path: ['scenes', 0, 'camera', 'follow', 'zoom'],
+        fix: expect.stringContaining('camera.follow.zoom'),
+      }),
     ])
+    sceneOf(project).camera.follow!.zoom = 14
+    expect(validateProject(project).warnings).toEqual([])
   })
 
   test('terrain is a not-available-yet warning', () => {

@@ -121,12 +121,14 @@ function validateScene(
     }
   }
 
-  if (camera.mode === 'follow') {
+  const followZoom = camera.mode === 'follow' ? camera.follow?.zoom : undefined
+  if (followZoom !== undefined && followZoom > THEME_MAX_ZOOM[look.theme]) {
+    const max = THEME_MAX_ZOOM[look.theme]
     warnings.push({
-      code: 'not-available-yet',
-      message: "The follow camera isn't available yet",
-      path: ['camera', 'mode'],
-      fix: "Follow isn't available yet, so the camera glides instead. Set camera.mode to 'glide' with update_project sceneSet.",
+      code: 'zoom-above-max',
+      message: `The ${look.theme} theme's tiles stop at zoom ${max}, but the follow camera is at zoom ${followZoom.toFixed(1)}`,
+      path: ['camera', 'follow', 'zoom'],
+      fix: `With update_project sceneSet, set camera.follow.zoom to ${max} or less, or set look.theme to 'blank' if you need the deeper zoom.`,
     })
   }
 

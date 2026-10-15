@@ -43,7 +43,11 @@ interface SceneResult {
   id: string
   name: string
   timeline: { durationSeconds: number; totalFrames: number; arrivals: { name: string; frame: number }[] }
-  camera: { resolvedStart: { center: [number, number]; zoom: number }; resolvedEnd: { center: [number, number] } }
+  camera: {
+    resolvedStart: { center: [number, number]; zoom: number }
+    resolvedEnd: { center: [number, number] }
+    resolvedFollow?: { zoom: number; orient: string; lookAhead: number; smoothing: number }
+  }
 }
 
 describe('tools', () => {
@@ -139,6 +143,17 @@ describe('tools', () => {
     const start = { center: [179.5, -16], zoom: 6, bearing: 0, pitch: 0 }
     const updated = await call('update_project', { folder, sceneSet: { camera: { start } } })
     expect((updated.structuredContent as { scenes: SceneResult[] }).scenes[0]!.camera.resolvedStart).toEqual(start)
+  })
+
+  test('project results include the follow settings in use when the camera follows', async () => {
+    const folder = path.join(tmp, 'follow')
+    await call('create_project', { folder, name: 'Follow' })
+    const set = await call('set_stops', { folder, stops: STOPS })
+    expect((set.structuredContent as { scenes: SceneResult[] }).scenes[0]!.camera.resolvedFollow).toBeUndefined()
+    const updated = await call('update_project', { folder, sceneSet: { camera: { mode: 'follow' } } })
+    const { camera } = (updated.structuredContent as { scenes: SceneResult[] }).scenes[0]!
+    expect(camera.resolvedFollow).toEqual({ zoom: expect.any(Number), orient: 'north', lookAhead: 1, smoothing: 0.5 })
+    expect(camera.resolvedFollow!.zoom).toBeGreaterThan(camera.resolvedStart.zoom)
   })
 
   test('update_project applies a patch', async () => {

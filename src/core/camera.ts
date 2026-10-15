@@ -1,6 +1,6 @@
 import { toLngLat, toXY, unwrapLng, type XY } from './geo.js'
 import type { Route } from './route.js'
-import { layoutSize, type Aspect, type LngLat, type Scene, type Shot } from './schema.js'
+import { fpsValue, layoutSize, THEME_MAX_ZOOM, type Aspect, type LngLat, type Scene, type Shot } from './schema.js'
 import { ease, type Timeline } from './timeline.js'
 
 /** Tile size in layout px. The world is `TILE_SIZE · 2^zoom` layout px across at `zoom`. */
@@ -105,11 +105,119 @@ export function flyInterpolator(a: Shot, b: Shot, aspect: Aspect): (u: number) =
   }
 }
 
+export interface FollowSettings {
+  zoom: number
+  orient: 'north' | 'heading'
+  /** Seconds ahead of the head that the camera aims at. */
+  lookAhead: number
+  /** Seconds; the smoothing rate is `1 / smoothing` per second. 0 tracks the target exactly. */
+  smoothing: number
+}
+
+/** Follow-camera zoom above the fitted route zoom when none is stored. */
+const FOLLOW_ZOOM_IN = 3
+
+/**
+ * The scene's follow settings: `camera.follow` if stored, otherwise north-up, a second of look-ahead, half a second of
+ * smoothing and a zoom 3 steps in from the route's fitted zoom, capped at the theme's maximum.
+ */
+export function resolveFollow(scene: Scene, aspect: Aspect, route: Route): FollowSettings {
+  if (scene.camera.follow) return scene.camera.follow
+  const zoom = Math.min(fitShot(route.bounds, aspect).zoom + FOLLOW_ZOOM_IN, THEME_MAX_ZOOM[scene.look.theme])
+  return { zoom, orient: 'north', lookAhead: 1, smoothing: 0.5 }
+}
+
+/** Centre and bearing for every frame. Longitude and bearing are unwrapped across frames. */
+interface FollowTrack {
+  centers: LngLat[]
+  bearings: number[]
+}
+
+const followTracks = new WeakMap<Timeline, { key: string; track: FollowTrack }>()
+
+/** One exact step of a critically damped spring towards `target`. */
+function dampedStep(x: number, v: number, target: number, dt: number, omega: number): [number, number] {
+  const e = Math.exp(-omega * dt)
+  const d = x - target
+  const k = v + omega * d
+  return [target + (d + k * dt) * e, (v - omega * k * dt) * e]
+}
+
+/**
+ * Smooth `xs` with a critically damped spring run forward from the first frame, then backward over that result from
+ * the last. The backward pass cancels the forward pass's lag.
+ */
+function smoothZeroLag(xs: number[], dt: number, omega: number): number[] {
+  const n = xs.length
+  const fwd = new Array<number>(n)
+  let x = xs[0]!
+  let v = 0
+  fwd[0] = x
+  for (let i = 1; i < n; i++) {
+    ;[x, v] = dampedStep(x, v, xs[i]!, dt, omega)
+    fwd[i] = x
+  }
+  const out = new Array<number>(n)
+  x = fwd[n - 1]!
+  v = 0
+  out[n - 1] = x
+  for (let i = n - 2; i >= 0; i--) {
+    ;[x, v] = dampedStep(x, v, fwd[i]!, dt, omega)
+    out[i] = x
+  }
+  return out
+}
+
+function buildFollowTrack(timeline: Timeline, follow: FollowSettings): FollowTrack {
+  const rate = fpsValue(timeline.fps)
+  const ahead = Math.round(follow.lookAhead * rate)
+  const centers: LngLat[] = []
+  const bearings: number[] = []
+  for (let f = 0; f < timeline.totalFrames; f++) {
+    const held = clamp(f, timeline.travelStartFrame, timeline.travelEndFrame)
+    const { at, heading } = timeline.stateAt(held + ahead).head
+    const prev = centers[f - 1]
+    centers.push(prev ? [unwrapLng(prev[0], at[0]), at[1]] : [at[0], at[1]])
+    const bearing = follow.orient === 'heading' ? heading : 0
+    const prevBearing = bearings[f - 1]
+    bearings.push(prevBearing === undefined ? bearing : prevBearing + normaliseBearing(bearing - prevBearing))
+  }
+  if (follow.smoothing <= 0 || centers.length < 2) return { centers, bearings: bearings.map(normaliseBearing) }
+
+  const dt = 1 / rate
+  const omega = 1 / follow.smoothing
+  const xy = centers.map(toXY)
+  const xs = smoothZeroLag(xy.map((p) => p[0]), dt, omega)
+  const ys = smoothZeroLag(xy.map((p) => p[1]), dt, omega)
+  return {
+    centers: xs.map((x, i) => toLngLat([x, ys[i]!])),
+    bearings: smoothZeroLag(bearings, dt, omega).map(normaliseBearing),
+  }
+}
+
+/** The follow track for `timeline`, built once per timeline and camera, aspect and theme. */
+function followTrack(scene: Scene, aspect: Aspect, timeline: Timeline, follow: FollowSettings): FollowTrack {
+  const key = JSON.stringify([scene.camera, aspect, scene.look.theme])
+  const cached = followTracks.get(timeline)
+  if (cached?.key === key) return cached.track
+  const track = buildFollowTrack(timeline, follow)
+  followTracks.set(timeline, { key, track })
+  return track
+}
+
 /**
  * The map view on `frame`. `fixed` holds `start`. `glide` flies from `start` to `end` across the travel section with
- * `camera.easing` applied once to the overall travel progress, holding at both ends. `follow` acts as `glide` for now.
+ * `camera.easing` applied once to the overall travel progress, holding at both ends. `follow` centres on the head
+ * `lookAhead` seconds ahead, holding on travel's first and last frames, smoothed without lag.
  */
 export function cameraAt(scene: Scene, aspect: Aspect, route: Route, timeline: Timeline, frame: number): Shot {
+  if (scene.camera.mode === 'follow') {
+    const follow = resolveFollow(scene, aspect, route)
+    const track = followTrack(scene, aspect, timeline, follow)
+    const f = clamp(Math.round(frame), 0, track.centers.length - 1)
+    const [lng, lat] = track.centers[f]!
+    return { center: [lng, lat], zoom: follow.zoom, bearing: track.bearings[f]!, pitch: scene.camera.start?.pitch ?? 0 }
+  }
   const { start, end } = resolveShots(scene, aspect, route)
   if (scene.camera.mode === 'fixed') {
     const [lng, lat] = start.center

@@ -13,6 +13,7 @@ import {
   OutputSchema,
   ProjectError,
   ProjectPatchSchema,
+  resolveFollow,
   resolveShots,
   setStops,
   StopInputSchema,
@@ -102,7 +103,8 @@ function legLine(scene: Scene, i: number, route: Route): string | undefined {
 
 /**
  * What every project-changing tool returns: the project, one entry per scene with its timeline and the camera's start
- * and end shots as rendered (fitted to the route where the scene has none), and what validation says.
+ * and end shots as rendered (fitted to the route where the scene has none), the follow settings in use when the camera
+ * follows, and what validation says.
  */
 function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
   const { width, height } = frameSize(project.output)
@@ -128,7 +130,11 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
       id: scene.id,
       name: scene.name,
       timeline: { durationSeconds: timeline.durationSeconds, totalFrames: timeline.totalFrames, arrivals },
-      camera: { resolvedStart: wrapped(shots.start), resolvedEnd: wrapped(shots.end) },
+      camera: {
+        resolvedStart: wrapped(shots.start),
+        resolvedEnd: wrapped(shots.end),
+        ...(scene.camera.mode === 'follow' ? { resolvedFollow: resolveFollow(scene, project.output.aspect, route) } : {}),
+      },
     }
   })
   const validation = validateProject(project, { seaPaths })
@@ -330,7 +336,7 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'get_project',
     description:
-      'Read a project: name, output and credit, plus scenes. Stops, legs, look, camera and timing live in project.scenes[0]. The result also has scenes[0].timeline (arrival times) and scenes[0].camera (resolvedStart and resolvedEnd, the shots fitted to the route when none are stored), and validation. Positions are [lng, lat]. Read it before changing anything; the user may have edited in the studio. The folder must be absolute.',
+      'Read a project: name, output and credit, plus scenes. Stops, legs, look, camera and timing live in project.scenes[0]. The result also has scenes[0].timeline (arrival times) and scenes[0].camera (resolvedStart and resolvedEnd, the shots fitted to the route when none are stored, and resolvedFollow, the follow settings in use, when camera.mode is follow), and validation. Positions are [lng, lat]. Read it before changing anything; the user may have edited in the studio. The folder must be absolute.',
     input: z.strictObject({ folder }),
     async run({ folder }) {
       return withPaths(folder, await loadProject(folder))

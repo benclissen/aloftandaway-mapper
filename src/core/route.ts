@@ -10,6 +10,11 @@ export interface RouteLeg {
   /** Distance along this leg at each point: `cum[0] = 0`, `cum.at(-1) = length`. */
   cum: number[]
   length: number
+  /**
+   * Indices into `path` and `xy` of the start stop, each via point in order, and the end stop.
+   * Always `via.length + 2` long; coincident points share an index.
+   */
+  knots: number[]
   /** The mode has no router yet, so the leg is drawn as a line. */
   notAvailable?: boolean
 }
@@ -67,23 +72,61 @@ function curveThrough(points: XY[]): XY[] {
   return out
 }
 
-function buildLeg(mode: LegMode, points: LngLat[]): RouteLeg {
-  const first = points[0]!
-  const last = points[points.length - 1]!
-  const control: XY[] = []
-  for (const p of points) {
-    const xy = toXY(p)
-    const prev = control[control.length - 1]
-    if (!prev || prev[0] !== xy[0] || prev[1] !== xy[1]) control.push(xy)
+/** A stop or via point, unwrapped. */
+interface Control {
+  at: LngLat
+  sharp: boolean
+}
+
+/** Whether a leg's line may curve through its end stops into neighbouring legs. */
+const curves = (mode: LegMode) => mode === 'line' || mode === 'land'
+
+/**
+ * Sample one curve through `controls`, with a corner at each sharp point. Returns the
+ * samples and, for each control, the index of its sample. Coincident neighbours share one.
+ */
+function sampleChain(controls: Control[]): { xy: XY[]; at: number[] } {
+  // Merge coincident neighbours: the curve needs distinct points.
+  const points: XY[] = []
+  const sharp: boolean[] = []
+  const owner: number[] = []
+  for (const c of controls) {
+    const xy = toXY(c.at)
+    const prev = points[points.length - 1]
+    if (prev && prev[0] === xy[0] && prev[1] === xy[1]) sharp[sharp.length - 1] ||= c.sharp
+    else {
+      points.push(xy)
+      sharp.push(c.sharp)
+    }
+    owner.push(points.length - 1)
   }
-  // Everything coincides: a zero-length leg that still has both ends.
-  const xy = control.length === 1 ? [control[0]!, control[0]!] : curveThrough(control)
+  // Everything coincides: a zero-length line that still has both ends.
+  if (points.length === 1) return { xy: [points[0]!, points[0]!], at: controls.map((_, i) => (i === 0 ? 0 : 1)) }
+
+  // Split at interior sharp points. Neighbouring runs share their corner sample.
+  const xy: XY[] = []
+  const pointAtSample: number[] = [0]
+  let runStart = 0
+  for (let i = 1; i < points.length; i++) {
+    if (i < points.length - 1 && !sharp[i]) continue
+    const run = points.slice(runStart, i + 1)
+    const step = run.length < 3 ? 1 : SAMPLES_PER_SPAN
+    const offset = Math.max(xy.length - 1, 0)
+    for (let j = 1; j < run.length; j++) pointAtSample[runStart + j] = offset + j * step
+    const samples = curveThrough(run)
+    xy.push(...(xy.length === 0 ? samples : samples.slice(1)))
+    runStart = i
+  }
+  return { xy, at: owner.map((o) => pointAtSample[o]!) }
+}
+
+function makeLeg(mode: LegMode, xy: XY[], controls: Control[], knots: number[]): RouteLeg {
   const path = xy.map(toLngLat)
-  path[0] = first
-  path[path.length - 1] = last
+  // Stops and via points sit exactly on their own coordinates.
+  knots.forEach((k, i) => (path[k] = controls[i]!.at))
   const cum = [0]
   for (let i = 1; i < xy.length; i++) cum.push(cum[i - 1]! + dist(xy[i - 1]!, xy[i]!))
-  const leg: RouteLeg = { mode, drawnAs: 'line', path, xy, cum, length: cum[cum.length - 1]! }
+  const leg: RouteLeg = { mode, drawnAs: 'line', path, xy, cum, length: cum[cum.length - 1]!, knots }
   if (mode === 'sea' || mode === 'air') leg.notAvailable = true
   return leg
 }
@@ -101,14 +144,50 @@ export function buildRoute(scene: Scene): Route {
     prevLng = unwrapLng(prevLng, p[0])
     return [prevLng, p[1]]
   }
-  let from = unwrap(stops[0]!.at)
+  const specs = stops.slice(1).map((_, i) => scene.legs[i] ?? { mode: 'line' as const, via: [] })
+  const stopAt: LngLat[] = [unwrap(stops[0]!.at)]
+  const viaAt: Control[][] = []
+  specs.forEach((spec, i) => {
+    viaAt.push(spec.via.map((v) => ({ at: unwrap(v.at), sharp: v.sharp === true })))
+    stopAt.push(unwrap(stops[i + 1]!.at))
+  })
+
+  // One curve runs through each chain of `line` and `land` legs. A sharp stop ends a
+  // chain, and a sea or air leg is a chain on its own.
   const legs: RouteLeg[] = []
-  for (let i = 0; i < stops.length - 1; i++) {
-    const spec = scene.legs[i] ?? { mode: 'line' as const, via: [] }
-    const via = spec.via.map((v) => unwrap(v.at))
-    const to = unwrap(stops[i + 1]!.at)
-    legs.push(buildLeg(spec.mode, [from, ...via, to]))
-    from = to
+  for (let first = 0; first < specs.length; ) {
+    let last = first
+    while (
+      curves(specs[last]!.mode) &&
+      last + 1 < specs.length &&
+      curves(specs[last + 1]!.mode) &&
+      stops[last + 1]!.sharp !== true
+    )
+      last++
+    const controls: Control[] = [{ at: stopAt[first]!, sharp: false }]
+    const stopControl = [0]
+    for (let i = first; i <= last; i++) {
+      controls.push(...viaAt[i]!, { at: stopAt[i + 1]!, sharp: false })
+      stopControl.push(controls.length - 1)
+    }
+    const chain = sampleChain(controls)
+    for (let i = first; i <= last; i++) {
+      const from = stopControl[i - first]!
+      const to = stopControl[i - first + 1]!
+      const legControls = controls.slice(from, to + 1)
+      const lo = chain.at[from]!
+      const hi = chain.at[to]!
+      if (hi === lo) {
+        // A zero-length leg still has a start and an end point.
+        const p = chain.xy[lo]!
+        const knots = legControls.map((_, j) => (j === legControls.length - 1 ? 1 : 0))
+        legs.push(makeLeg(specs[i]!.mode, [p, p], legControls, knots))
+      } else {
+        const knots = chain.at.slice(from, to + 1).map((k) => k - lo)
+        legs.push(makeLeg(specs[i]!.mode, chain.xy.slice(lo, hi + 1), legControls, knots))
+      }
+    }
+    first = last + 1
   }
 
   let length = 0
@@ -126,6 +205,45 @@ export function buildRoute(scene: Scene): Route {
     }
   }
   return { legs, length, bounds: [[west, south], [east, north]] }
+}
+
+/** `lng` shifted by whole turns into [-180, 180). */
+function wrapLng(lng: number): number {
+  return ((((lng + 180) % 360) + 360) % 360) - 180
+}
+
+/**
+ * The point of leg `legIndex` nearest to `at`, whose longitude may be wrapped or not.
+ * The returned `at` is wrapped to ±180. `insertIndex` is the `via` index a new point
+ * there should take. `distance` is in Mercator units.
+ */
+export function nearestOnLeg(
+  route: Route,
+  legIndex: number,
+  at: LngLat,
+): { at: LngLat; insertIndex: number; distance: number } {
+  const leg = route.legs[legIndex]
+  if (!leg) throw new RangeError(`No leg ${legIndex}`)
+  const q0 = toXY([unwrapLng(leg.path[0]![0], at[0]), at[1]])
+  let best = { distance: Infinity, segment: 0, point: leg.xy[0]! }
+  // A long leg can reach more than half a turn from its start, so try the next worlds too.
+  for (const shift of [0, -1, 1]) {
+    const q: XY = [q0[0] + shift, q0[1]]
+    for (let i = 0; i < leg.xy.length - 1; i++) {
+      const a = leg.xy[i]!
+      const b = leg.xy[i + 1]!
+      const dx = b[0] - a[0]
+      const dy = b[1] - a[1]
+      const len2 = dx * dx + dy * dy
+      const t = len2 === 0 ? 0 : Math.min(1, Math.max(0, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / len2))
+      const point: XY = [a[0] + dx * t, a[1] + dy * t]
+      const distance = dist(q, point)
+      if (distance < best.distance) best = { distance, segment: i, point }
+    }
+  }
+  const insertIndex = leg.knots.slice(1, -1).filter((k) => k <= best.segment).length
+  const [lng, lat] = toLngLat(best.point)
+  return { at: [wrapLng(lng), lat], insertIndex, distance: best.distance }
 }
 
 interface Located {

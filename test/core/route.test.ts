@@ -6,12 +6,15 @@ import {
   LngLatSchema,
   MAX_LAT,
   headingDeg,
+  nearestOnLeg,
   pointAt,
   slicePath,
   toLngLat,
   toXY,
   unwrapLng,
   type LngLat,
+  type RouteLeg,
+  type XY,
 } from '../../src/core/index.js'
 import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
 
@@ -215,7 +218,9 @@ describe('pointAt', () => {
   })
 
   test('interpolates along a straight leg with the right heading', () => {
-    const r = buildRoute(sceneOf(stopsAt([[0, 0], [90, 0], [90, 40]])))
+    // The middle stop is sharp, so both legs stay straight.
+    const base = sceneOf(stopsAt([[0, 0], [90, 0], [90, 40]]))
+    const r = buildRoute({ ...base, stops: base.stops.map((s, i) => (i === 1 ? { ...s, sharp: true } : s)) })
     const mid = pointAt(r, 0.125)
     expect(mid.at[0]).toBeCloseTo(45, 9)
     expect(mid.at[1]).toBeCloseTo(0, 9)
@@ -279,8 +284,10 @@ describe('slicePath', () => {
 
   test('is a prefix of the full path up to the head', () => {
     const base = sceneOf(stopsAt([[0, 0], [20, 0], [40, 10]]))
+    // The middle stop is sharp, so the second leg is a straight two-point line.
     const r = buildRoute({
       ...base,
+      stops: base.stops.map((s, i) => (i === 1 ? { ...s, sharp: true } : s)),
       legs: [{ mode: 'line', via: [{ at: [10, 10] }] }, { mode: 'line', via: [] }],
     })
     const full = slicePath(r, r.length)
@@ -299,5 +306,112 @@ describe('slicePath', () => {
     const r = buildRoute(sceneOf(greekIslands()))
     const slice = slicePath(r, r.legs[0]!.length)
     expect(slice).toEqual(r.legs[0]!.path)
+  })
+})
+
+/** Unsigned turn in degrees, in [0, 180], from the step a→b to the step b→c. */
+function turn(a: XY, b: XY, c: XY): number {
+  const d = Math.abs(headingDeg(b, c) - headingDeg(a, b)) % 360
+  return d > 180 ? 360 - d : d
+}
+
+/** Turn at the joint of two legs: last segment of `a` against the first segment of `b`. */
+function jointTurn(a: RouteLeg, b: RouteLeg): number {
+  return turn(a.xy.at(-2)!, a.xy.at(-1)!, b.xy[1]!)
+}
+
+function expectStraight(leg: RouteLeg) {
+  for (let i = 2; i < leg.xy.length; i++) expect(turn(leg.xy[i - 2]!, leg.xy[i - 1]!, leg.xy[i]!)).toBeLessThan(0.5)
+}
+
+describe('curves and corners', () => {
+  test('curves through a stop between two line legs', () => {
+    const r = buildRoute(sceneOf(stopsAt([[0, 0], [1, 0], [1, 1]])))
+    expect(jointTurn(r.legs[0]!, r.legs[1]!)).toBeLessThan(15)
+  })
+
+  test('makes a corner at a sharp stop', () => {
+    const p = stopsAt([[0, 0], [1, 0], [1, 1]])
+    const scene = sceneOf(p)
+    const r = buildRoute({ ...scene, stops: scene.stops.map((s, i) => (i === 1 ? { ...s, sharp: true } : s)) })
+    const t = jointTurn(r.legs[0]!, r.legs[1]!)
+    expect(t).toBeGreaterThan(85)
+    expect(t).toBeLessThan(95)
+    expectStraight(r.legs[0]!)
+    expectStraight(r.legs[1]!)
+  })
+
+  test('makes a corner at a sharp via point', () => {
+    const base = sceneOf(stopsAt([[0, 0], [2, 0]]))
+    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [{ at: [1, 1], sharp: true }] }] })
+    const leg = r.legs[0]!
+    const k = leg.knots[1]!
+    expect(leg.path[k]).toEqual([1, 1])
+    expect(turn(leg.xy[k - 1]!, leg.xy[k]!, leg.xy[k + 1]!)).toBeGreaterThan(60)
+  })
+
+  test('breaks the curve at a sea or air leg', () => {
+    const base = sceneOf(stopsAt([[0, 0], [1, 0], [1, 1]]))
+    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [] }, { mode: 'sea', via: [] }] })
+    const straight = turn(toXY([0, 0]), toXY([1, 0]), toXY([1, 1]))
+    expect(jointTurn(r.legs[0]!, r.legs[1]!)).toBeCloseTo(straight, 6)
+  })
+
+  test('knots stay aligned when points coincide', () => {
+    const base = sceneOf(stopsAt([[0, 0], [10, 5]]))
+    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [{ at: [0, 0] }] }] })
+    const leg = r.legs[0]!
+    expect(leg.knots).toHaveLength(3)
+    expect(leg.path[leg.knots[0]!]).toEqual([0, 0])
+    expect(leg.path[leg.knots[1]!]).toEqual([0, 0])
+    expect(leg.path[leg.knots[2]!]).toEqual([10, 5])
+  })
+
+  test('every leg has knots, including sea and air legs', () => {
+    const base = sceneOf(greekIslands())
+    const r = buildRoute({ ...base, legs: [{ mode: 'air', via: [] }, { mode: 'sea', via: [{ at: [25.5, 37] }] }, base.legs[2]!] })
+    expect(r.legs.map((l) => l.knots.length)).toEqual([2, 3, 2])
+    for (const leg of r.legs) {
+      expect(leg.knots[0]).toBe(0)
+      expect(leg.knots.at(-1)).toBe(leg.path.length - 1)
+    }
+  })
+
+  test('still passes exactly through every stop', () => {
+    const p = sceneOf(greekIslands())
+    const r = buildRoute(p)
+    r.legs.forEach((leg, i) => {
+      expect(leg.path[leg.knots[0]!]).toEqual(p.stops[i]!.at)
+      expect(leg.path.at(-1)).toEqual(p.stops[i + 1]!.at)
+    })
+  })
+})
+
+describe('nearestOnLeg', () => {
+  test('nearestOnLeg returns the insert index', () => {
+    const base = sceneOf(stopsAt([[0, 0], [3, 0]]))
+    const r = buildRoute({ ...base, legs: [{ mode: 'line', via: [{ at: [1, 0] }, { at: [2, 0] }] }] })
+    expect(nearestOnLeg(r, 0, [0.5, 0.01]).insertIndex).toBe(0)
+    expect(nearestOnLeg(r, 0, [1.5, 0.01]).insertIndex).toBe(1)
+    expect(nearestOnLeg(r, 0, [2.5, -0.01]).insertIndex).toBe(2)
+    const hit = nearestOnLeg(r, 0, [1.5, 0.01])
+    expect(hit.at[0]).toBeCloseTo(1.5, 6)
+    expect(hit.at[1]).toBeCloseTo(0, 6)
+    expect(hit.distance).toBeCloseTo(toXY([1.5, 0])[1] - toXY([1.5, 0.01])[1], 9)
+  })
+
+  test('nearestOnLeg wraps longitude on the Pacific route', () => {
+    const r = buildRoute(sceneOf(pacific()))
+    const leg = r.legs[0]!
+    const a = leg.xy[0]!
+    const b = leg.xy.at(-1)!
+    const x = toXY([180.5, 0])[0]
+    const lat = toLngLat([x, a[1] + ((x - a[0]) / (b[0] - a[0])) * (b[1] - a[1])])[1]
+    const hit = nearestOnLeg(r, 0, [-179.5, lat + 0.05])
+    expect(hit.at[0]).toBeGreaterThanOrEqual(-180)
+    expect(hit.at[0]).toBeLessThanOrEqual(180)
+    expect(hit.at[0]).toBeCloseTo(-179.5, 1)
+    expect(hit.distance).toBeLessThan(0.01)
+    expect(hit.insertIndex).toBe(0)
   })
 })

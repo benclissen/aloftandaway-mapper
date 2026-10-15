@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { chmod, copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -6,7 +6,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { createMcpServer } from '../../src/mcp/server.js'
-import { doneSummary, leftover, statusSummary, TOOLS } from '../../src/mcp/tools.js'
+import { creditLine, doneSummary, leftover, statusSummary, TOOLS } from '../../src/mcp/tools.js'
 import type { RenderStatus } from '../../src/render/jobs.js'
 
 const STOPS = [
@@ -46,8 +46,8 @@ interface SceneResult {
   timeline: { durationSeconds: number; totalFrames: number; arrivals: { name: string; frame: number }[] }
   camera: {
     resolvedStart: { center: [number, number]; zoom: number }
-    resolvedEnd: { center: [number, number] }
-    resolvedFollow?: { zoom: number; orient: string; lookAhead: number; smoothing: number }
+    resolvedEnd: { center: [number, number]; zoom: number }
+    resolvedFollow?: { zoom: number; orient: string; lookAhead: number; smoothing: number; pitch: number }
   }
 }
 
@@ -160,11 +160,12 @@ describe('tools', () => {
     })
     for (const result of [set, await call('get_project', { folder })]) {
       const { camera } = (result.structuredContent as { scenes: SceneResult[] }).scenes[0]!
-      // The fitted centre lies across the antimeridian from Suva, at about −176.7.
-      expect(camera.resolvedStart.center[0]).toBeGreaterThan(-180)
-      expect(camera.resolvedStart.center[0]).toBeLessThan(-176)
-      expect(camera.resolvedStart.zoom).toBeGreaterThan(0)
-      expect(camera.resolvedEnd).toEqual(camera.resolvedStart)
+      // The whole-route fit's centre lies across the antimeridian from Suva, at about −176.7.
+      expect(camera.resolvedEnd.center[0]).toBeGreaterThan(-180)
+      expect(camera.resolvedEnd.center[0]).toBeLessThan(-176)
+      expect(camera.resolvedEnd.zoom).toBeGreaterThan(0)
+      // One leg, so the default start is Suva, closer in.
+      expect(camera.resolvedStart).toEqual({ center: [178.4419, -18.1416], zoom: camera.resolvedEnd.zoom + 2, bearing: 0, pitch: 0 })
     }
 
     // A stored shot comes back as stored.
@@ -180,8 +181,27 @@ describe('tools', () => {
     expect((set.structuredContent as { scenes: SceneResult[] }).scenes[0]!.camera.resolvedFollow).toBeUndefined()
     const updated = await call('update_project', { folder, sceneSet: { camera: { mode: 'follow' } } })
     const { camera } = (updated.structuredContent as { scenes: SceneResult[] }).scenes[0]!
-    expect(camera.resolvedFollow).toEqual({ zoom: expect.any(Number), orient: 'north', lookAhead: 1, smoothing: 0.5 })
-    expect(camera.resolvedFollow!.zoom).toBeGreaterThan(camera.resolvedStart.zoom)
+    expect(camera.resolvedFollow).toEqual({ zoom: expect.any(Number), orient: 'north', lookAhead: 0.25, smoothing: 0.2, pitch: 0 })
+    // Three steps in from the whole-route fit, which is the default end.
+    expect(camera.resolvedFollow!.zoom).toBeGreaterThan(camera.resolvedEnd.zoom)
+  })
+
+  test('update_project accepts symbolStyle and a partial follow', async () => {
+    const folder = path.join(tmp, 'look')
+    await call('create_project', { folder, name: 'Look' })
+    await call('set_stops', { folder, stops: STOPS })
+    const updated = await call('update_project', {
+      folder,
+      sceneSet: { look: { symbolStyle: 'icon', terrain: true, theme: 'satellite' }, camera: { mode: 'follow', follow: { pitch: 40 } } },
+    })
+    expect(updated.isError).toBeFalsy()
+    const data = updated.structuredContent as { project: { scenes: { look: { symbolStyle: string } }[] }; scenes: SceneResult[] }
+    expect(data.project.scenes[0]!.look.symbolStyle).toBe('icon')
+    expect(data.scenes[0]!.camera.resolvedFollow).toEqual({ zoom: expect.any(Number), orient: 'north', lookAhead: 0.25, smoothing: 0.2, pitch: 40 })
+    expect(text(updated)).toContain('Style: satellite, terrain on')
+    const { tools } = await client.listTools()
+    const description = tools.find((t) => t.name === 'update_project')!.description!
+    for (const word of ['aloftandaway-warm', 'monochrome', 'symbolStyle', 'badge-line', 'follow.pitch', 'look.terrain']) expect(description).toContain(word)
   })
 
   test('update_project applies a patch', async () => {
@@ -455,6 +475,18 @@ describe('render summaries', () => {
     ])
     expect(lines).toContain('Folder: /nonexistent/render')
     expect(lines.at(-1)).toMatch(/^Credit required: /)
+    expect(lines.at(-1)).not.toContain('(burned in)')
+  })
+
+  test('creditLine says which credit is burned in and that the full text still goes in the description', async () => {
+    const manifest = path.join(tmp, 'manifest.json')
+    await writeFile(manifest, JSON.stringify({ creditPlacement: 'burned', credit: 'FULL TEXT' }))
+    const burned = await creditLine(manifest)
+    expect(burned).toContain('FULL TEXT')
+    expect(burned).toContain('short credit lines are burned into the picture')
+    expect(burned).toContain('video description')
+    await writeFile(manifest, JSON.stringify({ creditPlacement: 'description', credit: 'FULL TEXT' }))
+    expect(await creditLine(manifest)).toBe('Credit required: FULL TEXT (put it in the video description)')
   })
 
   test('leftover says so when nothing finished, and omits the folder before one exists', async () => {

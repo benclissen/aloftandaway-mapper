@@ -11,7 +11,7 @@ something that works.
 | 2 | **Final Cut export** (optional; the default render is a flattened H.264 MP4): layer passes, ProRes 4444 with alpha, FCPXML with lanes, roles and markers | Double-clicking the FCPXML gives a three-layer compound clip with arrival markers |
 | 3 | **Route editing** (built): project file v2 (scenes in the format, curved/sharp points), studio waypoints, curved/sharp toggle, legs panel with transport picker, style picker, undo | The user can reshape a route by hand in the studio, and the agent sees the result |
 | 4 | **Routes** (built): sea routing around land, flight arcs, follow camera, GPX import, validation warnings | A cruise route stays at sea |
-| 5 | **Look**: about 20 transports (motorcycle, ferry, cruise ship, campervan…), nine map styles including the Aloft & Away theme, sign styles, terrain and tilt | Videos look on-brand, with the right vehicle on each leg |
+| 5 | **Look** (built): about 20 transports (motorcycle, ferry, cruise ship, campervan…), eleven map styles including the Aloft & Away theme, terrain and tilt | Videos look on-brand, with the right vehicle on each leg |
 | 6 | **Scenes**: several scenes per project, studio scene tabs, renders per scene or joined, a compound clip per scene in FCPXML | A two-scene project imports into Final Cut as two clips on one timeline |
 
 **Decision, 2026-10-14:** the default render is one flattened H.264 MP4

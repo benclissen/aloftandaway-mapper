@@ -373,7 +373,7 @@ export function App() {
               void edit({ sceneSet: { camera: { start: null, end: null } } }, 'Fit to route', 'Camera fits the route')
             }}
           />
-          <StylePicker theme={scene.look.theme} onEdit={onEdit} />
+          <StylePicker theme={scene.look.theme} terrain={scene.look.terrain} onEdit={onEdit} />
           {notice && (
             <p className={`notice notice-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>
               <span title={notice.text}>{notice.text}</span>

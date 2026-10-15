@@ -12,7 +12,7 @@ or copy.
 
 ## Status
 
-Stages 1 to 4 (agent-driven MVP, Final Cut export, route editing, routes) built. What works today:
+Stages 1 to 5 (agent-driven MVP, Final Cut export, route editing, routes, look) built. What works today:
 
 - An MCP server and CLI. The agent creates a project, sets stops, validates,
   previews, opens the studio and renders.
@@ -36,7 +36,9 @@ Stages 1 to 4 (agent-driven MVP, Final Cut export, route editing, routes) built.
   can have its own transport. The agent changes scene settings (timing, look,
   camera) with `update_project` `sceneSet`, and the project name, output and
   credit with `set`.
-- Not yet: terrain and drawn vehicle icons (every transport shows as the dot).
+- The look: eleven map styles including the Aloft & Away series look, terrain
+  with tilt, and drawn transport icons in three styles. See [Look](#look).
+- Not yet: several scenes per project.
 
 Docs:
 
@@ -73,6 +75,26 @@ symbol in view, with its zoom, orientation and look-ahead set in the scene's
 camera. `import_gpx` turns a local GPX file into stops and via points. Land
 data credit: [Natural Earth](https://www.naturalearthdata.com/), see
 [data/README.md](data/README.md).
+
+## Look
+
+Eleven styles, set with `look.theme`: `aloftandaway` (the default, the Aloft &
+Away series look), `aloftandaway-warm`, `paper`, `light`, `dark`, `nautical`,
+`atlas`, `outdoor`, `satellite`, `monochrome` and `blank`. The Aloft & Away
+styles set their labels in Plus Jakarta Sans. `satellite` uses EOxCloudless
+2016 imagery (CC BY 4.0). Later EOxCloudless years are non-commercial and aren't used.
+
+`look.terrain` adds 3D elevation and hill shading from AWS Terrain Tiles. A
+shot's `pitch` (or `camera.follow.pitch`) tilts the view. Transports are drawn
+as badges, badges in the line colour, or bare icons (`look.symbolStyle`), and
+side-view vehicles turn to face the way they travel.
+
+Credits for the look: icons are from [Lucide](https://lucide.dev) (ISC licence),
+labels use [Plus Jakarta Sans](https://fonts.google.com/specimen/Plus+Jakarta+Sans)
+(SIL Open Font License 1.1), satellite is EOxCloudless 2016 by EOX IT Services
+GmbH (CC BY 4.0), and terrain is from AWS Terrain Tiles with the sources listed in
+[data/README.md](data/README.md). Renders carry the credit lines their style
+needs.
 
 ## Final Cut Pro export (optional)
 
@@ -129,8 +151,8 @@ Details, tool versions and the manual import checklist are in
 | Rendering | Headless Chrome driven over CDP (Playwright), screenshots piped into ffmpeg |
 | Output, default | One flattened H.264 MP4 (ProRes 422 HQ with `--codec prores`) |
 | Output, optional | ProRes layers (map, route and signs with alpha) and FCPXML for Final Cut Pro |
-| Satellite (later) | [EOxCloudless 2016](https://cloudless.eox.at/) (CC BY 4.0) |
-| Elevation (later) | [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) |
+| Satellite | [EOxCloudless 2016](https://cloudless.eox.at/) (CC BY 4.0) |
+| Elevation | [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) |
 | Storage | A project folder on disk |
 
 ## Map credits
@@ -139,4 +161,5 @@ Every exported video must carry this credit, or carry it in the end credits
 or description if it's cropped out:
 
 © OpenStreetMap contributors · OpenMapTiles · OpenFreeMap, plus EOxCloudless 2016 by EOX
-(contains modified Copernicus Sentinel data 2016) when satellite is used.
+(contains modified Copernicus Sentinel data 2016) when satellite is used, and the
+AWS Terrain Tiles attribution when terrain is on (see [data/README.md](data/README.md)).

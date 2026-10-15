@@ -240,6 +240,86 @@ describe('tile proxy', () => {
     })
   })
 
+  test('proxies and caches satellite tiles with y/x swapped upstream', async () => {
+    await startHarness()
+    const reply = await get(`${harnessOrigin}/satellite/5/16/10.jpg`)
+    expect(reply.status).toBe(200)
+    expect(reply.headers['content-type']).toBe('image/jpeg')
+    expect(reply.body.equals(TILE)).toBe(true)
+    // EOx's WMTS wants zoom/row/column, so y comes before x.
+    expect(fake.hits).toEqual(['/satellite/5/10/16.jpg'])
+    expect(existsSync(path.join(cacheDir, 'tiles', 'satellite/5/16/10.jpg'))).toBe(true)
+
+    const again = await get(`${harnessOrigin}/satellite/5/16/10.jpg`)
+    expect(again.body.equals(TILE)).toBe(true)
+    expect(fake.hits).toHaveLength(1)
+  })
+
+  test('proxies and caches terrain tiles', async () => {
+    await startHarness()
+    const reply = await get(`${harnessOrigin}/terrain/5/16/10.png`)
+    expect(reply.status).toBe(200)
+    expect(reply.headers['content-type']).toBe('image/png')
+    expect(reply.body.equals(TILE)).toBe(true)
+    expect(fake.hits).toEqual(['/terrain/5/16/10.png'])
+    expect(existsSync(path.join(cacheDir, 'tiles', 'terrain/5/16/10.png'))).toBe(true)
+
+    await get(`${harnessOrigin}/terrain/5/16/10.png`)
+    expect(fake.hits).toHaveLength(1)
+  })
+
+  test('a satellite or terrain tile that fails after its retries answers like a basemap tile does', async () => {
+    fake.status = 503
+    await startHarness()
+    const basemap = await get(`${harnessOrigin}/${TILE_PATH}`)
+    const satellite = await get(`${harnessOrigin}/satellite/5/16/10.jpg`)
+    const terrain = await get(`${harnessOrigin}/terrain/5/16/10.png`)
+    // Three retries after the first attempt, for each of the three tiles.
+    expect(fake.hits).toHaveLength(12)
+    for (const reply of [satellite, terrain]) {
+      expect(reply.status).toBe(basemap.status)
+      expect(reply.status).toBe(502)
+      expect(reply.headers['content-type']).toBe(basemap.headers['content-type'])
+      const body = JSON.parse(reply.body.toString('utf8')) as { error: { message: string } }
+      expect(Object.keys(body)).toEqual(['error'])
+      expect(body.error.message).toBe(
+        (JSON.parse(basemap.body.toString('utf8')) as { error: { message: string } }).error.message,
+      )
+    }
+    expect(existsSync(path.join(cacheDir, 'tiles', 'satellite/5/16/10.jpg'))).toBe(false)
+    expect(existsSync(path.join(cacheDir, 'tiles', 'terrain/5/16/10.png'))).toBe(false)
+  })
+
+  describe('rejects other satellite or terrain paths', () => {
+    const bad = [
+      'satellite',
+      'satellite/5/16/10.png',
+      'satellite/5/16/10.pbf',
+      'satellite/5/16/10',
+      'satellite/5/16',
+      'satellite/v1/5/16/10.jpg',
+      'satellite/5/16/-10.jpg',
+      'satellite/5/16/10.jpg/',
+      'satellite/%2e%2e/16/10.jpg',
+      'satellite/5/16/..%2F..%2F10.jpg',
+      'terrain',
+      'terrain/5/16/10.jpg',
+      'terrain/5/16/10.pbf',
+      'terrain/5/16',
+      'terrain/v1/5/16/10.png',
+      'terrain/5/16/10.png/extra',
+      'terrain/5/%2e%2e/10.png',
+      'terrain/5/16/a.png',
+    ]
+    test.each(bad)('400 for %j', async (subpath) => {
+      await startHarness()
+      const reply = await get(`${harnessOrigin}/${subpath}`)
+      expect(reply.status).toBe(400)
+      expect(fake.hits).toEqual([])
+      expect(existsSync(path.join(cacheDir))).toBe(false)
+    })
+  })
+
   test('retries 5xx three times then answers 502', async () => {
     fake.status = 503
     await startHarness()

@@ -6,6 +6,7 @@ import {
   ease,
   fitShot,
   flyInterpolator,
+  haversineKm,
   layoutSize,
   projectToLayout,
   resolveFollow,
@@ -55,6 +56,13 @@ function expectFramed(s: Shot, bounds: [LngLat, LngLat], aspect: Aspect, padding
     }
   }
   expect(touches).toBe(true)
+}
+
+/** South-west and north-east corners of `path`. */
+function boundsOf(path: LngLat[]): [LngLat, LngLat] {
+  const lngs = path.map((p) => p[0])
+  const lats = path.map((p) => p[1])
+  return [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]]
 }
 
 const timelineOf = (p: Project) => {
@@ -116,7 +124,76 @@ describe('resolveShots', () => {
   test('fits missing shots in the output aspect', () => {
     const p = { ...greekIslands(), output: { aspect: '9:16' as const, height: 1080 as const, fps: { num: 25, den: 1 } } }
     const route = buildRoute(sceneOf(p))
-    expect(resolveShots(sceneOf(p), p.output.aspect, route).start).toEqual(fitShot(route.bounds, '9:16'))
+    const { start, end } = resolveShots(sceneOf(p), p.output.aspect, route)
+    expect(start).toEqual(fitShot(boundsOf(route.legs[0]!.path), '9:16'))
+    expect(end).toEqual(fitShot(route.bounds, '9:16'))
+  })
+
+  test('default glide opens on the first leg and ends on the whole route', () => {
+    const p = greekIslands()
+    expect(sceneOf(p).camera).toEqual({ mode: 'glide', easing: 'smooth' })
+    const { route, tl } = timelineOf(p)
+    const { start, end } = resolveShots(sceneOf(p), p.output.aspect, route)
+    expect(start).toEqual(fitShot(boundsOf(route.legs[0]!.path), '16:9'))
+    expect(end).toEqual(fitShot(route.bounds, '16:9'))
+    expect(start.zoom).toBeGreaterThan(end.zoom + 0.5)
+    // The camera pulls out from frame 0 to the end of the first leg's travel, eased, then holds the whole route.
+    const at = (f: number) => cameraAt(sceneOf(p), p.output.aspect, route, tl, f)
+    const legEnd = tl.legFrames[0]!.end
+    const fly = flyInterpolator(start, end, '16:9')
+    expectShotClose(at(0), start)
+    for (const f of [1, 30, Math.round(legEnd / 2), legEnd - 1]) expectShotClose(at(f), fly(ease('smooth', f / legEnd)))
+    for (let f = legEnd; f < tl.totalFrames; f++) expectShotClose(at(f), end)
+    expect(at(Math.round(legEnd / 2)).zoom).toBeLessThan(start.zoom)
+    // A stored start keeps the glide across the whole travel section.
+    const stored = greekIslands({ camera: { mode: 'glide', easing: 'smooth', start } })
+    const midTravel = Math.round((tl.travelStartFrame + tl.travelEndFrame) / 2)
+    expect(cameraAt(sceneOf(stored), '16:9', route, tl, midTravel)).toEqual(fly(ease('smooth', tl.stateAt(midTravel).travelT)))
+    // A fixed camera with no start still shows the whole route.
+    const fixed = greekIslands({ camera: { mode: 'fixed', easing: 'smooth' } })
+    expect(resolveShots(sceneOf(fixed), '16:9', route).start).toEqual(fitShot(route.bounds, '16:9'))
+    expect(cameraAt(sceneOf(fixed), '16:9', route, tl, 0)).toEqual(fitShot(route.bounds, '16:9'))
+  })
+
+  test('the default glide keeps the head in frame', () => {
+    const p = greekIslands()
+    const { route, tl } = timelineOf(p)
+    const { width, height } = layoutSize('16:9')
+    for (let f = tl.travelStartFrame; f <= tl.travelEndFrame; f++) {
+      const [x, y] = projectToLayout(cameraAt(sceneOf(p), '16:9', route, tl, f), '16:9', tl.stateAt(f).head.at)
+      expect(x).toBeGreaterThanOrEqual(0)
+      expect(x).toBeLessThanOrEqual(width)
+      expect(y).toBeGreaterThanOrEqual(0)
+      expect(y).toBeLessThanOrEqual(height)
+    }
+  })
+
+  test('a short first hop starts no closer than the theme allows', () => {
+    const p = stopsAt([[25, 37], [25.01, 37], [27, 37]], { look: { ...sceneOf(greekIslands()).look, theme: 'paper' } })
+    const route = buildRoute(sceneOf(p))
+    expect(fitShot(boundsOf(route.legs[0]!.path), '16:9').zoom).toBeGreaterThan(THEME_MAX_ZOOM.paper)
+    const { start } = resolveShots(sceneOf(p), '16:9', route)
+    expect(start).toEqual({ ...fitShot(boundsOf(route.legs[0]!.path), '16:9'), zoom: THEME_MAX_ZOOM.paper })
+  })
+
+  test('a one-leg glide starts closer in on the first stop', () => {
+    const p = stopsAt([[25, 37], [26.5, 37.5]])
+    const route = buildRoute(sceneOf(p))
+    const routeZoom = fitShot(route.bounds, '16:9').zoom
+    const { start, end } = resolveShots(sceneOf(p), '16:9', route)
+    expect(start).toEqual({ center: [25, 37], zoom: routeZoom + 2, bearing: 0, pitch: 0 })
+    expect(end).toEqual(fitShot(route.bounds, '16:9'))
+    // A first leg that is nearly the whole route counts as one leg.
+    const nearly = stopsAt([[0, 0], [10, 0], [10.2, 0]])
+    const nearlyRoute = buildRoute(sceneOf(nearly))
+    const nearlyZoom = fitShot(nearlyRoute.bounds, '16:9').zoom
+    expect(Math.abs(fitShot(boundsOf(nearlyRoute.legs[0]!.path), '16:9').zoom - nearlyZoom)).toBeLessThanOrEqual(0.5)
+    expect(resolveShots(sceneOf(nearly), '16:9', nearlyRoute).start).toEqual({ center: [0, 0], zoom: nearlyZoom + 2, bearing: 0, pitch: 0 })
+    // Capped at the theme's maximum zoom.
+    const tight = stopsAt([[25, 37], [25.01, 37]], { look: { ...sceneOf(p).look, theme: 'paper' } })
+    const tightRoute = buildRoute(sceneOf(tight))
+    expect(fitShot(tightRoute.bounds, '16:9').zoom + 2).toBeGreaterThan(THEME_MAX_ZOOM.paper)
+    expect(resolveShots(sceneOf(tight), '16:9', tightRoute).start.zoom).toBe(THEME_MAX_ZOOM.paper)
   })
 })
 
@@ -247,7 +324,7 @@ describe('cameraAt', () => {
 
 describe('follow camera', () => {
   const followCamera = (follow?: FollowSettings) => ({ mode: 'follow' as const, easing: 'linear' as const, ...(follow ? { follow } : {}) })
-  const settings = (over: Partial<FollowSettings> = {}): FollowSettings => ({ zoom: 10, orient: 'north', lookAhead: 1, smoothing: 0.5, ...over })
+  const settings = (over: Partial<FollowSettings> = {}): FollowSettings => ({ zoom: 10, orient: 'north', lookAhead: 1, smoothing: 0.5, pitch: 0, ...over })
   const camOf = (p: Project) => {
     const { route, tl } = timelineOf(p)
     return { route, tl, at: (f: number) => cameraAt(sceneOf(p), p.output.aspect, route, tl, f) }
@@ -271,7 +348,8 @@ describe('follow camera', () => {
 
   test('smoothing 0 centres on the look-ahead point', () => {
     for (const lookAhead of [0, 1]) {
-      const p = greekIslands({ camera: followCamera(settings({ lookAhead, smoothing: 0 })) })
+      // Zoomed out far enough that the quarter-frame cap on the aim point is never reached.
+      const p = greekIslands({ camera: followCamera(settings({ zoom: 5, lookAhead, smoothing: 0 })) })
       const { tl, at } = camOf(p)
       expect(p.output.fps).toEqual({ num: 25, den: 1 })
       for (let f = tl.travelStartFrame; f <= tl.travelEndFrame; f += 7) {
@@ -285,7 +363,7 @@ describe('follow camera', () => {
   })
 
   test('holds before and after travel', () => {
-    const p = greekIslands({ camera: followCamera(settings({ smoothing: 0, orient: 'heading' })) })
+    const p = greekIslands({ camera: followCamera(settings({ zoom: 5, smoothing: 0, orient: 'heading' })) })
     const { tl, at } = camOf(p)
     expect(tl.travelStartFrame).toBeGreaterThan(0)
     expect(tl.travelEndFrame).toBeLessThan(tl.totalFrames - 1)
@@ -296,7 +374,8 @@ describe('follow camera', () => {
   })
 
   test('orient heading turns the bearing with the route', () => {
-    const p = stopsAt([[0, 0], [10, 0], [10, -10]], { camera: followCamera(settings({ orient: 'heading', lookAhead: 0, smoothing: 0.2 })) })
+    // Light smoothing, as the bearing smooths 3 times more slowly than the position.
+    const p = stopsAt([[0, 0], [10, 0], [10, -10]], { camera: followCamera(settings({ orient: 'heading', lookAhead: 0, smoothing: 0.05 })) })
     sceneOf(p).stops[1] = { ...sceneOf(p).stops[1]!, sharp: true }
     const { tl, at } = camOf(p)
     const [first, second] = tl.legFrames
@@ -325,6 +404,21 @@ describe('follow camera', () => {
     expect(Math.hypot(at(moving).center[0] - head[0], at(moving).center[1] - head[1])).toBeGreaterThan(1e-4)
   })
 
+  test('resolveFollow fills missing follow fields from defaults', () => {
+    const blank = greekIslands({ camera: followCamera({ orient: 'heading' } as FollowSettings) })
+    const route = buildRoute(sceneOf(blank))
+    const fitted = fitShot(route.bounds, blank.output.aspect).zoom
+    expect(resolveFollow(sceneOf(blank), blank.output.aspect, route)).toEqual({
+      zoom: fitted + 3,
+      orient: 'heading',
+      lookAhead: 0.25,
+      smoothing: 0.2,
+      pitch: 0,
+    })
+    const partial = greekIslands({ camera: followCamera({ zoom: 7, smoothing: 0 } as FollowSettings) })
+    expect(resolveFollow(sceneOf(partial), '16:9', route)).toEqual({ zoom: 7, orient: 'north', lookAhead: 0.25, smoothing: 0, pitch: 0 })
+  })
+
   test('resolves default follow settings', () => {
     const blank = greekIslands({ camera: followCamera() })
     const route = buildRoute(sceneOf(blank))
@@ -332,8 +426,9 @@ describe('follow camera', () => {
     expect(resolveFollow(sceneOf(blank), blank.output.aspect, route)).toEqual({
       zoom: fitted + 3,
       orient: 'north',
-      lookAhead: 1,
-      smoothing: 0.5,
+      lookAhead: 0.25,
+      smoothing: 0.2,
+      pitch: 0,
     })
     const tight = stopsAt([[25, 37], [25.01, 37]], { camera: followCamera(), look: { ...sceneOf(blank).look, theme: 'paper' } })
     const tightRoute = buildRoute(sceneOf(tight))
@@ -344,6 +439,134 @@ describe('follow camera', () => {
     // With nothing stored, the camera uses the defaults.
     const { at } = camOf(blank)
     expect(at(0).zoom).toBe(fitted + 3)
+  })
+
+  test('follow pitch defaults and resolves', () => {
+    const tilted = shot([25, 37], 8, 0, 30)
+    const cases: [Project, number][] = [
+      [greekIslands({ camera: followCamera({ pitch: 45 } as FollowSettings) }), 45],
+      [greekIslands({ camera: { ...followCamera({ pitch: 45 } as FollowSettings), start: tilted } }), 45],
+      [greekIslands({ camera: { ...followCamera({ zoom: 9 } as FollowSettings), start: tilted } }), 30],
+      [greekIslands({ camera: followCamera() }), 0],
+    ]
+    for (const [p, pitch] of cases) {
+      const { route, tl, at } = camOf(p)
+      expect(resolveFollow(sceneOf(p), p.output.aspect, route).pitch).toBe(pitch)
+      for (const f of [0, Math.round(tl.totalFrames / 2), tl.totalFrames - 1]) expect(at(f).pitch).toBe(pitch)
+    }
+  })
+
+  test('follow keeps the head inside the frame on a fast leg', () => {
+    // An invented Baltic cruise: one long flight in, then sea legs (drawn as lines here) of 80 to 680 km each, at
+    // 225 km of route per second of clip. Not a general guarantee: with the defaults, very short fast legs (about 300 km
+    // at 225 km/s) can put the head slightly outside the middle 80%.
+    const ports: LngLat[] = [
+      [8.6821, 50.1109], // Frankfurt
+      [18.0686, 59.3293], // Stockholm
+      [24.9384, 60.1699], // Helsinki
+      [24.7536, 59.437], // Tallinn
+      [24.1052, 56.9496], // Riga
+      [21.0118, 56.5047], // Liepāja
+      [18.6466, 54.352], // Gdańsk
+      [12.5683, 55.6761], // Copenhagen
+      [5.3221, 60.3913], // Bergen
+    ]
+    const legs = ports.slice(1).map((_, i) => ({ mode: i === 0 ? ('air' as const) : ('sea' as const), via: [] }))
+    const route = buildRoute(sceneOf(stopsAt(ports, { legs })))
+    const km = route.legs.reduce((sum, leg) => sum + leg.path.slice(1).reduce((s, q, i) => s + haversineKm(leg.path[i]!, q), 0), 0)
+    const { width, height } = layoutSize('16:9')
+    for (const orient of [undefined, 'heading' as const]) {
+      const camera = { mode: 'follow' as const, easing: 'smooth' as const, ...(orient ? { follow: { orient } } : {}) }
+      const p = stopsAt(ports, { camera, legs, timing: { holdStart: 1, travel: km / 225, holdEnd: 2 } })
+      const { tl, at } = camOf(p)
+      expect(p.output.fps).toEqual({ num: 25, den: 1 })
+      expect(km / ((tl.travelEndFrame - tl.travelStartFrame) / 25)).toBeCloseTo(225, -1)
+      for (let f = 0; f < tl.totalFrames; f++) {
+        const [x, y] = projectToLayout(at(f), '16:9', tl.stateAt(f).head.at)
+        expect(x).toBeGreaterThanOrEqual(0.1 * width)
+        expect(x).toBeLessThanOrEqual(0.9 * width)
+        expect(y).toBeGreaterThanOrEqual(0.1 * height)
+        expect(y).toBeLessThanOrEqual(0.9 * height)
+      }
+    }
+  })
+
+  test('caps the aim point at a quarter of the frame', () => {
+    // A 1 s look-ahead on the fast Greek route at zoom 10 is far more than a quarter of the frame.
+    const p = greekIslands({ camera: followCamera(settings({ zoom: 10, lookAhead: 1, smoothing: 0 })) })
+    const { tl, at } = camOf(p)
+    const { width, height } = layoutSize('16:9')
+    const cap = Math.min(width, height) / 4 / (TILE_SIZE * 2 ** 10)
+    let capped = 0
+    for (let f = tl.travelStartFrame; f <= tl.travelEndFrame; f++) {
+      const head = toXY(tl.stateAt(f).head.at)
+      const aim = toXY(tl.stateAt(f + 25).head.at)
+      const c = toXY(at(f).center)
+      const offset = Math.hypot(c[0] - head[0], c[1] - head[1])
+      const ahead = Math.hypot(aim[0] - head[0], aim[1] - head[1])
+      expect(offset).toBeLessThanOrEqual(cap + 1e-12)
+      if (ahead > cap) {
+        capped++
+        expect(offset).toBeCloseTo(cap, 12)
+        // Along the same direction as the uncapped aim point.
+        const cross = (c[0] - head[0]) * (aim[1] - head[1]) - (c[1] - head[1]) * (aim[0] - head[0])
+        expect(Math.abs(cross) / (offset * ahead)).toBeLessThan(1e-9)
+      } else {
+        expect(offset).toBeCloseTo(ahead, 12)
+      }
+    }
+    expect(capped).toBeGreaterThan(0)
+  })
+
+  test('follow bearing turns more slowly than position', () => {
+    // Out east, then back west from a sharp stop with a 4 s pause: a 180° turn through ±180°.
+    const turnAround = (smoothing: number) => {
+      const p = stopsAt([[0, 0], [10, 0], [0, 0]], {
+        camera: followCamera(settings({ zoom: 5, orient: 'heading', lookAhead: 0, smoothing })),
+        timing: { holdStart: 1, travel: 10, holdEnd: 1 },
+      })
+      sceneOf(p).stops[1] = { ...sceneOf(p).stops[1]!, sharp: true, pause: 4 }
+      return camOf(p)
+    }
+    /** Frames the bearing takes from 10% to 90% of the turn, unwrapped across ±180°, and how far it is at `frame`. */
+    const turn = (smoothing: number) => {
+      const { tl, at } = turnAround(smoothing)
+      const bearings: number[] = []
+      for (let f = 0; f < tl.totalFrames; f++) {
+        const b = at(f).bearing
+        expect(b).toBeGreaterThan(-180)
+        expect(b).toBeLessThanOrEqual(180)
+        const prev = bearings[f - 1]
+        const unwrapped = prev === undefined ? b : prev + ((((b - prev) % 360) + 540) % 360) - 180
+        bearings.push(unwrapped)
+      }
+      const [first, last] = [bearings[0]!, bearings.at(-1)!]
+      expect(Math.abs(last - first)).toBeCloseTo(180, 0)
+      const done = (f: number) => (bearings[f]! - first) / (last - first)
+      const from = bearings.findIndex((_, f) => done(f) >= 0.1)
+      const to = bearings.findIndex((_, f) => done(f) >= 0.9)
+      const steepest = Math.max(...bearings.slice(1).map((b, f) => Math.abs(b - bearings[f]!)))
+      return { frames: to - from, steepest, tl, done }
+    }
+    const slow = turn(0.2)
+    // Gentle, with no jump where the bearing crosses ±180°.
+    expect(slow.steepest).toBeLessThan(4)
+    // A third of the smoothing time gives the bearing the rate the position uses at smoothing 0.2.
+    const positionRate = turn(0.2 / 3)
+    expect(slow.frames / positionRate.frames).toBeGreaterThan(2.5)
+    expect(slow.frames / positionRate.frames).toBeLessThan(3.5)
+    // The heading target switches mid-pause, so most of the turn happens while the ship is in port.
+    const arrival = slow.tl.arrivals[1]!.frame
+    const departure = slow.tl.legFrames[1]!.start
+    expect(departure - arrival).toBe(100)
+    expect(slow.done(departure) - slow.done(arrival)).toBeGreaterThan(0.5)
+    expect(slow.done(Math.round((arrival + departure) / 2))).toBeCloseTo(0.5, 1)
+    // Mid-pause, the position (at the full rate) is far closer to settled on the stop than the bearing is to its new
+    // heading, each as a share of its whole move: 10° of longitude, and the turn.
+    const mid = Math.round((arrival + departure) / 2)
+    const c = turnAround(0.2).at(mid).center
+    const positionLeft = Math.hypot(c[0] - 10, c[1]) / 10
+    expect(positionLeft).toBeLessThan((1 - slow.done(mid)) / 10)
   })
 
   test('follow on a single-stop or zero-length route returns finite values', () => {
@@ -362,7 +585,9 @@ describe('follow camera', () => {
   })
 
   test('uses the start shot pitch', () => {
-    const p = greekIslands({ camera: { ...followCamera(settings()), start: shot([25, 37], 6, 0, 40) } })
+    // With no follow.pitch stored.
+    const follow = { zoom: 10, orient: 'north', lookAhead: 1, smoothing: 0.5 } as FollowSettings
+    const p = greekIslands({ camera: { ...followCamera(follow), start: shot([25, 37], 6, 0, 40) } })
     expect(camOf(p).at(50).pitch).toBe(40)
   })
 

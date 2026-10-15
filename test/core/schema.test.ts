@@ -4,6 +4,8 @@ import {
   MAP_CREDIT,
   ProjectError,
   THEME_MAX_ZOOM,
+  THEMES,
+  SYMBOL_STYLES,
   defaultProject,
   fpsValue,
   frameSize,
@@ -34,15 +36,72 @@ describe('project schema', () => {
     expect(scene.legs).toEqual([])
     expect(scene.timing).toEqual({ holdStart: 1, travel: 10, holdEnd: 2 })
     expect(scene.look).toEqual({
-      theme: 'paper',
+      theme: 'aloftandaway',
       labels: 'en',
       terrain: false,
-      line: { color: '#d9472b', width: 4, dash: 'solid', outline: true, glow: false },
+      line: { color: '#dc8376', width: 4, dash: 'solid', outline: true, glow: false },
       symbol: 'dot',
       signStyle: 'tag',
     })
     expect(scene.camera).toEqual({ mode: 'glide', easing: 'smooth' })
     expect(p.credit).toBe('burned')
+  })
+
+  test('new projects use the Aloft & Away defaults', () => {
+    const look = sceneOf(emptyProject()).look
+    expect(look.theme).toBe('aloftandaway')
+    expect(look.line).toEqual({ color: '#dc8376', width: 4, dash: 'solid', outline: true, glow: false })
+    expect('symbolStyle' in look).toBe(false)
+  })
+
+  test('accepts every theme', () => {
+    expect(THEMES).toEqual([
+      'aloftandaway', 'aloftandaway-warm', 'paper', 'light', 'dark', 'nautical', 'atlas', 'outdoor', 'satellite', 'monochrome', 'blank',
+    ])
+    for (const theme of THEMES) {
+      const p = greekIslands()
+      sceneOf(p).look.theme = theme
+      expect(parseProject(JSON.parse(JSON.stringify(p)))).toEqual(p)
+    }
+    const bad = greekIslands()
+    ;(sceneOf(bad).look as { theme: string }).theme = 'sepia'
+    expect(() => parseProject(bad)).toThrow(/scenes\.0\.look\.theme/)
+  })
+
+  test('accepts each symbolStyle and rejects others', () => {
+    expect(SYMBOL_STYLES).toEqual(['badge', 'badge-line', 'icon'])
+    for (const symbolStyle of SYMBOL_STYLES) {
+      const p = greekIslands()
+      sceneOf(p).look.symbolStyle = symbolStyle
+      expect(parseProject(JSON.parse(JSON.stringify(p)))).toEqual(p)
+    }
+    const bad = greekIslands()
+    ;(sceneOf(bad).look as { symbolStyle: string }).symbolStyle = 'round'
+    expect(() => parseProject(bad)).toThrow(/scenes\.0\.look\.symbolStyle/)
+  })
+
+  test('accepts a partial camera.follow', () => {
+    for (const follow of [{}, { zoom: 9 }, { orient: 'heading' as const, pitch: 45 }, { lookAhead: 0.25, smoothing: 0.2 }]) {
+      const p = greekIslands()
+      sceneOf(p).camera = { mode: 'follow', easing: 'linear', follow }
+      expect(parseProject(JSON.parse(JSON.stringify(p)))).toEqual(p)
+    }
+    const bad = greekIslands()
+    sceneOf(bad).camera = { mode: 'follow', easing: 'linear', follow: { pitch: 61 } }
+    expect(() => parseProject(bad)).toThrow(/camera\.follow\.pitch/)
+  })
+
+  test('loads a stage 4 project unchanged', () => {
+    const p = greekIslands()
+    const look = sceneOf(p).look
+    look.theme = 'paper'
+    look.line.color = '#d9472b'
+    delete look.symbolStyle
+    const loaded = parseProject(JSON.parse(JSON.stringify(p)))
+    expect(loaded).toEqual(p)
+    expect(sceneOf(loaded).look.theme).toBe('paper')
+    expect(sceneOf(loaded).look.line.color).toBe('#d9472b')
+    expect('symbolStyle' in sceneOf(loaded).look).toBe(false)
   })
 
   test('default project takes a scene id', () => {
@@ -73,7 +132,8 @@ describe('project schema', () => {
 
   test('constants', () => {
     expect(ALLOWED_FPS).toHaveLength(8)
-    expect(THEME_MAX_ZOOM).toEqual({ paper: 14, blank: 22 })
+    expect(Object.keys(THEME_MAX_ZOOM)).toEqual([...THEMES])
+    for (const t of THEMES) expect(THEME_MAX_ZOOM[t]).toBe(t === 'blank' ? 22 : 14)
     expect(MAP_CREDIT).toBe('© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap')
   })
 

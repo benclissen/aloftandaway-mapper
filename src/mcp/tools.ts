@@ -127,6 +127,7 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
     }))
     lines.push(
       `${project.name}: ${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
+      `Style: ${scene.look.theme}, terrain ${scene.look.terrain ? 'on' : 'off'}.`,
       ...(scene.stops.length
         ? scene.stops.map((s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}${s.sharp ? ' · sharp' : ''}`)
         : ['No stops yet.']),
@@ -302,13 +303,20 @@ export function etaText(seconds: number): string {
 /** The reminder to credit the map, with where the render put it. */
 export async function creditLine(manifestPath: string): Promise<string> {
   let placement: unknown
+  let credit: unknown
   try {
-    placement = (JSON.parse(await readFile(manifestPath, 'utf8')) as { creditPlacement?: unknown }).creditPlacement
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { creditPlacement?: unknown; credit?: unknown }
+    placement = manifest.creditPlacement
+    credit = manifest.credit
   } catch {
     // The manifest is unreadable; say what to credit without saying where.
   }
-  const where = placement === 'burned' ? ' (burned in)' : placement === 'description' ? ' (put it in the video description)' : ''
-  return `Credit required: ${MAP_CREDIT}${where}`
+  // The manifest holds the credit for what the render showed; the base line is the safe fallback.
+  const text = typeof credit === 'string' ? credit : MAP_CREDIT
+  if (text === '') return 'No map credit is required for this render.'
+  const where = placement === 'burned'
+      ? ' (the short credit lines are burned into the picture; the full text still goes in the video description)' : placement === 'description' ? ' (put it in the video description)' : ''
+  return `Credit required: ${text}${where}`
 }
 
 
@@ -442,7 +450,7 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'update_project',
     description:
-      "Change a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. 'sceneSet' is a JSON Merge Patch over the scene's name, timing, look and camera. 'ops' edits stops, legs and via points: insert_stop, update_stop, remove_stop, move_stop, update_leg, insert_via, update_via, remove_via. null removes a key. Setting a leg's symbol without a mode also sets that transport's usual mode. Coordinates are [lng, lat]. The folder must be absolute.",
+      "Change a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. 'sceneSet' patches the scene's name, timing, look and camera; null removes a key. look.theme: aloftandaway, aloftandaway-warm, paper, light, dark, nautical, atlas, outdoor, satellite, monochrome, blank. look.terrain: true adds hill shading and 3D elevation. look.symbolStyle: badge, badge-line, icon. camera.follow fields are optional; follow.pitch is 0 to 60. 'ops' edits stops, legs and via points. A leg symbol alone sets its usual mode. Coordinates are [lng, lat]. The folder must be absolute.",
     input: z.strictObject({ folder, ...ProjectPatchSchema.shape }),
     async run({ folder, set, sceneSet, ops }) {
       return withPaths(folder, await mutateProject(folder, (project) => applyPatch(project, { set, sceneSet, ops })))

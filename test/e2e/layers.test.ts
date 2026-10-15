@@ -6,7 +6,7 @@ import { RenderPage } from '../../src/render/page.js'
 import { closeServerIfStarted } from '../../src/server/server.js'
 import { capturePng } from '../../src/render/capture.js'
 import type { MapperPage } from '../../src/studio/render-mode.js'
-import { greekIslands, sceneOf } from '../fixtures/projects.js'
+import { alpineTilted, greekIslands, sceneOf } from '../fixtures/projects.js'
 import { closeAll, openRenderPage, pixelDiff, snapshot } from './helpers.js'
 
 afterAll(closeAll)
@@ -51,7 +51,8 @@ function alphas(buffer: Buffer): number[] {
   return [...values].sort((a, b) => a - b)
 }
 
-async function comparePasses(project: Project, ratio: number, frameNumbers: number[]): Promise<void> {
+/** Renders each layer and checks map, route and signs composite to all. Returns the captures, per frame in layer order. */
+async function comparePasses(project: Project, ratio: number, frameNumbers: number[]): Promise<Buffer[][]> {
   const captures: Buffer[][] = frameNumbers.map(() => [])
   for (const layer of ['map', 'route', 'signs', 'all'] as const) {
     const view = await openRenderPage(project, ratio, { layer })
@@ -72,6 +73,7 @@ async function comparePasses(project: Project, ratio: number, frameNumbers: numb
     const differing = pixelDiff(combined, pngs[3]!)
     expect(differing, `frame ${frameNumbers[index]}: ${differing} differing pixels`).toBeLessThanOrEqual(width * height * .005)
   }
+  return captures
 }
 
 for (const mode of ['fixed', 'glide'] as const) {
@@ -121,7 +123,10 @@ test('description credit is absent from map and all; isolated artwork never carr
   for (const layer of ['map', 'all', 'route', 'signs'] as const) {
     const images: Buffer[] = []
     for (const credit of ['burned', 'description'] as const) {
-      const view = await openRenderPage({ ...greekIslands(), credit }, 1, { layer })
+      // Blank shows no map data, so it has no credit. Terrain adds one line and still needs no basemap tiles.
+      const base = greekIslands()
+      const project = { ...base, scenes: [{ ...base.scenes[0]!, look: { ...base.scenes[0]!.look, terrain: true } }] }
+      const view = await openRenderPage({ ...project, credit }, 1, { layer, flatTerrain: true })
       try { images.push(await snapshot(view.page, 175)) } finally { await view.close() }
     }
     const [burned, described] = images.map(buffer => PNG.sync.read(buffer))
@@ -183,6 +188,18 @@ test.skipIf(process.env.MAPPER_NET !== '1')('real paper tiles composite to all (
   await comparePasses(project, 1, [175])
 })
 
+
+test.skipIf(process.env.MAPPER_NET !== '1')('route layer drapes on terrain (MAPPER_NET only)', async () => {
+  const project = alpineTilted()
+  sceneOf(project).look.line.glow = true
+  const [[, route]] = await comparePasses(project, 0.5, [40])
+  // The route layer keeps the elevation but none of the basemap: no hill shading, so almost every pixel is clear.
+  const { data } = PNG.sync.read(route!)
+  let drawn = 0
+  for (let i = 3; i < data.length; i += 4) if (data[i]! > 0) drawn++
+  expect(drawn).toBeGreaterThan(0)
+  expect(drawn).toBeLessThan((data.length / 4) * 0.02)
+})
 
 test('RenderPage carries pass selection and capture transparency through warm loads', async () => {
   const { browser } = await launchBrowser()

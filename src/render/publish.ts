@@ -1,6 +1,6 @@
 import { rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import type { Project } from '../core/index.js'
+import { projectCredit, type Project } from '../core/index.js'
 import { RenderCancelled } from './errors.js'
 import type { SceneExport } from './export-types.js'
 import { slug } from './export-plan.js'
@@ -21,7 +21,7 @@ export interface PublishedFcpxml {
  */
 export async function publishFcpxml(args: {
   dir: string
-  project: Pick<Project, 'name' | 'output' | 'credit'>
+  project: Pick<Project, 'name' | 'output' | 'credit' | 'scenes'>
   scenes: SceneExport[]
   signal?: AbortSignal
   dtdPath?: string
@@ -30,7 +30,14 @@ export async function publishFcpxml(args: {
   const name = `${slug(project.name)}.fcpxml`
   const final = path.join(dir, name)
   const temp = `${final}.tmp`
-  await writeFile(temp, writeFcpxml({ projectName: project.name, output: project.output, credit: project.credit, scenes }), 'utf8')
+  const xml = writeFcpxml({
+    projectName: project.name,
+    output: project.output,
+    credit: project.credit,
+    creditLines: projectCredit(project, 'written'),
+    scenes,
+  })
+  await writeFile(temp, xml, 'utf8')
   let validation: PublishedFcpxml['validation']
   try {
     validation = await validateFcpxml(temp, { dtdPath: args.dtdPath })

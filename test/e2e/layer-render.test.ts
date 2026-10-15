@@ -190,7 +190,8 @@ test('the FCPXML references the three finished layers, a range starting after fr
   const xml = readFileSync(result.fcpxml!, 'utf8')
   for (const layer of LAYERS) expect(xml).toContain(pathToFileURL(path.join(result.dir, SLUG_DIR, `${layer}.mov`)).href)
   expect(xml).not.toContain('preview.mp4')
-  expect(xml).toContain('<note>© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap</note>')
+  // The fixture is blank, which shows no map data and needs no credit; the note text itself is covered in fcpxml.test.ts.
+  expect(xml).not.toContain('<note')
   expect(xml).toContain('<marker start="13/25s" duration="1/25s" value="Piraeus"/>')
   expect(xml).toContain('duration="38/25s"')
   expect(result.scenes[0]).toMatchObject({ frames: 38, sourceRange: { fromFrame: 12, toFrame: 50 } })

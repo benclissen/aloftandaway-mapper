@@ -1,7 +1,29 @@
-import { SYMBOLS, type LegMode, type ProjectPatch, type Route, type Scene, type SymbolKind } from '../../core/index.js'
+import { SYMBOL_ICON, SYMBOLS, type LegMode, type ProjectPatch, type Route, type Scene, type SymbolKind } from '../../core/index.js'
+import { ICONS, type IconName } from '../stage/icons.js'
 import { MODE_LABELS, SYMBOL_LABELS } from './labels.js'
 
 const MODES = Object.keys(MODE_LABELS) as LegMode[]
+
+/** A transport's icon, drawn small beside its name. `none` and `dot` have no icon. */
+function SymbolIcon({ symbol, testId }: { symbol: SymbolKind; testId: string }) {
+  const name = (SYMBOL_ICON as Partial<Record<SymbolKind, string>>)[symbol]
+  const icon = name ? ICONS[name as IconName] : undefined
+  return (
+    <span className="symbol-icon" data-testid={testId} aria-hidden="true">
+      {icon ? (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          {icon.paths.map((d, i) => (
+            <path key={i} d={d} />
+          ))}
+        </svg>
+      ) : symbol === 'dot' ? (
+        <svg width="18" height="18" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="4" fill="currentColor" />
+        </svg>
+      ) : null}
+    </span>
+  )
+}
 
 interface LegsPanelProps {
   scene: Scene
@@ -42,6 +64,7 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
                 {i + 1} · {name(i)} → {name(i + 1)}
               </div>
               <div className="leg-pickers">
+                <SymbolIcon symbol={leg.symbol ?? scene.look.symbol} testId={`leg-icon-${i}`} />
                 <select
                   data-testid={`leg-symbol-${i}`}
                   aria-label={`Change leg ${i + 1} transport`}

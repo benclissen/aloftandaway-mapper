@@ -14,11 +14,38 @@ export const ALLOWED_FPS = [
   { num: 60, den: 1 },
 ] as const
 
-export const THEMES = ['paper', 'blank'] as const
+export const THEMES = [
+  'aloftandaway',
+  'aloftandaway-warm',
+  'paper',
+  'light',
+  'dark',
+  'nautical',
+  'atlas',
+  'outdoor',
+  'satellite',
+  'monochrome',
+  'blank',
+] as const
 export type ThemeId = (typeof THEMES)[number]
 
 /** Highest zoom each theme's tiles cover. Shots deeper than this over-zoom the last tile level. */
-export const THEME_MAX_ZOOM: Record<ThemeId, number> = { paper: 14, blank: 22 }
+export const THEME_MAX_ZOOM: Record<ThemeId, number> = {
+  aloftandaway: 14,
+  'aloftandaway-warm': 14,
+  paper: 14,
+  light: 14,
+  dark: 14,
+  nautical: 14,
+  atlas: 14,
+  outdoor: 14,
+  satellite: 14,
+  monochrome: 14,
+  blank: 22,
+}
+
+export const SYMBOL_STYLES = ['badge', 'badge-line', 'icon'] as const
+export type SymbolStyle = (typeof SYMBOL_STYLES)[number]
 
 export const SIGN_STYLES = ['tag'] as const
 
@@ -144,6 +171,8 @@ export const LookSchema = z.strictObject({
     glow: z.boolean(),
   }),
   symbol: SymbolKindSchema,
+  /** How the symbol is drawn; `badge` when unset. */
+  symbolStyle: z.enum(SYMBOL_STYLES).optional(),
   signStyle: z.enum(SIGN_STYLES),
 })
 export type Look = z.infer<typeof LookSchema>
@@ -162,10 +191,11 @@ export const CameraSchema = z.strictObject({
   end: ShotSchema.optional(),
   follow: z
     .strictObject({
-      zoom: z.number().min(0).max(22),
-      orient: z.enum(['north', 'heading']),
-      lookAhead: z.number().min(0),
-      smoothing: z.number().min(0).max(1),
+      zoom: z.number().min(0).max(22).optional(),
+      orient: z.enum(['north', 'heading']).optional(),
+      lookAhead: z.number().min(0).optional(),
+      smoothing: z.number().min(0).max(1).optional(),
+      pitch: z.number().min(0).max(60).optional(),
     })
     .optional(),
   easing: z.enum(['linear', 'smooth']),
@@ -321,10 +351,10 @@ export function defaultProject(args: {
         stops: [],
         legs: [],
         look: {
-          theme: 'paper',
+          theme: 'aloftandaway',
           labels: 'en',
           terrain: false,
-          line: { color: '#d9472b', width: 4, dash: 'solid', outline: true, glow: false },
+          line: { color: '#dc8376', width: 4, dash: 'solid', outline: true, glow: false },
           symbol: 'dot',
           signStyle: 'tag',
         },

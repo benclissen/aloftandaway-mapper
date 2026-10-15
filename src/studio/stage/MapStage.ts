@@ -1,5 +1,5 @@
 import type { FilterSpecification, LayerSpecification } from '@maplibre/maplibre-gl-style-spec'
-import type { Feature, FeatureCollection, LineString, Point } from 'geojson'
+import type { Feature, FeatureCollection, LineString } from 'geojson'
 import { GeoJSONSource, Map as MapLibreMap, setWorkerUrl } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
@@ -7,10 +7,11 @@ import {
   buildRoute,
   buildTimeline,
   cameraAt,
-  effectiveSymbol,
+  legFlipped,
   layoutSize,
   pointAt,
-  MAP_CREDIT,
+  sceneCredit,
+  joinCredit,
   MAP_DATA_ERROR,
   slicePath,
   unwrapLng,
@@ -22,9 +23,11 @@ import {
   type RenderLayer,
   type Scene,
   type SeaPaths,
+  type Shot,
   type Timeline,
 } from '../../core/index.js'
 import { CREDIT_FONT, drawOverlay, SIGN_FONT, signText } from './overlay.js'
+import { dropElevationTiles, redrawTerrain } from './terrain-internals.js'
 import { buildStyle } from './themes.js'
 
 // MapLibre finds its worker next to its own module, which bundling moves. Point it at the emitted copy.
@@ -39,15 +42,21 @@ export interface MapStageOptions {
   tileBase: string
   /** Studio edit mode: draws the whole route faintly, and the selected leg, for clicking. Never set for renders. */
   editing?: boolean
+  /**
+   * Render mode: makes every terrain frame the same however it was reached, at the cost of reloading elevation tiles
+   * and extra idles per frame. The studio leaves it off and keeps MapLibre's own terrain behaviour.
+   */
+  deterministicTerrain?: boolean
 }
 
 const ROUTE_SOURCE = 'mapper-route'
-const HEAD_SOURCE = 'mapper-head'
 const EDIT_SOURCE = 'mapper-edit'
 /** The layer the studio queries for clicks on the route. */
 export const EDIT_ROUTE_LAYER = 'mapper-edit-route'
 const EDIT_SELECTED_LAYER = 'mapper-edit-selected'
 const IDLE_TIMEOUT_MS = 60_000
+/** At most this many extra camera placements over terrain before a frame counts as settled. */
+const MAX_TERRAIN_SETTLES = 4
 
 interface Loaded {
   project: Project
@@ -66,7 +75,6 @@ function lineFeature(path: LngLat[]): Feature<LineString> | FeatureCollection {
   return { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } }
 }
 
-const pointFeature = (at: LngLat): Feature<Point> => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: at } })
 
 /** Every leg's whole path, each tagged with its index as `leg`. */
 function legsCollection(route: Route): FeatureCollection {
@@ -104,7 +112,7 @@ function editLayers(look: Look, selected: number | undefined): LayerSpecificatio
   ]
 }
 
-/** Route line, outline, glow and head layers for a look, bottom to top. */
+/** Route line, outline and glow layers for a look, bottom to top. */
 function routeLayers(look: Look): LayerSpecification[] {
   const { color, width, dash, outline, glow } = look.line
   const cap = dash === 'dashed' ? 'butt' : 'round'
@@ -136,18 +144,6 @@ function routeLayers(look: Look): LayerSpecification[] {
       'line-color': color,
       'line-width': width,
       ...(dash === 'dashed' ? { 'line-dasharray': [2, 1.5] } : dash === 'dotted' ? { 'line-dasharray': [0.1, 1.6] } : {}),
-    },
-  })
-  // Always added; the head is hidden by emptying its source while it is on a leg whose symbol is `none`.
-  layers.push({
-    id: 'mapper-head',
-    type: 'circle',
-    source: HEAD_SOURCE,
-    paint: {
-      'circle-color': color,
-      'circle-radius': Math.max(5, width * 1.5),
-      'circle-stroke-color': '#ffffff',
-      'circle-stroke-width': 2,
     },
   })
   return layers
@@ -236,7 +232,7 @@ export class MapStage {
 
   /**
    * Lays the stage out for the scene with id `sceneId` in `project`, or its first scene when `sceneId` is left out.
-   * Rebuilds the map style only when the theme or label language changes. Rejects for an unknown scene id.
+   * Rebuilds the map style only when the theme, label language or terrain changes. Rejects for an unknown scene id.
    */
   async load(project: Project, sceneId?: string, seaPaths?: SeaPaths): Promise<void> {
     await this.enqueue(async () => {
@@ -251,20 +247,18 @@ export class MapStage {
         this.sizeOverlay()
       }
 
-      const styleKey = `${scene.look.theme}/${scene.look.labels}`
+      const { theme, labels, terrain } = scene.look
+      const styleKey = `${theme}/${labels}/${terrain}`
       if (styleKey !== this.styleKey) {
         this.mapError = undefined
         const styled = new Promise<void>((resolve) => this.map.once('style.load', () => resolve()))
-        this.map.setStyle(buildStyle(scene.look.theme, { tileBase: this.opts.tileBase, labels: scene.look.labels }), {
-          diff: false,
-        })
+        this.map.setStyle(buildStyle(theme, { tileBase: this.opts.tileBase, labels, terrain }), { diff: false })
         await styled
         this.baseVisibility = new Map(
           this.map.getStyle().layers.map((layer) => [layer.id, layer.layout?.visibility ?? 'visible']),
         )
         this.styleKey = styleKey
         this.map.addSource(ROUTE_SOURCE, { type: 'geojson', data: emptyCollection() })
-        this.map.addSource(HEAD_SOURCE, { type: 'geojson', data: emptyCollection() })
         if (this.opts.editing) this.map.addSource(EDIT_SOURCE, { type: 'geojson', data: emptyCollection() })
         this.routeLayerIds = []
         this.editLayerIds = []
@@ -296,17 +290,19 @@ export class MapStage {
       const { project, scene, route, timeline } = this.require()
       const state = timeline.stateAt(n)
       this.throwMapError()
-      // Listen before changing anything, so an idle from this frame can't be missed.
+      const shot = opts.camera === false ? undefined : cameraAt(scene, project.output.aspect, route, timeline, n)
+      const terrain = shot && this.opts.deterministicTerrain ? this.map.getTerrain() : null
+      // Can throw, so it comes before the idle listener (whose timer would otherwise be left running).
+      if (terrain) dropElevationTiles(this.map, terrain.source)
+      // Listen before changing the map, so an idle from this frame can't be missed. The drop above is synchronous and
+      // idle fires later, so nothing is lost.
       const settled = this.settled()
       this.source(ROUTE_SOURCE).setData(lineFeature(slicePath(route, state.distance)))
-      const onLeg = route.legs.length > 0 ? pointAt(route, state.distance).legIndex : 0
-      this.source(HEAD_SOURCE).setData(
-        effectiveSymbol(scene, onLeg) === 'none' ? emptyCollection() : pointFeature(state.head.at),
-      )
-      if (opts.camera !== false) this.map.jumpTo(cameraAt(scene, project.output.aspect, route, timeline, n))
+      if (shot) this.map.jumpTo(shot)
       // Makes the map render, and so go idle, even when nothing above changed.
       this.map.triggerRepaint()
       await settled
+      if (shot && terrain) await this.settleOnTerrain(shot)
       this.drawOverlay(state)
       // Let the compositor take the overlay before anyone captures the page.
       await nextAnimationFrame()
@@ -334,6 +330,16 @@ export class MapStage {
     if (this.opts.layer !== 'signs') ctx.drawImage(mapCanvas, 0, 0)
     ctx.drawImage(this.overlay, 0, 0, out.width, out.height)
     return out
+  }
+
+  /**
+   * The layout-px position of `at` in the current view. Over terrain it is the point on the ground, at the elevation
+   * the map draws there, which is where the draped route line passes. Stops keep their stored longitude, so this takes
+   * the world copy nearest the view, or nearest `centerLng` when given.
+   */
+  project([lng, lat]: LngLat, centerLng: number = this.map.getCenter().lng): [number, number] {
+    const p = this.map.project([unwrapLng(centerLng, lng), lat])
+    return [p.x, p.y]
   }
 
   destroy(): void {
@@ -366,6 +372,32 @@ export class MapStage {
     const source = this.map.getSource<GeoJSONSource>(id)
     if (!source) throw new Error(`The map has no '${id}' source.`)
     return source
+  }
+
+  /**
+   * Makes a terrain frame the same however it was reached. Its elevation tiles were dropped before the camera moved,
+   * since tiles kept from earlier frames choose the tiles drawn and where the centre sits. The centre sits on the
+   * ground, at the elevation of whatever tiles were drawn when it moved, and tiles that load later move it again: so
+   * place the camera again on the tiles now loaded, and again after the tiles that view needs, until the centre's
+   * elevation holds. Then redraw the terrain from scratch: MapLibre keeps each terrain tile's drawing until that tile
+   * changes, so a tile whose edges were filled in from a neighbour that loaded after it still shows its old edges.
+   */
+  private async settleOnTerrain(shot: Shot): Promise<void> {
+    for (let i = 0; i < MAX_TERRAIN_SETTLES; i++) {
+      const elevation = this.map.getCenterElevation()
+      const settled = this.settled()
+      this.map.jumpTo(shot)
+      this.map.triggerRepaint()
+      await settled
+      if (this.map.getCenterElevation() === elevation) break
+      if (i === MAX_TERRAIN_SETTLES - 1) {
+        console.warn(`The camera's height over terrain was still changing after ${MAX_TERRAIN_SETTLES} placements; this frame may differ between renders.`)
+      }
+    }
+    const redrawn = this.settled()
+    redrawTerrain(this.map)
+    this.map.triggerRepaint()
+    await redrawn
   }
 
   /** Resolves when the map next goes idle, or rejects on a map error or after the timeout. */
@@ -411,29 +443,29 @@ export class MapStage {
   }
 
   private drawOverlay(state: FrameState): void {
-    const { project, scene } = this.require()
+    const { project, scene, route } = this.require()
     this.overlayState = state
     const center = this.map.getCenter().lng
+    const legIndex = route.legs.length > 0 ? pointAt(route, state.distance).legIndex : 0
     drawOverlay(this.ctx, {
       scene,
       credit: project.credit,
       state,
-      // Stops keep their stored longitude; take the world copy nearest the view.
-      project2px: ([lng, lat]) => {
-        const p = this.map.project([unwrapLng(center, lng), lat])
-        return [p.x, p.y]
-      },
+      legIndex,
+      flipped: legFlipped(route, legIndex),
+      bearing: this.map.getBearing(),
+      project2px: (at) => this.project(at, center),
       pixelRatio: this.opts.pixelRatio,
       layer: this.opts.layer,
     })
   }
 
-  /** Loads exactly the Inter subsets this scene's text needs, so nothing falls back while drawing. */
+  /** Loads exactly the Plus Jakarta Sans subsets this scene's text needs, so nothing falls back while drawing. */
   private async loadFonts(scene: Scene): Promise<void> {
     const texts = scene.stops.map(signText)
     await Promise.all([
       ...texts.map((text) => document.fonts.load(SIGN_FONT, text)),
-      document.fonts.load(CREDIT_FONT, MAP_CREDIT),
+      document.fonts.load(CREDIT_FONT, joinCredit(sceneCredit(scene))),
     ])
   }
 }

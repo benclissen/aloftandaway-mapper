@@ -101,7 +101,7 @@ test('agent flow end to end', async () => {
       expect(Date.now(), 'render did not finish in time').toBeLessThan(deadline)
       await sleep(500)
     }
-    expect(textOf(status)).toContain('Credit required: © OpenStreetMap contributors · OpenMapTiles · OpenFreeMap (burned in)')
+    expect(textOf(status)).toContain('No map credit is required for this render.')
     // Some clients show the model only structuredContent, so the credit must be there too.
     expect((status.structuredContent as { summary: string }).summary).toBe(textOf(status))
 
@@ -145,7 +145,7 @@ test('a layered render returns the FCPXML and three layers', async () => {
       await sleep(500)
     }
     const text = textOf(status)
-    expect(text).toContain('Credit required: © OpenStreetMap contributors · OpenMapTiles · OpenFreeMap (burned in)')
+    expect(text).toContain('No map credit is required for this render.')
     expect(text).not.toContain('undefined')
     const result = (status.structuredContent as { result: { video?: string; fcpxml: string; fcpxmlValidation: string; outputs: { layer: string; path: string }[] } }).result
     expect(result.video).toBeUndefined()

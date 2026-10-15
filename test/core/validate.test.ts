@@ -1,5 +1,14 @@
 import { describe, expect, test } from 'vitest'
-import { NO_LAND_DATA, seaLegKey, validateProject, type Issue, type Project, type SeaPaths } from '../../src/core/index.js'
+import {
+  NO_LAND_DATA,
+  SYMBOLS,
+  SYMBOL_STYLES,
+  seaLegKey,
+  validateProject,
+  type Issue,
+  type Project,
+  type SeaPaths,
+} from '../../src/core/index.js'
 import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 const paperLook = { ...sceneOf(greekIslands()).look, theme: 'paper' as const }
@@ -96,11 +105,31 @@ describe('validateProject', () => {
     expect(warnings.filter((w) => w.code === 'zoom-above-max')).toEqual([
       expect.objectContaining({ path: ['scenes', 0, 'camera'], fix: expect.stringContaining('blank') }),
     ])
+    // One leg: the default start is the first stop, capped at the theme's maximum, so only the end is over it.
+    const only = warnings.find((w) => w.code === 'zoom-above-max')!
+    expect(only.message).toContain('fitted end view is at zoom')
     // The agent can't see a fitted shot in the project, so the fix says where to find it.
-    const fix = warnings.find((w) => w.code === 'zoom-above-max')!.fix!
-    expect(fix).toContain('update_project sceneSet')
-    expect(fix).toContain('camera.resolvedStart')
-    expect(fix).toContain('camera.resolvedEnd')
+    expect(only.fix).toContain('update_project sceneSet')
+    expect(only.fix).toContain('camera.end')
+    expect(only.fix).not.toContain('camera.start')
+    expect(only.fix).toContain('camera.resolvedEnd')
+    expect(only.fix).not.toContain('resolvedStart')
+    // Both fitted shots over the maximum: still one warning, naming both.
+    sceneOf(project).camera = { mode: 'fixed', easing: 'smooth' }
+    const both = validateProject(project).warnings.filter((w) => w.code === 'zoom-above-max')
+    expect(both).toEqual([expect.objectContaining({ path: ['scenes', 0, 'camera'] })])
+    expect(both[0]!.message).toContain('fitted start and end views are at zoom 16')
+    expect(both[0]!.fix).toContain('camera.resolvedStart and scenes[0].camera.resolvedEnd')
+  })
+
+  test('a short first hop gives no zoom-above-max warning', () => {
+    // The default glide opens on the 1 km hop, but no closer than the paper theme's maximum.
+    const project = stopsAt([
+      [25, 37],
+      [25.01, 37],
+      [27, 37],
+    ], { look: paperLook })
+    expect(codes(validateProject(project).warnings)).not.toContain('zoom-above-max')
   })
 
   test('sea and air legs are not warnings', () => {
@@ -145,25 +174,66 @@ describe('validateProject', () => {
     expect(validateProject(project).warnings).toEqual([])
   })
 
-  test('terrain is a not-available-yet warning', () => {
+  test('validate no longer warns for terrain', () => {
     const project = greekIslands()
     sceneOf(project).look = { ...sceneOf(project).look, terrain: true }
-    expect(validateProject(project).warnings).toEqual([
-      expect.objectContaining({ code: 'not-available-yet', path: ['scenes', 0, 'look', 'terrain'] }),
-    ])
+    expect(validateProject(project).warnings).toEqual([])
   })
 
-  test('a symbol other than none or dot is a not-available-yet warning', () => {
-    for (const symbol of ['none', 'dot'] as const) {
+  test('validate no longer warns for transport symbols', () => {
+    for (const symbol of ['none', 'dot', 'arrow', 'car', 'cruise-ship', 'plane', 'helicopter', 'balloon'] as const) {
       const project = greekIslands()
       sceneOf(project).look = { ...sceneOf(project).look, symbol }
       expect(validateProject(project).warnings).toEqual([])
     }
-    const project = greekIslands()
-    sceneOf(project).look = { ...sceneOf(project).look, symbol: 'arrow' }
-    expect(validateProject(project).warnings).toEqual([
-      expect.objectContaining({ code: 'not-available-yet', path: ['scenes', 0, 'look', 'symbol'] }),
-    ])
+  })
+
+  test('no buildable project emits not-available-yet', () => {
+    // Every look option and leg mode the schema allows, on one project at a time.
+    const modes = ['line', 'sea', 'air'] as const
+    for (const symbol of SYMBOLS) {
+      for (const symbolStyle of SYMBOL_STYLES) {
+        const project = greekIslands()
+        const scene = sceneOf(project)
+        scene.look = { ...scene.look, terrain: true, symbol, symbolStyle }
+        scene.legs = scene.legs.map((leg, i) => ({ ...leg, mode: modes[i % modes.length]!, symbol }))
+        scene.camera = { ...scene.camera, mode: 'follow', follow: { zoom: 12, orient: 'north', lookAhead: 1, smoothing: 0.5 } }
+        const { errors, warnings } = validateProject(project)
+        expect(codes([...errors, ...warnings])).not.toContain('not-available-yet')
+      }
+    }
+  })
+
+  test('satellite warns for a shot over zoom 14, and not at 14', () => {
+    const satellite = (zoom: number) =>
+      stopsAt([
+        [23.6466, 37.942],
+        [25.3289, 37.4467],
+      ], {
+        look: { ...sceneOf(greekIslands()).look, theme: 'satellite' },
+        camera: { mode: 'glide', easing: 'smooth', start: { center: [23.6466, 37.942], zoom, bearing: 0, pitch: 0 } },
+      })
+    const over = validateProject(satellite(15)).warnings.filter((w) => w.code === 'zoom-above-max')
+    expect(over).toEqual([expect.objectContaining({ path: ['scenes', 0, 'camera', 'start', 'zoom'] })])
+    expect(over[0]!.message).toContain('satellite theme')
+    expect(over[0]!.message).toContain('zoom 14')
+    expect(codes(validateProject(satellite(14)).warnings)).not.toContain('zoom-above-max')
+  })
+
+  test('terrain with no tilt gives no warning', () => {
+    const project = stopsAt([
+      [6.8694, 45.9237],
+      [6.9724, 45.7967],
+    ], {
+      look: { ...sceneOf(greekIslands()).look, theme: 'outdoor', terrain: true },
+      camera: {
+        mode: 'glide',
+        easing: 'smooth',
+        start: { center: [6.8694, 45.9237], zoom: 9, bearing: 0, pitch: 0 },
+        end: { center: [6.9724, 45.7967], zoom: 9, bearing: 0, pitch: 0 },
+      },
+    })
+    expect(validateProject(project)).toEqual({ errors: [], warnings: [] })
   })
 
   test('every issue has a path and a fix sentence', () => {

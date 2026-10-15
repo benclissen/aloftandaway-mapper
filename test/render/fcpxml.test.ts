@@ -40,6 +40,7 @@ function twoScenes(output: Output = out25): FcpxmlInput {
     projectName: 'Trip',
     output,
     credit: 'burned',
+    creditLines: [MAP_CREDIT],
     scenes: [scene('a', 'Drive', 50, '/renders/trip/01-drive'), scene('b', 'Sail', 75, '/renders/trip/02-sail')],
   }
 }
@@ -251,6 +252,7 @@ describe('writeFcpxml', () => {
       projectName: 'Crete',
       output: out25,
       credit: 'burned',
+      creditLines: [MAP_CREDIT],
       scenes: [scene('x', 'Crete', 25, '/r/x'), scene('y', 'Crete', 25, '/r/y')],
     }
     const doc = parse(writeFcpxml(input))
@@ -268,6 +270,12 @@ describe('writeFcpxml', () => {
     const burned = writeFcpxml(twoScenes())
     expect(burned).not.toContain('<note')
     expect(burned).not.toContain('OpenStreetMap')
+  })
+
+  test('notes carry every credit line', () => {
+    const lines = [MAP_CREDIT, 'Satellite line', 'Terrain line']
+    const doc = parse(writeFcpxml({ ...twoScenes(), credit: 'description', creditLines: lines }))
+    for (const c of compoundClips(doc)) expect(c.sequence.note).toEqual([lines.join(' · ')])
   })
 
   test.each([

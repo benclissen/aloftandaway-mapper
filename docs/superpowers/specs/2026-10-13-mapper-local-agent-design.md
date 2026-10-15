@@ -1,7 +1,7 @@
 # Mapper: local, agent-driven design
 
 Date: 2026-10-13
-Status: approved; revised 2026-10-14
+Status: approved; revised 2026-10-15
 
 **Revision, 2026-10-14:** the studio gains hands-on route editing (waypoints,
 curved/sharp points, transport per leg, map style, undo). The transport list
@@ -45,6 +45,35 @@ describe the layered export unless they say otherwise.
 - **`import_gpx`** also takes `legMode?` (default `'line'`) and `symbol?`, as `set_stops` does.
 - **`validateProject(project, { seaPaths? })`.** Sea checks run only when `seaPaths` is given.
 - **Deferred to stage 6:** positional via drag index and index-based leg selection.
+
+**Revision, 2026-10-15 (stage 5 decisions):**
+
+- **Brand source:** the Aloft & Away design system, kept outside this repo. It defines coral `#dc8376`, navy `#0a2434`, midnight `#1c1930`, sage `#bcc8a2`, sand `#867a5b`, page grey `#F4F4F4`, Plus Jakarta Sans, and Lucide icons. The palette and font names are public by the user's choice. Recoleta (the brand display font) is commercial and is not used or shipped.
+- **Eleven styles:** `aloftandaway` (the series-map look, and the default for new projects), `aloftandaway-warm`, `paper`, `light`, `dark`, `nautical`, `atlas`, `outdoor`, `satellite`, `monochrome` and `blank`.
+- **`paper` is unchanged.** It keeps exactly its old layers, with no minor roads. Minor roads are a palette switch that the other vector styles turn on.
+- **Symbol styles:** `look.symbolStyle?: 'badge' | 'badge-line' | 'icon'`, default `badge`.
+  - `badge` is a navy disc with a white ring and a white icon.
+  - `badge-line` is the same disc in the line colour.
+  - `icon` is a navy icon on a white halo.
+  - `dot` keeps the old head look in every style, and `none` draws nothing.
+- **Which way icons face:**
+  - Side-view icons flip to face their direction. The flip is decided per leg: flipped when the leg's end is west of its start, so a loop flips once per leg and never mid-leg. A leg that ends due north or south of its start does not flip.
+  - Plane, helicopter and arrow turn with the line.
+  - Walk, train, tram, cable car, cruise ship and balloon stay upright.
+- **Icons:** 14 from Lucide (ISC, `lucide-static` 1.57.0), plus six drawn for Mapper in the same style: campervan, coach, ferry, speedboat, balloon and arrow.
+- **Signs:** only the existing `tag` style. Its font is Plus Jakarta Sans 600, in every style.
+- **Map labels:** Plus Jakarta Sans in the two Aloft & Away styles, from glyphs built once and committed. Every other style keeps OpenFreeMap's Noto Sans.
+- **Latin names in the Aloft & Away styles.** The committed glyphs cover Latin only, so those styles use Latin-script names: `labels: 'en'` tries name:en, then name:latin, then name; `local` tries name:latin, then name. Other styles keep Noto Sans and the old name logic.
+- **New project defaults:** theme `aloftandaway`, line colour `#dc8376`, `symbolStyle` left unset (so `badge`).
+- **Terrain:** `look.terrain: true` turns on 3D elevation (exaggeration 1.3) from AWS Terrain Tiles (Terrarium encoding). Hill shading is added in every style except `satellite`, whose elevation data includes the sea floor and would shade blotchily over imagery. `outdoor` always has hill shading, even with terrain off.
+- **Terrain rendering cost:** frames with terrain take about 1.5 times as long (about 155 ms against 100 ms at 1080p). Stop dots, signs and the vehicle are drawn on top and are never hidden behind ridges.
+- **Satellite:** the EOx `s2cloudless_3857` layer (2016), maximum zoom 14.
+- **Tilt:** shot `pitch` (0 to 60, unchanged) and a new optional `camera.follow.pitch`.
+- **Follow fields:** every `camera.follow` field becomes optional and is filled from defaults: `zoom` (as before), `orient: 'north'`, `lookAhead: 0.25`, `smoothing: 0.2`, `pitch: follow.pitch ?? camera.start.pitch ?? 0`. The aim point is capped at a quarter of the frame. With `orient: 'heading'` the bearing is smoothed three times more slowly than the position, so the turn at a stop happens mostly during its pause. This replaces the stage 4 defaults (lookAhead 1, smoothing 0.5).
+- **Default glide** (no `camera.start`): opens on the first leg's fitted shot, capped at the style's maximum zoom. On a one-leg route, or when that fit is within 0.5 zoom of the whole route, it opens closer in on the first stop. It pulls out to the whole route over the first leg's travel, then holds. With an explicit `start`, the glide runs over the whole clip as before. A `fixed` camera with no start shows the whole route. This fixes the static default glide found in the stage 4 test.
+- **Credit depends on the style.** `sceneCredit(scene, 'burned' | 'written')` lists the lines a scene needs. Burned in, the map credit always comes first, also for satellite. Satellite adds "Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016)". Terrain adds "Terrain: USGS, Copernicus EU-DEM, NOAA ETOPO1 and others". The written form (FCPXML notes, render manifest, MCP tool text) carries the full EOxCloudless wording, with https://cloudless.eox.at and CC BY 4.0, and the full terrain attribution list. The strings are in `src/core/credit.ts`. `blank` without terrain has no credit.
+- **Changes for existing projects:** a glide with no `start` opens on the first leg; follow has the look-ahead cap and slower heading turns; `terrain: true` projects render 3D (they were flat); non-dot symbols draw icons in place of the dot; sign text uses Plus Jakarta Sans.
+- **Still parked:** the flight bow size and the Baltic skerries.
 
 ## Purpose
 
@@ -204,8 +233,8 @@ type SymbolKind =
   | 'plane' | 'helicopter' | 'balloon'
 
 type ThemeId =
-  | 'aloftandaway' | 'paper' | 'light' | 'dark' | 'nautical'
-  | 'atlas' | 'outdoor' | 'satellite' | 'monochrome'
+  | 'aloftandaway' | 'aloftandaway-warm' | 'paper' | 'light' | 'dark' | 'nautical'
+  | 'atlas' | 'outdoor' | 'satellite' | 'monochrome' | 'blank'
 
 interface Look {
   theme: ThemeId
@@ -213,6 +242,7 @@ interface Look {
   terrain: boolean
   line: { color: string; width: number; dash: 'solid' | 'dashed' | 'dotted'; outline: boolean; glow: boolean }
   symbol: SymbolKind
+  symbolStyle?: 'badge' | 'badge-line' | 'icon'  // how the symbol is drawn; badge when unset
   signStyle: string               // built-in sign style id
 }
 
@@ -222,7 +252,7 @@ interface Camera {
   mode: 'fixed' | 'glide' | 'follow'
   start?: Shot                    // fixed uses start; glide uses start → end
   end?: Shot
-  follow?: { zoom: number; orient: 'north' | 'heading'; lookAhead: number; smoothing: number }
+  follow?: { zoom?: number; orient?: 'north' | 'heading'; lookAhead?: number; smoothing?: number; pitch?: number }  // every field optional, filled from defaults
   easing: 'linear' | 'smooth'
 }
 ```
@@ -453,8 +483,8 @@ Studio render mode (`?mode=render&scene=<id>&layer=map|route|signs|all`):
    pixels in the page, and stream them over the server's WebSocket to
    ffmpeg's stdin.
 4. Layers:
-   - **map**: basemap, terrain and labels, plus the map credit when
-     `credit = 'burned'`. Encoded as ProRes 422 HQ (`prores_ks -profile:v 3`).
+   - **map**: basemap, terrain and labels, plus the credit lines the style
+     needs when `credit = 'burned'` (see the stage 5 revision). Encoded as ProRes 422 HQ (`prores_ks -profile:v 3`).
    - **route**: a transparent background with every basemap layer hidden.
      Terrain stays loaded but invisible, so the line drapes correctly. Holds
      the line, symbol and start dot. Encoded as ProRes 4444
@@ -576,8 +606,8 @@ Each stage gets its own implementation plan.
    undo and redo).
 4. **Routes**: sea routing, `air` arcs, follow camera, GPX import,
    `validate_project` warnings.
-5. **Look**: the full transport set (about 20 symbols) and the nine themes
-   from the style builder, sign styles, terrain and tilt.
+5. **Look**: the full transport set (about 20 symbols) and the eleven themes
+   from the style builder, terrain and tilt.
 6. **Scenes**: several scenes per project, scene ops and the `scene`
    argument on tools, studio scene tabs, renders per scene or joined, a
    compound clip per scene in FCPXML.

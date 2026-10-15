@@ -45,6 +45,34 @@ export function greekIslands(scene: Partial<Scene> = {}): Project {
   )
 }
 
+/** Three stops around Mont Blanc and the Matterhorn, on the outdoor theme with terrain on. */
+export function alpine(scene: Partial<Scene> = {}): Project {
+  const project = lineProject(
+    'Alpine',
+    [
+      stop('chamonix', 'Chamonix', [6.8694, 45.9237], { terminal: true }),
+      stop('courmayeur', 'Courmayeur', [6.9724, 45.7967]),
+      stop('zermatt', 'Zermatt', [7.7491, 46.0207], { terminal: true }),
+    ],
+    {},
+  )
+  const base = sceneOf(project)
+  project.scenes[0] = { ...base, look: { ...base.look, theme: 'outdoor', terrain: true }, ...scene }
+  return project
+}
+
+/** {@link alpine} under a glide camera tilted to pitch 50, opening over the Mont Blanc massif. */
+export function alpineTilted(): Project {
+  return alpine({
+    camera: {
+      mode: 'glide',
+      easing: 'smooth',
+      start: { center: [6.95, 45.88], zoom: 9.5, bearing: 0, pitch: 50 },
+      end: { center: [7.45, 45.95], zoom: 9.5, bearing: 15, pitch: 50 },
+    },
+  })
+}
+
 /** The Greek Islands stops with every leg by sea, on the blank theme. */
 export function cruise(): Project {
   const project = greekIslands()

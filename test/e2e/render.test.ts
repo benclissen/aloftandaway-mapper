@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { afterAll, beforeAll, expect, test } from 'vitest'
-import { MAP_CREDIT, type Project } from '../../src/core/index.js'
+import { type Project } from '../../src/core/index.js'
 import { cancelRender, renderStatus, startRenderJob, type RenderStatus } from '../../src/render/jobs.js'
 import { closePreviews, previewFrame } from '../../src/render/preview.js'
 import { frameRange, renderProject } from '../../src/render/render.js'
@@ -90,7 +90,7 @@ test('renders a 2-second ProRes clip', async () => {
   expect([stream.color_space, stream.color_transfer, stream.color_primaries]).toEqual(['bt709', 'bt709', 'bt709'])
 
   const manifest = readManifest(result.manifest)
-  expect(manifest.credit).toBe(MAP_CREDIT)
+  expect(manifest.credit).toBe('') // the blank theme shows no map data
   expect(manifest.creditPlacement).toBe('burned')
   expect(manifest.codec).toBe('prores')
   expect(manifest.range).toEqual({ fromFrame: 0, toFrame: 50 })

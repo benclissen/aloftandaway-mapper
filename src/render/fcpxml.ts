@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { MAP_CREDIT, frameSize, type Fps } from '../core/index.js'
+import { frameSize, joinCredit, type Fps } from '../core/index.js'
 import type { FcpxmlInput, SceneExport } from './export-types.js'
 
 /** Exact FCPXML rational time for a whole number of frames, e.g. `1001/24000s`. */
@@ -136,7 +136,9 @@ export function writeFcpxml(input: FcpxmlInput): string {
       `    <media${attrs({ id: ids.media, name: compoundName(scene) })}>`,
       `      <sequence${attrs({ format: formatId, duration, tcStart: '0s', tcFormat: 'NDF' })}>`,
     )
-    if (input.credit === 'description') lines.push(`        <note>${escapeText(MAP_CREDIT)}</note>`)
+    if (input.credit === 'description' && input.creditLines.length > 0) {
+      lines.push(`        <note>${escapeText(joinCredit(input.creditLines))}</note>`)
+    }
     const [base, ...connected] = LAYERS
     lines.push(
       '        <spine>',

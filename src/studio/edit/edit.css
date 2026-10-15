@@ -12,7 +12,7 @@
   --error: #f28b82;
   --thumb: 14px;
 
-  font: 13px/1.4 Inter, system-ui, sans-serif;
+  font: 500 13px/1.4 'Plus Jakarta Sans', system-ui, sans-serif;
   color: var(--text);
   background: var(--bg);
 }
@@ -437,7 +437,7 @@
 
 .leg-pickers {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 76px;
+  grid-template-columns: 20px minmax(0, 1fr) 76px;
   gap: 6px;
 }
 
@@ -466,5 +466,20 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  color: var(--muted);
+}
+
+.style-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.symbol-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  flex: none;
   color: var(--muted);
 }

@@ -1,4 +1,4 @@
-import { parseProject, type Project, type RenderLayer, type RenderPageOptions } from '../core/index.js'
+import { parseProject, type LngLat, type Project, type RenderLayer, type RenderPageOptions } from '../core/index.js'
 import { CREDIT_FONT, SIGN_FONT } from './stage/overlay.js'
 import { MapStage } from './stage/MapStage.js'
 
@@ -22,6 +22,11 @@ export interface MapperPage {
   renderFrame(n: number): Promise<void>
   /** True when the map's WebGL context has been lost, so a frame captured now may be blank. */
   contextLost(): boolean
+  /**
+   * The layout-px position of `at` on the frame last shown: on the ground when terrain is on, where the overlay
+   * draws stop dots, signs and the vehicle. For checking placement.
+   */
+  project(at: LngLat): [number, number]
 }
 
 declare global {
@@ -80,7 +85,7 @@ export function startRenderMode(root: HTMLElement): void {
       if (!stage || stageRatio !== pixelRatio || stageLayer !== layer) {
         stopWatchingContext?.()
         stage?.destroy()
-        stage = new MapStage(root, { pixelRatio, interactive: false, tileBase, layer })
+        stage = new MapStage(root, { pixelRatio, interactive: false, tileBase, layer, deterministicTerrain: true })
         stageRatio = pixelRatio
         stageLayer = layer
         const canvas = stage.map.getCanvas()
@@ -109,6 +114,10 @@ export function startRenderMode(root: HTMLElement): void {
         stopWatchingContext?.()
         loseGlContext(stage.map.getCanvas())
       }
+    },
+    project(at) {
+      if (!stage) throw new Error('Call mapper.load(project) before project.')
+      return stage.project(at)
     },
     contextLost() {
       if (!stage) throw new Error('Call mapper.load(project) before contextLost.')

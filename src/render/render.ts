@@ -5,7 +5,8 @@ import { performance } from 'node:perf_hooks'
 import {
   fpsValue,
   frameSize,
-  MAP_CREDIT,
+  joinCredit,
+  projectCredit,
   validateProject,
   type Project,
   type RenderLayer,
@@ -169,7 +170,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     name: snapshot.name,
     output: snapshot.output,
     frameSize: size,
-    credit: MAP_CREDIT,
+    credit: joinCredit(projectCredit(snapshot, 'written')),
     creditPlacement: snapshot.credit,
     status,
     scenes: plan.scenes.map((scene) => ({ id: scene.id, name: scene.name, range: sceneRange(plan.passes, scene.id) })),

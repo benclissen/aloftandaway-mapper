@@ -40,6 +40,18 @@ function setup(): Promise<Shared> {
   return shared
 }
 
+let flatTile: Buffer | undefined
+
+/** A 256 px Terrarium elevation tile at sea level everywhere (red 128, green 0, blue 0). */
+function flatTerrainTile(): Buffer {
+  if (!flatTile) {
+    const tile = new PNG({ width: 256, height: 256 })
+    for (let i = 0; i < tile.data.length; i += 4) tile.data.set([128, 0, 0, 255], i)
+    flatTile = PNG.sync.write(tile)
+  }
+  return flatTile
+}
+
 /**
  * Opens render mode at the layout size and loads the project into it. With `tileUpstream`, the page gets its own
  * server whose tile proxy fetches from there.
@@ -47,7 +59,7 @@ function setup(): Promise<Shared> {
 export async function openRenderPage(
   project: Project,
   pixelRatio: number,
-  opts: { tileUpstream?: string; layer?: RenderLayer; seaPaths?: SeaPaths } = {},
+  opts: { tileUpstream?: string; layer?: RenderLayer; seaPaths?: SeaPaths; flatTerrain?: boolean } = {},
 ): Promise<{ page: Page; close(): Promise<void> }> {
   const { server: sharedServer, browser, tempDir } = await setup()
   const server = opts.tileUpstream
@@ -59,6 +71,9 @@ export async function openRenderPage(
     : sharedServer
   const size = layoutSize(project.output.aspect)
   const context = await browser.newContext({ viewport: size, deviceScaleFactor: 1 })
+  // Terrain on the blank theme is the one offline scene that has a credit. Its elevation tiles come from the network
+  // (or the server's proxy), so a test that only needs the credit can answer them with sea level instead.
+  if (opts.flatTerrain) await context.route('**/tiles/terrain/**', (route) => route.fulfill({ contentType: 'image/png', body: flatTerrainTile() }))
   const page = await context.newPage()
   page.on('pageerror', (error) => process.stderr.write(`page error: ${error.message}\n`))
   await page.goto(`${server.base}studio/?mode=render`)

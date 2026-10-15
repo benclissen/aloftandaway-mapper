@@ -31,7 +31,8 @@ page.
    `preview_frame` for a closer look at one moment.
 6. Tweak with `update_project`, then check the contact sheet again. `set`
    changes the project's name, output and credit. `sceneSet` changes the
-   scene's name, timing, look and camera (for example `look.theme`). `ops`
+   scene's name, timing, look and camera (for example `look.theme`,
+   `look.terrain` or `look.symbolStyle`). `ops`
    edits stops, legs and via points. Passing `null` removes a key.
 7. `open_studio` and give the user the link. They can scrub the preview, drag
    stops, set start and end shots, and reshape routes: click a leg to select
@@ -65,12 +66,13 @@ page.
 - Air legs draw as great-circle flight arcs. Via points split an air leg into
   arcs that meet at corners.
 - Follow camera: set `camera.mode: 'follow'` through `sceneSet`, with
-  `camera.follow { zoom, orient, lookAhead, smoothing }`. `orient` is `'north'`
+  `camera.follow { zoom, orient, lookAhead, smoothing, pitch }`. Every field is
+  optional, and a partial object is fine. `orient` is `'north'` (the default)
   or `'heading'`. `lookAhead` is in seconds: the camera aims where the symbol
-  will be that many seconds later. `smoothing` runs from 0 to 1. A stored
-  `follow` must give all four fields. Omit `follow` for the defaults: the
-  fitted zoom + 3, capped at the theme's maximum, north-up, 1 s look-ahead,
-  smoothing 0.5. `get_project` shows the resolved values as `resolvedFollow`.
+  will be that many seconds later (default 0.25). `smoothing` runs from 0 to 1
+  (default 0.2). `pitch` tilts the view from 0 to 60 (default: the start shot's
+  pitch, or 0). Missing `zoom` is the fitted zoom + 3, capped at the theme's
+  maximum. `get_project` shows the resolved values as `resolvedFollow`.
 - Computed sea paths are cached in `<project>/.mapper/paths.json`. The cache is
   safe to delete; Mapper recomputes the paths on the next read.
 - Set the transport per leg with `update_leg`, for example
@@ -84,6 +86,53 @@ page.
 - Stops, legs, look, camera and timing live in `project.scenes[0]`. The
   per-scene timeline and resolved camera shots are in `scenes[0]` of the
   result, next to `project`.
+
+## Look and camera
+
+Set the style with `look.theme`, through `sceneSet` or the studio's style
+picker. Pick by what the film needs:
+
+- `aloftandaway`: the series-map look, with cool greys, a navy coast line and
+  spaced capitals. Use it for Aloft & Away films. It's the default.
+- `aloftandaway-warm`: the same look with sage and sand tones. Use it when the
+  film needs more warmth.
+- `paper`: warm off-white land and a grey-blue sea, like a printed map. Use it
+  for a quiet, classic look.
+- `light`: near-white land and a pale blue sea. Use it when the map should stay
+  out of the way.
+- `dark`: night blues with pale labels. Use it for night scenes or a moody cut.
+- `nautical`: a deep sea against parchment land, like a chart. Use it for
+  passages and sailing.
+- `atlas`: a school atlas, with cream land and red borders. Use it for a
+  retro, educational feel.
+- `outdoor`: greens and hill shading. Use it for walking and mountain routes.
+  It always shows hills.
+- `satellite`: 2016 satellite imagery with white labels. Use it when the place
+  itself is the subject. It adds a credit line.
+- `monochrome`: greys only, so any line colour stands out. Use it when the
+  route colour has to carry the film.
+- `blank`: a plain background with no map data. Use it for a route on its own.
+
+- Terrain: `look.terrain: true` adds 3D elevation. Every style except
+  `satellite` also gets hill shading. Pair it with a shot `pitch` (0 to 60) or
+  `camera.follow.pitch` to tilt the view. Terrain renders take about 1.5 times
+  as long.
+- Symbols: `look.symbol` sets the scene's default transport, and a leg's
+  `symbol` overrides it. `look.symbolStyle` sets how it's drawn: `badge` (the
+  default, a navy disc with a white ring and a white icon), `badge-line` (the
+  disc in the line colour), or `icon` (a navy icon on a white halo). `dot` is
+  the plain head and `none` draws nothing.
+- Transports: land is walk, bike, motorcycle, scooter, car, campervan, bus,
+  coach, train, tram and cable-car. Sea is ferry, cruise-ship, sailboat,
+  speedboat and kayak. Air is plane, helicopter and balloon. Lines are dot,
+  arrow and none.
+- Facing: side-view vehicles (bike, car, bus and the rest) mirror to face the
+  way they travel. The flip is decided per leg, so a loop flips once per leg.
+  Plane, helicopter and arrow turn with the line. Walk, train, tram, cable-car,
+  cruise-ship and balloon stay upright.
+- Signs: `tag` is the only sign style. Its font is the same in every style.
+- Camera: a glide with no `start` opens on the first leg and pulls out to the
+  whole route. A `fixed` camera with no `start` shows the whole route.
 
 ## Rules
 
@@ -101,9 +150,6 @@ page.
 
 ## What Mapper can't do yet
 
-- Terrain isn't available. Every transport except `none` draws as the dot for
-  now. A `look.symbol` other than `dot` or `none` gets a validation warning;
-  per-leg transports don't.
 - One scene per project.
 
 ## Reading `render_status`
@@ -171,17 +217,37 @@ clip, the default) and `preview` (an H.264 check clip). From a shell:
 - Final Cut import hasn't been checked by hand yet. See
   `docs/final-cut-export.md`.
 
+## Changes for existing projects
+
+Projects made before stage 5 still load, with these intended differences:
+
+- A glide with no `camera.start` now opens on the first leg and pulls out to the whole route.
+- Follow mode caps how far ahead it aims and turns more slowly with `orient: 'heading'`.
+- A project with `terrain: true` now renders in 3D. It used to render flat.
+- A symbol other than `dot` now draws its icon in place of the dot.
+- Sign text uses Plus Jakarta Sans.
+
 ## Credit
 
-Every render needs this map credit, exactly as written:
+Every render that shows map data needs this map credit, exactly as written:
 
 `© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap`
 
-By default it's burned into the bottom-right of the video. If the project's
-`credit` is `description`, tell the user to put it in the video description.
-The FCPXML repeats it in the compound's notes, but the description still needs
-it.
-`render_status` repeats the credit when the render is done.
+Some looks need more lines:
+
+- `satellite` adds `Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016)`.
+- Elevation data adds `Terrain: USGS, Copernicus EU-DEM, NOAA ETOPO1 and others`. That is
+  `look.terrain: true`, and also `outdoor`, which always shades hills.
+- `blank` with terrain off needs no credit. It shows no map data (its sea routing data is
+  Natural Earth, which is public domain).
+
+By default the short lines are burned into the bottom-right of the video, but
+the full text still belongs in the video description. If the project's
+`credit` is `description`, nothing is burned in, so tell the user to put the
+full credit in the description. The render summary and `render_status` give
+that full text: the EOxCloudless
+wording with its link and licence, and the complete terrain attribution. The
+FCPXML repeats it in the compound's notes, but the description still needs it.
 
 ## Example
 

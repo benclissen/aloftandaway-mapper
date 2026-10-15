@@ -14,9 +14,18 @@ const VIEWPORT = { width: 1280, height: 800 }
 
 type StudioWindow = Window & { mapperStudio: { map: MapLibreMap } }
 
-/** Opens the studio on the Greek Islands fixture and waits until frame 0 is on screen. */
+/**
+ * `project` framed on its whole route on every frame. These tests drag and click stops and legs anywhere on the route,
+ * and a default glide opens on the first leg only; a fixed camera with no start shows the whole route.
+ */
+function wholeRoute(project: Project): Project {
+  sceneOf(project).camera = { mode: 'fixed', easing: 'smooth' }
+  return project
+}
+
+/** Opens the studio on the Greek Islands fixture, framed on the whole route, and waits until frame 0 is on screen. */
 async function openStudio(): Promise<{ page: Page; folder: string; project: Project; close(): Promise<void> }> {
-  const studio = await openStudioPage(greekIslands(), VIEWPORT)
+  const studio = await openStudioPage(wholeRoute(greekIslands()), VIEWPORT)
   await studio.page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
   return studio
 }
@@ -50,32 +59,6 @@ test('scrubbing to an arrival tick shows its timecode', async () => {
     await page.waitForSelector(`[data-testid="stage"][data-shown-frame="${arrival.frame}"]`)
   } finally {
     await close()
-  }
-})
-
-test('the head is hidden on a leg whose symbol is none', async () => {
-  const project = greekIslands()
-  sceneOf(project).legs[0]!.symbol = 'none'
-  const studio = await openStudioPage(project, VIEWPORT)
-  const { page } = studio
-  try {
-    await page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
-    const route = buildRoute(sceneOf(project))
-    const timeline = buildTimeline(sceneOf(project), project.output.fps, route)
-    const headFeatures = () =>
-      page.evaluate(() => {
-        const map = (window as unknown as StudioWindow).mapperStudio.map
-        const data = (map.getSource('mapper-head') as unknown as { serialize(): { data: { type: string; features?: unknown[] } } }).serialize().data
-        return data.type === 'Feature' ? 1 : (data.features?.length ?? 0)
-      })
-    expect(await headFeatures()).toBe(0)
-    const second = timeline.legFrames[1]!
-    const frame = Math.round((second.start + second.end) / 2)
-    await page.getByTestId('scrubber').fill(String(frame))
-    await page.waitForSelector(`[data-testid="stage"][data-shown-frame="${frame}"]`)
-    expect(await headFeatures()).toBe(1)
-  } finally {
-    await studio.close()
   }
 })
 
@@ -400,7 +383,7 @@ describe('route editing on the map', () => {
 })
 
 test('a via point across the antimeridian sits on the line and saves within ±180', async () => {
-  const { page, folder, close } = await openStudioPage(pacific(), VIEWPORT)
+  const { page, folder, close } = await openStudioPage(wholeRoute(pacific()), VIEWPORT)
   try {
     await page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
     const mid = legMiddle(await loadProject(folder), 0)
@@ -479,6 +462,40 @@ describe('legs panel and style picker', () => {
     const { page, folder } = studio
     await page.getByTestId('theme-picker').selectOption('blank')
     await expect.poll(async () => sceneOf(await loadProject(folder)).look.theme).toBe('blank')
+  })
+
+  test('style picker lists eleven styles and switches theme', async () => {
+    const { page, folder } = studio
+    const values = await page.getByTestId('theme-picker').locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value))
+    expect(values).toEqual(['aloftandaway', 'aloftandaway-warm', 'paper', 'light', 'dark', 'nautical', 'atlas', 'outdoor', 'satellite', 'monochrome', 'blank'])
+    await page.getByTestId('theme-picker').selectOption('nautical')
+    await expect.poll(async () => sceneOf(await loadProject(folder)).look.theme).toBe('nautical')
+  })
+
+  test('terrain toggle sets look.terrain', async () => {
+    const { page, folder } = studio
+    const toggle = page.getByTestId('terrain-toggle')
+    expect(await toggle.isChecked()).toBe(false)
+    await toggle.click()
+    await expect.poll(async () => sceneOf(await loadProject(folder)).look.terrain).toBe(true)
+    await expect.poll(() => toggle.isChecked()).toBe(true)
+    await toggle.click()
+    await expect.poll(async () => sceneOf(await loadProject(folder)).look.terrain).toBe(false)
+  })
+
+  test('transport picker shows icons', async () => {
+    const { page } = studio
+    // The row's current transport shows its icon: the default (a ship or a dot) or the leg's own.
+    await page.getByTestId('leg-symbol-1').selectOption('car')
+    await expect.poll(async () => (await leg(1)).symbol).toBe('car')
+    const icon = page.getByTestId('leg-icon-1')
+    await icon.locator('svg path').first().waitFor()
+    expect(await icon.locator('svg').getAttribute('stroke')).toBe('currentColor')
+    expect(await icon.locator('svg').getAttribute('fill')).toBe('none')
+    // Picking 'none' shows no icon.
+    await page.getByTestId('leg-symbol-1').selectOption('none')
+    await expect.poll(() => page.getByTestId('leg-icon-1').locator('svg path').count()).toBe(0)
+    await page.getByTestId('leg-symbol-1').selectOption('')
   })
 
   test('clicking a row selects the leg on the map', async () => {

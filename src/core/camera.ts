@@ -1,4 +1,4 @@
-import { toLngLat, toXY, unwrapLng, type XY } from './geo.js'
+import { headingDeg, toLngLat, toXY, unwrapLng, type XY } from './geo.js'
 import type { Route } from './route.js'
 import { fpsValue, layoutSize, THEME_MAX_ZOOM, type Aspect, type LngLat, type Scene, type Shot } from './schema.js'
 import { ease, type Timeline } from './timeline.js'
@@ -46,11 +46,47 @@ export function fitShot(bounds: [LngLat, LngLat], aspect: Aspect, padding: numbe
   return { center, zoom, bearing: 0, pitch: 0 }
 }
 
-/** The scene camera's start and end shots. A missing one is fitted to the route's bounds in the output aspect. */
+/** South-west and north-east corners of `path`, whose longitudes are already unwrapped. */
+function pathBounds(path: LngLat[]): [LngLat, LngLat] {
+  let [west, south, east, north] = [Infinity, Infinity, -Infinity, -Infinity]
+  for (const [lng, lat] of path) {
+    west = Math.min(west, lng)
+    east = Math.max(east, lng)
+    south = Math.min(south, lat)
+    north = Math.max(north, lat)
+  }
+  return [[west, south], [east, north]]
+}
+
+/** A first-leg fit within this many zoom steps of the whole-route fit counts as the whole route. */
+const SAME_FIT_ZOOM = 0.5
+/** How far in from the whole-route fit the default start sits when the first leg is nearly the whole route. */
+const FIRST_STOP_ZOOM_IN = 2
+
+/**
+ * The default start shot. A fixed camera shows the whole route. Otherwise it's the first leg fitted in the output
+ * aspect, or, when that's barely closer than the whole route (a one-leg route, say), the first stop 2 zoom steps in from
+ * the whole-route fit. Either is capped at the theme's maximum.
+ */
+function defaultStart(scene: Scene, aspect: Aspect, route: Route, whole: Shot): Shot {
+  const first = route.legs[0]
+  if (scene.camera.mode === 'fixed' || !first) return whole
+  const max = THEME_MAX_ZOOM[scene.look.theme]
+  const leg = fitShot(pathBounds(first.path), aspect)
+  if (leg.zoom - whole.zoom > SAME_FIT_ZOOM) return { ...leg, zoom: Math.min(leg.zoom, max) }
+  const [lng, lat] = scene.stops[0]!.at
+  return { center: [lng, lat], zoom: Math.min(whole.zoom + FIRST_STOP_ZOOM_IN, max), bearing: 0, pitch: 0 }
+}
+
+/**
+ * The scene camera's start and end shots, in the output aspect. A missing end is fitted to the whole route. A missing
+ * start is the first leg, so a default glide pulls out from the first leg to the whole route (see `defaultStart` and
+ * `cameraAt`).
+ */
 export function resolveShots(scene: Scene, aspect: Aspect, route: Route): { start: Shot; end: Shot } {
   const { start, end } = scene.camera
-  const fitted = () => fitShot(route.bounds, aspect)
-  return { start: start ?? fitted(), end: end ?? fitted() }
+  const whole = fitShot(route.bounds, aspect)
+  return { start: start ?? defaultStart(scene, aspect, route, whole), end: end ?? whole }
 }
 
 /**
@@ -112,19 +148,28 @@ export interface FollowSettings {
   lookAhead: number
   /** Seconds; the smoothing rate is `1 / smoothing` per second. 0 tracks the target exactly. */
   smoothing: number
+  /** Degrees of tilt, 0 to 60. */
+  pitch: number
 }
 
 /** Follow-camera zoom above the fitted route zoom when none is stored. */
 const FOLLOW_ZOOM_IN = 3
 
 /**
- * The scene's follow settings: `camera.follow` if stored, otherwise north-up, a second of look-ahead, half a second of
- * smoothing and a zoom 3 steps in from the route's fitted zoom, capped at the theme's maximum.
+ * The scene's follow settings: `camera.follow` where stored, with any missing field filled from the defaults: north-up,
+ * a quarter second of look-ahead, 0.2 s of smoothing, a zoom 3 steps in from the route's fitted zoom, capped at the
+ * theme's maximum, and the start shot's pitch, or none.
  */
 export function resolveFollow(scene: Scene, aspect: Aspect, route: Route): FollowSettings {
-  if (scene.camera.follow) return scene.camera.follow
+  const stored = scene.camera.follow
   const zoom = Math.min(fitShot(route.bounds, aspect).zoom + FOLLOW_ZOOM_IN, THEME_MAX_ZOOM[scene.look.theme])
-  return { zoom, orient: 'north', lookAhead: 1, smoothing: 0.5 }
+  return {
+    zoom: stored?.zoom ?? zoom,
+    orient: stored?.orient ?? 'north',
+    lookAhead: stored?.lookAhead ?? 0.25,
+    smoothing: stored?.smoothing ?? 0.2,
+    pitch: stored?.pitch ?? scene.camera.start?.pitch ?? 0,
+  }
 }
 
 /** Centre and bearing for every frame. Longitude and bearing are unwrapped across frames. */
@@ -168,19 +213,57 @@ function smoothZeroLag(xs: number[], dt: number, omega: number): number[] {
   return out
 }
 
-function buildFollowTrack(timeline: Timeline, follow: FollowSettings): FollowTrack {
+/** The bearing smooths this many times more slowly than the position, so heading-up turns unwind gently. */
+const BEARING_SLOWDOWN = 3
+
+/** Heading at the end of `leg`: its last segment with length, or `undefined` when it has none. */
+function arrivalHeading(leg: Route['legs'][number]): number | undefined {
+  for (let i = leg.xy.length - 1; i > 0; i--) {
+    const [a, b] = [leg.xy[i - 1]!, leg.xy[i]!]
+    if (a[0] !== b[0] || a[1] !== b[1]) return headingDeg(a, b)
+  }
+  return undefined
+}
+
+/**
+ * The heading the follow camera turns towards on `frame`: the head's heading, except in the first half of a pause at
+ * a stop between two legs, where it's still the heading the leg arrived on. The timeline turns the head on arrival; the
+ * camera turns mid-pause, so a heading-up turn at a port happens mostly while the vehicle waits there.
+ */
+function headingTarget(route: Route, timeline: Timeline, frame: number, heading: number): number {
+  const { legFrames } = timeline
+  for (let k = 1; k < legFrames.length; k++) {
+    const arrival = legFrames[k - 1]!.end
+    const departure = legFrames[k]!.start
+    if (frame < arrival) break
+    if (frame < (arrival + departure) / 2) return arrivalHeading(route.legs[k - 1]!) ?? heading
+  }
+  return heading
+}
+
+/**
+ * Raw per-frame targets, then smoothed. The aim point is the head `lookAhead` seconds on, pulled back towards the
+ * current head to at most `maxAhead` world units.
+ */
+function buildFollowTrack(route: Route, timeline: Timeline, follow: FollowSettings, maxAhead: number): FollowTrack {
   const rate = fpsValue(timeline.fps)
   const ahead = Math.round(follow.lookAhead * rate)
   const centers: LngLat[] = []
   const bearings: number[] = []
   for (let f = 0; f < timeline.totalFrames; f++) {
     const held = clamp(f, timeline.travelStartFrame, timeline.travelEndFrame)
-    const { at, heading } = timeline.stateAt(held + ahead).head
+    const now = timeline.stateAt(held).head.at
+    const { at: aim, heading: aimHeading } = timeline.stateAt(held + ahead).head
+    const heading = follow.orient === 'heading' ? headingTarget(route, timeline, held + ahead, aimHeading) : 0
+    const h = toXY(now)
+    const a = toXY([unwrapLng(now[0], aim[0]), aim[1]])
+    const offset = Math.hypot(a[0] - h[0], a[1] - h[1])
+    const k = offset > maxAhead ? maxAhead / offset : 1
+    const at = toLngLat([h[0] + (a[0] - h[0]) * k, h[1] + (a[1] - h[1]) * k])
     const prev = centers[f - 1]
     centers.push(prev ? [unwrapLng(prev[0], at[0]), at[1]] : [at[0], at[1]])
-    const bearing = follow.orient === 'heading' ? heading : 0
     const prevBearing = bearings[f - 1]
-    bearings.push(prevBearing === undefined ? bearing : prevBearing + normaliseBearing(bearing - prevBearing))
+    bearings.push(prevBearing === undefined ? heading : prevBearing + normaliseBearing(heading - prevBearing))
   }
   if (follow.smoothing <= 0 || centers.length < 2) return { centers, bearings: bearings.map(normaliseBearing) }
 
@@ -191,40 +274,58 @@ function buildFollowTrack(timeline: Timeline, follow: FollowSettings): FollowTra
   const ys = smoothZeroLag(xy.map((p) => p[1]), dt, omega)
   return {
     centers: xs.map((x, i) => toLngLat([x, ys[i]!])),
-    bearings: smoothZeroLag(bearings, dt, omega).map(normaliseBearing),
+    bearings: smoothZeroLag(bearings, dt, omega / BEARING_SLOWDOWN).map(normaliseBearing),
   }
 }
 
+/** A quarter of the shorter side of the layout frame at `zoom`, in world units: the farthest the aim point may lead. */
+function maxLookAhead(aspect: Aspect, zoom: number): number {
+  const { width, height } = layoutSize(aspect)
+  return Math.min(width, height) / 4 / (TILE_SIZE * 2 ** zoom)
+}
+
 /** The follow track for `timeline`, built once per timeline and camera, aspect and theme. */
-function followTrack(scene: Scene, aspect: Aspect, timeline: Timeline, follow: FollowSettings): FollowTrack {
+function followTrack(scene: Scene, aspect: Aspect, route: Route, timeline: Timeline, follow: FollowSettings): FollowTrack {
   const key = JSON.stringify([scene.camera, aspect, scene.look.theme])
   const cached = followTracks.get(timeline)
   if (cached?.key === key) return cached.track
-  const track = buildFollowTrack(timeline, follow)
+  const track = buildFollowTrack(route, timeline, follow, maxLookAhead(aspect, follow.zoom))
   followTracks.set(timeline, { key, track })
   return track
 }
 
 /**
- * The map view on `frame`. `fixed` holds `start`. `glide` flies from `start` to `end` across the travel section with
- * `camera.easing` applied once to the overall travel progress, holding at both ends. `follow` centres on the head
- * `lookAhead` seconds ahead, holding on travel's first and last frames, smoothed without lag.
+ * How far along the glide `frame` is, 0 to 1, before easing. A stored start glides across the travel section. A default
+ * start (the first leg) pulls out from frame 0 to the end of the first leg's travel, then holds the end shot.
+ */
+function glideProgress(scene: Scene, timeline: Timeline, frame: number): number {
+  const firstLeg = timeline.legFrames[0]
+  if (scene.camera.start || !firstLeg) return timeline.stateAt(frame).travelT
+  return firstLeg.end > 0 ? clamp(frame / firstLeg.end, 0, 1) : 1
+}
+
+/**
+ * The map view on `frame`. `fixed` holds `start`. `glide` with a stored start flies from `start` to `end` across the
+ * travel section with `camera.easing` applied once to the overall travel progress, holding at both ends. With a default
+ * start it flies from frame 0, through the opening hold, to the end of the first leg's travel, then holds `end` (see
+ * `glideProgress`). `follow` centres on the head
+ * `lookAhead` seconds ahead, at most a quarter of the frame from the head, holding on travel's first and last frames,
+ * smoothed without lag. A heading-up bearing smooths 3 times more slowly than the position.
  */
 export function cameraAt(scene: Scene, aspect: Aspect, route: Route, timeline: Timeline, frame: number): Shot {
   if (scene.camera.mode === 'follow') {
     const follow = resolveFollow(scene, aspect, route)
-    const track = followTrack(scene, aspect, timeline, follow)
+    const track = followTrack(scene, aspect, route, timeline, follow)
     const f = clamp(Math.round(frame), 0, track.centers.length - 1)
     const [lng, lat] = track.centers[f]!
-    return { center: [lng, lat], zoom: follow.zoom, bearing: track.bearings[f]!, pitch: scene.camera.start?.pitch ?? 0 }
+    return { center: [lng, lat], zoom: follow.zoom, bearing: track.bearings[f]!, pitch: follow.pitch }
   }
   const { start, end } = resolveShots(scene, aspect, route)
   if (scene.camera.mode === 'fixed') {
     const [lng, lat] = start.center
     return { center: [lng, lat], zoom: start.zoom, bearing: normaliseBearing(start.bearing), pitch: start.pitch }
   }
-  const { travelT } = timeline.stateAt(frame)
-  return flyInterpolator(start, end, aspect)(ease(scene.camera.easing, travelT))
+  return flyInterpolator(start, end, aspect)(ease(scene.camera.easing, glideProgress(scene, timeline, frame)))
 }
 
 /**

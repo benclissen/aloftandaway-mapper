@@ -54,5 +54,7 @@ export interface FcpxmlInput {
   projectName: string
   output: Output
   credit: Project['credit']
+  /** Every credit line the project's scenes need. Description placement joins them into each compound clip's note. */
+  creditLines: string[]
   scenes: SceneExport[]
 }

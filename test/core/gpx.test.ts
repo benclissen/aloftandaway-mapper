@@ -130,4 +130,28 @@ describe('gpx', () => {
     const plain = sceneOf(importGpx(project, out, {}))
     expect(plain.legs.map((l) => l.mode)).toEqual(['line', 'line'])
   })
+
+  it('defaults to ends mode', () => {
+    const out = gpxToStops(parseGpx(fixture('track.gpx')), {})
+    expect(out.stops).toHaveLength(2)
+    expect(out.stops.map((s) => s.name)).toEqual(['Coastal Walk start', 'Harbour'])
+    expect(() => gpxToStops(parseGpx(fixture('waypoints-only.gpx')), {})).toThrow('This GPX file has no track or route.')
+  })
+
+  it('throws when fewer than 2 waypoints are near the line', () => {
+    const g = parseGpx(fixture('track.gpx'))
+    g.waypoints = g.waypoints.filter((w) => w.name === 'Harbour' || w.name === 'Inland Farm')
+    try {
+      gpxToStops(g, { stops: 'waypoints' })
+      expect.unreachable()
+    } catch (e) {
+      expect(e).toBeInstanceOf(GpxError)
+      expect((e as GpxError).fix).toBe("Use stops: 'ends', or add named waypoints along the track.")
+    }
+  })
+
+  it('simplifies a very long recording without overflowing the stack', () => {
+    const out = gpxToStops(parseGpx(dense(200_000)), { stops: 'ends' })
+    expect(out.via[0]!.length).toBeLessThanOrEqual(100)
+  })
 })

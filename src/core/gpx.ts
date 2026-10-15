@@ -156,9 +156,17 @@ function simplify(xy: XY[], tolerance: number): number[] {
 function viaFor(stretch: LngLat[]): ViaPoint[] {
   if (stretch.length <= 2) return []
   const xy = stretch.map(toXY)
-  const xs = xy.map((p) => p[0])
-  const ys = xy.map((p) => p[1])
-  const size = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 1e-12)
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  for (const [x, y] of xy) {
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  const size = Math.max(maxX - minX, maxY - minY, 1e-12)
   let tolerance = 0.002 * size
   for (;;) {
     const kept = simplify(xy, tolerance)
@@ -191,7 +199,7 @@ function chooseLine(gpx: Gpx, track: number | string | undefined): GpxLine | und
 
 export function gpxToStops(gpx: Gpx, opts: { track?: number | string; stops?: 'waypoints' | 'ends' }): GpxImport {
   const line = chooseLine(gpx, opts.track)
-  const mode = opts.stops ?? (gpx.waypoints.length >= 2 ? 'waypoints' : 'ends')
+  const mode = opts.stops ?? 'ends'
 
   if (!line) {
     if (mode === 'ends') throw new GpxError('This GPX file has no track or route.', "Pass stops: 'waypoints', or choose a file with a track.")

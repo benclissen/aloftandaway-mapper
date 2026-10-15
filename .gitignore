@@ -8,3 +8,4 @@ dist/
 .mapper/
 renders/
 test-output/
+.superpowers/

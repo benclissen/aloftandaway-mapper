@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { buildRoute, buildTimeline, fpsValue, type LngLat, type Project, type ProjectPatch } from '../../core/index.js'
+import { buildRoute, buildTimeline, fpsValue, type Project, type ProjectPatch } from '../../core/index.js'
 import { getProject, patch, subscribe } from './api.js'
+import { PointMenu } from './PointMenu.js'
+import { isSharp, removeViaEdit, sharpEdit, type PointTarget } from './RouteEditor.js'
 import { Scrubber, type Tick } from './Scrubber.js'
 import { ShotPanel } from './ShotPanel.js'
 import { Stage, type StageHandle } from './Stage.js'
@@ -23,6 +25,8 @@ export function App() {
   const [playing, setPlaying] = useState(false)
   const [freeView, setFreeView] = useState(false)
   const [notice, setNotice] = useState<Notice>()
+  const [selectedLeg, setSelectedLeg] = useState<number>()
+  const [pointMenu, setPointMenu] = useState<{ target: PointTarget; at: { x: number; y: number } }>()
   const stage = useRef<StageHandle | null>(null)
 
   /** Keeps the newest project; an older or equal one (such as the echo of our own patch) is ignored. */
@@ -49,6 +53,21 @@ export function App() {
   }, [notice])
 
   const scene = project?.scenes[0]
+  // A leg that no longer exists can't stay selected.
+  const legCount = scene?.legs.length ?? 0
+  const selected = selectedLeg !== undefined && selectedLeg < legCount ? selectedLeg : undefined
+  useEffect(() => {
+    if (scene && selectedLeg !== undefined && selectedLeg >= legCount) setSelectedLeg(undefined)
+  }, [scene, selectedLeg, legCount])
+
+  // Escape deselects. An open menu catches Escape first and closes instead.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSelectedLeg(undefined)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   const timeline = useMemo(
     () => (project && scene ? buildTimeline(scene, project.output.fps, buildRoute(scene)) : undefined),
     [project, scene],
@@ -96,10 +115,10 @@ export function App() {
     [accept],
   )
 
-  const onStopMoved = useCallback(
-    (id: string, at: LngLat) => send({ ops: [{ op: 'update_stop', id, changes: { at } }] }),
-    [send],
-  )
+  /** Every edit made on the map comes through here. `label` names it for undo. */
+  const onEdit = useCallback((body: ProjectPatch, _label: string) => send(body), [send])
+  const onPointMenu = useCallback((target: PointTarget, at: { x: number; y: number }) => setPointMenu({ target, at }), [])
+  const closePointMenu = useCallback(() => setPointMenu(undefined), [])
   const onUserMove = useCallback(() => setFreeView(true), [])
   const onStageError = useCallback((message: string) => setNotice({ kind: 'error', text: message }), [])
 
@@ -118,10 +137,31 @@ export function App() {
         frame={shown}
         freeView={freeView}
         handle={stage}
+        selectedLeg={selected}
         onUserMove={onUserMove}
-        onStopMoved={onStopMoved}
+        onSelectLeg={setSelectedLeg}
+        onEdit={onEdit}
+        onPointMenu={onPointMenu}
         onError={onStageError}
       />
+      {pointMenu && isSharp(scene, pointMenu.target) !== undefined && (
+        <PointMenu
+          target={pointMenu.target}
+          at={pointMenu.at}
+          sharp={isSharp(scene, pointMenu.target)!}
+          onToggleSharp={() => {
+            const edit = sharpEdit(scene, pointMenu.target)
+            if (edit) void onEdit(edit.patch, edit.label)
+          }}
+          onRemove={() => {
+            const { target } = pointMenu
+            if (target.kind !== 'via') return
+            const edit = removeViaEdit(target.leg, target.index)
+            void onEdit(edit.patch, edit.label)
+          }}
+          onClose={closePointMenu}
+        />
+      )}
       <div className="controls">
         <Scrubber
           frame={shown}

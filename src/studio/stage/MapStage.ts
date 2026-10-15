@@ -1,4 +1,4 @@
-import type { LayerSpecification } from '@maplibre/maplibre-gl-style-spec'
+import type { FilterSpecification, LayerSpecification } from '@maplibre/maplibre-gl-style-spec'
 import type { Feature, FeatureCollection, LineString, Point } from 'geojson'
 import { GeoJSONSource, Map as MapLibreMap, setWorkerUrl } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
@@ -34,10 +34,16 @@ export interface MapStageOptions {
   interactive: boolean
   /** `<server base>tiles/`, ending in a slash. */
   tileBase: string
+  /** Studio edit mode: draws the whole route faintly, and the selected leg, for clicking. Never set for renders. */
+  editing?: boolean
 }
 
 const ROUTE_SOURCE = 'mapper-route'
 const HEAD_SOURCE = 'mapper-head'
+const EDIT_SOURCE = 'mapper-edit'
+/** The layer the studio queries for clicks on the route. */
+export const EDIT_ROUTE_LAYER = 'mapper-edit-route'
+const EDIT_SELECTED_LAYER = 'mapper-edit-selected'
 const IDLE_TIMEOUT_MS = 60_000
 
 interface Loaded {
@@ -58,6 +64,42 @@ function lineFeature(path: LngLat[]): Feature<LineString> | FeatureCollection {
 }
 
 const pointFeature = (at: LngLat): Feature<Point> => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: at } })
+
+/** Every leg's whole path, each tagged with its index as `leg`. */
+function legsCollection(route: Route): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: route.legs.map((leg, i) => ({
+      type: 'Feature',
+      properties: { leg: i },
+      geometry: { type: 'LineString', coordinates: leg.path.length === 1 ? [leg.path[0]!, leg.path[0]!] : leg.path },
+    })),
+  }
+}
+
+const selectedFilter = (leg: number | undefined): FilterSpecification => ['==', ['get', 'leg'], leg ?? -1]
+
+/** The faint whole route and the selected leg, drawn under the route line in edit mode. */
+function editLayers(look: Look, selected: number | undefined): LayerSpecification[] {
+  const { color, width } = look.line
+  return [
+    {
+      id: EDIT_ROUTE_LAYER,
+      type: 'line',
+      source: EDIT_SOURCE,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': color, 'line-width': width / 2, 'line-opacity': 0.35 },
+    },
+    {
+      id: EDIT_SELECTED_LAYER,
+      type: 'line',
+      source: EDIT_SOURCE,
+      filter: selectedFilter(selected),
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': color, 'line-width': width + 4, 'line-opacity': 0.5 },
+    },
+  ]
+}
 
 /** Route line, outline, glow and head layers for a look, bottom to top. */
 function routeLayers(look: Look): LayerSpecification[] {
@@ -125,6 +167,8 @@ export class MapStage {
   private styleKey: string | undefined
   private baseVisibility = new Map<string, NonNullable<NonNullable<LayerSpecification['layout']>['visibility']>>()
   private routeLayerIds: string[] = []
+  private editLayerIds: string[] = []
+  private selectedLeg: number | undefined
   /** The first map error since the last frame: a tile, TileJSON or glyph request that failed. */
   private mapError: Error | undefined
   /** Frames are shown one at a time, in call order. */
@@ -177,6 +221,17 @@ export class MapStage {
     return this.require().timeline
   }
 
+  /** The route of the scene last loaded, or undefined before the first load. */
+  get route(): Route | undefined {
+    return this.loaded?.route
+  }
+
+  /** Highlights leg `leg` in edit mode, or none. */
+  setSelectedLeg(leg: number | undefined): void {
+    this.selectedLeg = leg
+    if (this.map.getLayer(EDIT_SELECTED_LAYER)) this.map.setFilter(EDIT_SELECTED_LAYER, selectedFilter(leg))
+  }
+
   /**
    * Lays the stage out for the scene with id `sceneId` in `project`, or its first scene when `sceneId` is left out.
    * Rebuilds the map style only when the theme or label language changes. Rejects for an unknown scene id.
@@ -208,9 +263,17 @@ export class MapStage {
         this.styleKey = styleKey
         this.map.addSource(ROUTE_SOURCE, { type: 'geojson', data: emptyCollection() })
         this.map.addSource(HEAD_SOURCE, { type: 'geojson', data: emptyCollection() })
+        if (this.opts.editing) this.map.addSource(EDIT_SOURCE, { type: 'geojson', data: emptyCollection() })
         this.routeLayerIds = []
+        this.editLayerIds = []
       }
-      for (const id of this.routeLayerIds) this.map.removeLayer(id)
+      for (const id of [...this.editLayerIds, ...this.routeLayerIds]) this.map.removeLayer(id)
+      if (this.opts.editing) {
+        this.source(EDIT_SOURCE).setData(legsCollection(route))
+        const edit = editLayers(scene.look, this.selectedLeg)
+        for (const layer of edit) this.map.addLayer(layer)
+        this.editLayerIds = edit.map((l) => l.id)
+      }
       const layers = routeLayers(scene.look)
       for (const layer of layers) this.map.addLayer(layer)
       this.routeLayerIds = layers.map((l) => l.id)

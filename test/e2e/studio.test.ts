@@ -2,10 +2,10 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Map as MapLibreMap } from 'maplibre-gl'
 import type { Page } from 'playwright'
-import { afterAll, expect, test } from 'vitest'
-import { buildRoute, buildTimeline, formatTimecode, type LngLat, type Project } from '../../src/core/index.js'
+import { afterAll, beforeAll, describe, expect, test } from 'vitest'
+import { buildRoute, buildTimeline, formatTimecode, pointAt, type LngLat, type Project } from '../../src/core/index.js'
 import { loadProject, mutateProject } from '../../src/server/store.js'
-import { greekIslands, sceneOf } from '../fixtures/projects.js'
+import { greekIslands, pacific, sceneOf } from '../fixtures/projects.js'
 import { closeAll, openStudioPage } from './helpers.js'
 
 afterAll(closeAll)
@@ -25,6 +25,13 @@ async function stopAt(folder: string, id: string): Promise<LngLat> {
   const stop = sceneOf(await loadProject(folder)).stops.find((s) => s.id === id)
   if (!stop) throw new Error(`No stop ${id}`)
   return stop.at
+}
+
+/** The point halfway along leg `leg` of the project's route, unwrapped as the route draws it. */
+function legMiddle(project: Project, leg: number): LngLat {
+  const route = buildRoute(sceneOf(project))
+  const before = route.legs.slice(0, leg).reduce((sum, l) => sum + l.length, 0)
+  return pointAt(route, before + route.legs[leg]!.length / 2).at
 }
 
 async function center(page: Page, testId: string): Promise<[number, number]> {
@@ -214,6 +221,161 @@ test('external edits appear live', async () => {
     await page.waitForFunction((sel) => document.querySelector(sel)?.getAttribute('title') === 'Mykonos Town', marker, {
       timeout: 1000,
     })
+  } finally {
+    await close()
+  }
+})
+
+describe('route editing on the map', () => {
+  let studio: Awaited<ReturnType<typeof openStudio>>
+  const via = (p: Project) => sceneOf(p).legs[1]!.via
+
+  beforeAll(async () => {
+    studio = await openStudio()
+  })
+  afterAll(async () => {
+    await studio?.close()
+  })
+
+  /** Where `at` is on screen, in CSS px, taking the world copy nearest the map's centre. */
+  async function screenPx(at: LngLat): Promise<[number, number]> {
+    return studio.page.evaluate((at) => {
+      const map = (window as unknown as StudioWindow).mapperStudio.map
+      const container = map.getContainer()
+      const box = container.getBoundingClientRect()
+      const fit = box.width / container.offsetWidth
+      const lng = at[0] + 360 * Math.round((map.getCenter().lng - at[0]) / 360)
+      const p = map.project([lng, at[1]])
+      return [box.left + p.x * fit, box.top + p.y * fit] as [number, number]
+    }, at)
+  }
+
+  /** The screen position of the middle of leg 1 (Mykonos to Santorini) as saved. */
+  async function legMidpoint(): Promise<[number, number]> {
+    return screenPx(legMiddle(await loadProject(studio.folder), 1))
+  }
+
+  const selectedLeg = () => studio.page.getByTestId('stage').getAttribute('data-selected-leg')
+
+  test('selects a leg by clicking its line', async () => {
+    const { page } = studio
+    expect(await page.evaluate(() => (window as unknown as StudioWindow).mapperStudio.map.getLayer('mapper-edit-route') !== undefined)).toBe(true)
+    expect(await selectedLeg()).toBeNull()
+    await page.mouse.click(...(await legMidpoint()))
+    await expect.poll(selectedLeg).toBe('1')
+    // Selecting saves nothing.
+    expect(via(await loadProject(studio.folder))).toEqual([])
+  })
+
+  test('inserts a via point on the selected leg and the file has it', async () => {
+    const { page, folder } = studio
+    await page.mouse.click(...(await legMidpoint()))
+    await page.getByTestId('via-marker-1-0').waitFor()
+    await expect.poll(async () => via(await loadProject(folder)).length).toBe(1)
+    const marker = page.getByTestId('via-marker-1-0')
+    expect(await marker.getAttribute('tabindex')).toBe('0')
+    expect(await marker.getAttribute('aria-label')).toBe('Via point 1 of leg 2')
+    const [point] = via(await loadProject(folder))
+    for (const v of point!.at) expect(Math.round(v * 1e5) / 1e5).toBe(v)
+  })
+
+  test('drags a via point', async () => {
+    const { page, folder } = studio
+    const before = via(await loadProject(folder))[0]!.at
+    const [x, y] = (await center(page, 'via-marker-1-0')).map(Math.round) as [number, number]
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await page.mouse.move(x + 20, y + 15, { steps: 4 })
+    await page.mouse.move(x + 40, y + 30, { steps: 4 })
+    await page.mouse.up()
+    await expect.poll(async () => via(await loadProject(folder))[0]!.at.join(), { timeout: 2000, interval: 100 }).not.toBe(before.join())
+    const after = via(await loadProject(folder))
+    expect(after.length).toBe(1)
+    // Down and to the right: east and south.
+    expect(after[0]!.at[0]).toBeGreaterThan(before[0])
+    expect(after[0]!.at[1]).toBeLessThan(before[1])
+  })
+
+  test('clicking a via handle does not insert a point', async () => {
+    const { page, folder } = studio
+    await page.getByTestId('via-marker-1-0').click()
+    await page.waitForTimeout(500)
+    expect(via(await loadProject(folder)).length).toBe(1)
+    expect(await selectedLeg()).toBe('1')
+  })
+
+  test('Alt-click and the menu toggle sharp', async () => {
+    const { page, folder } = studio
+    await page.getByTestId('stop-marker-mykonos').click({ modifiers: ['Alt'] })
+    await expect.poll(async () => sceneOf(await loadProject(folder)).stops.find((s) => s.id === 'mykonos')!.sharp).toBe(true)
+    await expect.poll(() => page.getByTestId('stop-marker-mykonos').getAttribute('class')).toMatch(/\bsharp\b/)
+
+    await page.getByTestId('via-marker-1-0').click({ button: 'right' })
+    const menu = page.getByTestId('point-menu')
+    await menu.waitFor()
+    expect(await page.getByTestId('point-menu-remove').textContent()).toBe('Remove')
+    const sharp = page.getByTestId('point-menu-sharp')
+    expect(await sharp.textContent()).toBe('Sharp corner')
+    await sharp.click()
+    await menu.waitFor({ state: 'detached' })
+    await expect.poll(async () => via(await loadProject(folder))[0]!.sharp).toBe(true)
+    await expect.poll(() => page.getByTestId('via-marker-1-0').getAttribute('class')).toMatch(/\bsharp\b/)
+
+    // The menu offers the way back, and Escape closes it without a change.
+    await page.getByTestId('via-marker-1-0').click({ button: 'right' })
+    expect(await page.getByTestId('point-menu-sharp').textContent()).toBe('Curve through')
+    await page.keyboard.press('Escape')
+    await menu.waitFor({ state: 'detached' })
+    expect(await selectedLeg()).toBe('1')
+
+    // Alt-click curves the stop through again, which removes the key.
+    await page.getByTestId('stop-marker-mykonos').click({ modifiers: ['Alt'] })
+    await expect.poll(async () => 'sharp' in sceneOf(await loadProject(folder)).stops.find((s) => s.id === 'mykonos')!).toBe(false)
+  })
+
+  test('removes a via point with Delete', async () => {
+    const { page, folder } = studio
+    await page.getByTestId('via-marker-1-0').focus()
+    await page.keyboard.press('Delete')
+    await expect.poll(async () => via(await loadProject(folder)).length).toBe(0)
+    await page.getByTestId('via-marker-1-0').waitFor({ state: 'detached' })
+  })
+
+  test('Escape deselects', async () => {
+    const { page } = studio
+    expect(await selectedLeg()).toBe('1')
+    await page.keyboard.press('Escape')
+    await expect.poll(selectedLeg).toBeNull()
+  })
+})
+
+test('a via point across the antimeridian sits on the line and saves within ±180', async () => {
+  const { page, folder, close } = await openStudioPage(pacific(), VIEWPORT)
+  try {
+    await page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
+    const mid = legMiddle(await loadProject(folder), 0)
+    // Past 180° east: the leg is drawn unwrapped from Suva to Apia.
+    expect(mid[0]).toBeGreaterThan(180)
+    const [x, y] = await page.evaluate((at) => {
+      const map = (window as unknown as StudioWindow).mapperStudio.map
+      const container = map.getContainer()
+      const box = container.getBoundingClientRect()
+      const fit = box.width / container.offsetWidth
+      const lng = at[0] + 360 * Math.round((map.getCenter().lng - at[0]) / 360)
+      const p = map.project([lng, at[1]])
+      return [box.left + p.x * fit, box.top + p.y * fit]
+    }, mid)
+    await page.mouse.click(x!, y!)
+    await page.waitForSelector('[data-testid="stage"][data-selected-leg="0"]')
+    await page.mouse.click(x!, y!)
+    await page.getByTestId('via-marker-0-0').waitFor()
+    const [hx, hy] = await center(page, 'via-marker-0-0')
+    expect(Math.abs(hx - x!)).toBeLessThan(3)
+    expect(Math.abs(hy - y!)).toBeLessThan(3)
+    const [point] = sceneOf(await loadProject(folder)).legs[0]!.via
+    expect(point!.at[0]).toBeGreaterThanOrEqual(-180)
+    expect(point!.at[0]).toBeLessThanOrEqual(180)
+    expect(Math.abs(point!.at[0] - (mid[0] - 360))).toBeLessThan(0.1)
   } finally {
     await close()
   }

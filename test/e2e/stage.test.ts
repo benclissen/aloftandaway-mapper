@@ -102,6 +102,17 @@ describe('render page, blank theme, pixelRatio 0.5', () => {
     expect(b).toBeLessThan(110)
     expect(pixel(png, ...at(distance + (legEnd - distance) * 0.5))).toEqual([0xe9, 0xe4, 0xda, 255])
   })
+
+  test('renders never show edit layers', async () => {
+    // The studio draws the whole route faintly for editing. A render at frame 0 has drawn none of it yet.
+    const project = greekIslands()
+    const route = buildRoute(sceneOf(project))
+    const middle = pointAt(route, route.legs[0]!.length + route.legs[1]!.length / 2).at
+    const png = await snapshot(page, 0)
+    const [x, y] = layoutPx(project, 0, middle).map((v) => v * 0.5) as [number, number]
+    expect(x > 0 && x < 960 && y > 0 && y < 540).toBe(true)
+    expect(pixel(png, x, y)).toEqual([0xe9, 0xe4, 0xda, 255])
+  })
 })
 
 test('4K canvas is 3840×2160 with pixelRatio 2', async () => {

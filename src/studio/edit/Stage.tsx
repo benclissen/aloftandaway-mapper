@@ -1,7 +1,8 @@
-import { Marker, type Map as MapLibreMap } from 'maplibre-gl'
+import type { Map as MapLibreMap } from 'maplibre-gl'
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
-import { clampLat, layoutSize, type LngLat, type Project, type Shot } from '../../core/index.js'
+import { clampLat, layoutSize, type Project, type ProjectPatch, type Shot } from '../../core/index.js'
 import { MapStage } from '../stage/MapStage.js'
+import { RouteEditor, type PointTarget, type RouteEditorCallbacks } from './RouteEditor.js'
 
 declare global {
   interface Window {
@@ -22,10 +23,14 @@ interface StageProps {
   /** When true the camera stays where the user left it; frames update only the route and signs. */
   freeView: boolean
   handle: RefObject<StageHandle | null>
+  /** The leg whose via points are shown and edited, if any. */
+  selectedLeg: number | undefined
   /** The user panned, zoomed, rotated or tilted the map. */
   onUserMove(): void
-  /** Resolves to whether the new position was saved; if not, the marker goes back to the stop. */
-  onStopMoved(id: string, at: LngLat): Promise<boolean>
+  onSelectLeg(leg: number | undefined): void
+  /** Applies an edit made on the map and resolves to whether it was saved; if not, a dragged handle goes back. */
+  onEdit(patch: ProjectPatch, label: string): Promise<boolean>
+  onPointMenu(target: PointTarget, client: { x: number; y: number }): void
   onError(message: string): void
 }
 
@@ -43,9 +48,8 @@ function normaliseBearing(bearing: number): number {
   return b === -180 ? 180 : b
 }
 
-interface Callbacks {
+interface Callbacks extends RouteEditorCallbacks {
   onUserMove(): void
-  onStopMoved(id: string, at: LngLat): Promise<boolean>
   onError(message: string): void
   onShown(frame: number): void
 }
@@ -85,16 +89,15 @@ class FrameDriver {
   }
 }
 
-/** Owns the MapStage, its markers and its frame driver, and rebuilds them when the pixel ratio changes a lot. */
+/** Owns the MapStage, its route editor and its frame driver, and rebuilds them when the pixel ratio changes a lot. */
 class StageController {
   private stage: MapStage | undefined
   private driver: FrameDriver | undefined
+  private editor: RouteEditor | undefined
   private ratio = 0
   private rebuildTimer: ReturnType<typeof setTimeout> | undefined
-  private markers = new Map<string, Marker>()
-  /** Stops whose marker is being dragged; incoming projects don't move them. */
-  private dragging = new Set<string>()
   private project: Project | undefined
+  private selectedLeg: number | undefined
   private frame = 0
   private camera = true
   /** The frame and camera last asked of the driver, so repeat requests are skipped. */
@@ -116,6 +119,11 @@ class StageController {
   setProject(project: Project): void {
     this.project = project
     this.loadProject()
+  }
+
+  setSelectedLeg(leg: number | undefined): void {
+    this.selectedLeg = leg
+    this.editor?.setSelectedLeg(leg)
   }
 
   show(frame: number, camera: boolean): void {
@@ -147,11 +155,13 @@ class StageController {
     const view = old && { center: old.getCenter(), zoom: old.getZoom(), bearing: old.getBearing(), pitch: old.getPitch() }
     this.teardown()
     const tileBase = new URL('../tiles/', location.href).href
-    const stage = new MapStage(this.container, { pixelRatio: ratio, interactive: true, tileBase })
+    const stage = new MapStage(this.container, { pixelRatio: ratio, interactive: true, tileBase, editing: true })
     if (view) stage.map.jumpTo(view)
     this.stage = stage
     this.ratio = ratio
     this.driver = new FrameDriver(stage, this.cb)
+    this.editor = new RouteEditor(stage, this.cb)
+    this.editor.setSelectedLeg(this.selectedLeg)
     window.mapperStudio = { map: stage.map }
     // The overlay is drawn per frame; keep it on the map while the user moves it.
     stage.map.on('move', () => stage.redrawOverlay())
@@ -171,9 +181,8 @@ class StageController {
     if (this.driver) this.driver.disposed = true
     this.driver = undefined
     this.requested = undefined
-    for (const marker of this.markers.values()) marker.remove()
-    this.markers.clear()
-    this.dragging.clear()
+    this.editor?.destroy()
+    this.editor = undefined
     this.stage?.destroy()
     this.stage = undefined
   }
@@ -183,7 +192,7 @@ class StageController {
     if (!stage || !project) return
     stage.load(project).then(
       () => {
-        if (this.stage === stage && this.project === project) this.syncMarkers(stage.map, project)
+        if (this.stage === stage && this.project === project) this.editor?.sync(project)
       },
       (e: unknown) => {
         if (this.stage === stage) this.cb.onError((e as Error).message)
@@ -202,63 +211,22 @@ class StageController {
     this.requested = { frame, camera }
     this.driver.want(frame, camera)
   }
-
-  private syncMarkers(map: MapLibreMap, project: Project): void {
-    const { stops } = project.scenes[0]!
-    const ids = new Set(stops.map((s) => s.id))
-    for (const [id, marker] of this.markers) {
-      if (ids.has(id)) continue
-      marker.remove()
-      this.markers.delete(id)
-    }
-    for (const stop of stops) {
-      let marker = this.markers.get(stop.id)
-      if (!marker) {
-        marker = this.createMarker(stop.id)
-        marker.setLngLat(stop.at).addTo(map)
-        this.markers.set(stop.id, marker)
-      } else if (!this.dragging.has(stop.id)) {
-        marker.setLngLat(stop.at)
-      }
-      const element = marker.getElement()
-      element.title = stop.name
-      element.setAttribute('aria-label', stop.name)
-    }
-  }
-
-  private createMarker(id: string): Marker {
-    const element = document.createElement('div')
-    element.className = 'stop-handle'
-    element.dataset.testid = `stop-marker-${id}`
-    // Subpixel positioning keeps the handle exactly over the stop, so a drag starts and ends where it looks.
-    const marker = new Marker({ element, draggable: true, anchor: 'center', subpixelPositioning: true })
-    marker.on('dragstart', () => this.dragging.add(id))
-    marker.on('dragend', () => {
-      this.dragging.delete(id)
-      const { lng, lat } = marker.getLngLat().wrap()
-      void this.cb.onStopMoved(id, [round(lng, 5), clampLat(round(lat, 5))]).then((saved) => {
-        // Nothing was saved, so no new project will move the marker: put it back over the stop.
-        const stop = this.project?.scenes[0]!.stops.find((s) => s.id === id)
-        if (!saved && stop && this.markers.get(id) === marker && !this.dragging.has(id)) marker.setLngLat(stop.at)
-      })
-    })
-    return marker
-  }
 }
 
 /**
  * The map at layout size, scaled with a CSS transform to fit the space it is given. Its pixel ratio matches the
  * screen at that scale, so the map stays sharp without laying out differently from a render.
  */
-export function Stage({ project, frame, freeView, handle, onUserMove, onStopMoved, onError }: StageProps) {
+export function Stage(props: StageProps) {
+  const { project, frame, freeView, handle, selectedLeg } = props
   const areaRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const controllerRef = useRef<StageController | null>(null)
   const [area, setArea] = useState<{ width: number; height: number }>()
   const [shownFrame, setShownFrame] = useState<number>()
   // Callbacks change every render; the controller reads the latest through this ref.
-  const callbacks = useRef({ onUserMove, onStopMoved, onError })
-  callbacks.current = { onUserMove, onStopMoved, onError }
+  const callbacks = useRef(props)
+  callbacks.current = props
 
   const layout = layoutSize(project.output.aspect)
   const fit = area ? Math.max(0.05, Math.min((area.width - 2 * MARGIN) / layout.width, (area.height - 2 * MARGIN) / layout.height)) : 0
@@ -276,7 +244,9 @@ export function Stage({ project, frame, freeView, handle, onUserMove, onStopMove
   useEffect(() => {
     const controller = new StageController(containerRef.current!, {
       onUserMove: () => callbacks.current.onUserMove(),
-      onStopMoved: (id, at) => callbacks.current.onStopMoved(id, at),
+      onSelectLeg: (leg) => callbacks.current.onSelectLeg(leg),
+      onEdit: (patch, label) => callbacks.current.onEdit(patch, label),
+      onPointMenu: (target, client) => callbacks.current.onPointMenu(target, client),
       onError: (message) => callbacks.current.onError(message),
       onShown: setShownFrame,
     })
@@ -298,6 +268,10 @@ export function Stage({ project, frame, freeView, handle, onUserMove, onStopMove
   }, [project])
 
   useEffect(() => {
+    controllerRef.current?.setSelectedLeg(selectedLeg)
+  }, [selectedLeg])
+
+  useEffect(() => {
     controllerRef.current?.show(frame, !freeView)
   }, [frame, freeView, project])
 
@@ -309,6 +283,7 @@ export function Stage({ project, frame, freeView, handle, onUserMove, onStopMove
           className="stage"
           data-testid="stage"
           data-shown-frame={shownFrame}
+          data-selected-leg={selectedLeg}
           style={{ transform: `scale(${fit})`, transformOrigin: '0 0' }}
         />
       </div>

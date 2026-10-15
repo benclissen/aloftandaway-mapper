@@ -58,19 +58,12 @@
 .studio .stop-handle {
   width: 30px;
   height: 30px;
-  box-sizing: border-box;
-  border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.85);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3), inset 0 0 0 1px rgba(0, 0, 0, 0.3);
-  cursor: grab;
 }
 
 .studio .stop-handle:hover {
   background: rgba(255, 255, 255, 0.2);
-}
-
-.studio .stop-handle:active {
-  cursor: grabbing;
 }
 
 /* Controls */
@@ -304,4 +297,56 @@
   color: inherit;
   font-size: 16px;
   line-height: 1;
+}
+
+/* Route editing */
+
+.studio .edit-handle {
+  box-sizing: border-box;
+  border-radius: 50%;
+  cursor: grab;
+}
+
+.studio .edit-handle.sharp {
+  border-radius: 3px;
+}
+
+.studio .edit-handle:active {
+  cursor: grabbing;
+}
+
+.studio .edit-handle:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.studio .via-handle {
+  width: 16px;
+  height: 16px;
+  background: #ffffff;
+  border: 2px solid rgba(0, 0, 0, 0.55);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.studio .via-handle:hover {
+  background: #e8e6e1;
+}
+
+.point-menu {
+  position: fixed;
+  z-index: 10;
+  display: grid;
+  min-width: 140px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.studio .point-menu button {
+  height: 28px;
+  border: 0;
+  border-radius: 4px;
+  text-align: left;
 }

@@ -6,10 +6,13 @@ import {
   decodeLand,
   encodeLand,
   firstLandOnSegment,
+  labelWater,
   landIndex,
+  nearestByRegion,
   snapToWater,
   toXY,
   waterGrid,
+  waterGridAt,
   type Box,
   type LngLat,
   type WaterGrid,
@@ -102,6 +105,77 @@ describe('water grid', () => {
     expect(hit![0]).toBeGreaterThan(island.minX - g.cell)
     expect(hit![0]).toBeLessThan(island.minX + g.cell)
     expect(firstLandOnSegment(g, toXY([19, 29]), toXY([22, 29.5]))).toBeUndefined()
+  })
+
+  it('finds land at a corner a segment only grazes', () => {
+    // A frame of 4×4 cells, one unit each, with land in cell (1, 1) only.
+    const g: WaterGrid = {
+      x0: 0,
+      y0: 0,
+      cell: 1,
+      cols: 4,
+      rows: 4,
+      land: new Uint8Array(16),
+      solid: new Uint8Array(16),
+      cost: new Float32Array(16),
+    }
+    g.land[1 * 4 + 1] = 1
+    // From the centre of (0, 0) to the centre of (2, 2) the line passes the corners of (1, 1).
+    expect(firstLandOnSegment(g, [0.5, 0.5], [2.5, 2.5])).toEqual([1, 1])
+    // A line that clips 0.02 of a cell off the land cell's corner, far less than a sampling step.
+    const clip = firstLandOnSegment(g, [0.52, 1.5], [1.5, 0.52])
+    expect(clip![0]).toBeCloseTo(1, 12)
+    expect(clip![1]).toBeCloseTo(1.02, 12)
+    // Alongside, a cell clear of it.
+    expect(firstLandOnSegment(g, [0.5, 2.5], [3.5, 2.5])).toBeUndefined()
+    // Starting outside the grid still finds it.
+    expect(firstLandOnSegment(g, [-2, 1.5], [3, 1.5])).toEqual([1, 1.5])
+  })
+
+  it('marks cells that are all land as solid', () => {
+    const g = islandGrid()
+    for (let i = 0; i < g.land.length; i++) {
+      if (g.solid[i]) expect(gap(cellBox(g, i), island), `cell ${i}`).toBe(0)
+      if (g.solid[i]) expect(g.land[i]).toBe(1)
+    }
+    const middle = cellAt(g, toXY([20.5, 30.5]))!
+    expect(g.solid[middle]).toBe(1)
+    // An edge cell is land but not solid.
+    const edge = cellAt(g, [island.minX, (island.minY + island.maxY) / 2])!
+    expect(g.land[edge]).toBe(1)
+    expect(g.solid[edge]).toBe(0)
+  })
+
+  it('rasterises an explicit frame the same as a box', () => {
+    const g = islandGrid()
+    const h = waterGridAt(source([square(20, 30, 21, 31)]), { x0: g.x0, y0: g.y0, cell: g.cell, cols: g.cols, rows: g.rows })
+    expect(h.land).toEqual(g.land)
+    expect(h.solid).toEqual(g.solid)
+  })
+
+  it('labels water regions and finds the nearest cell in each', () => {
+    // Two lakes split by a land column: columns 0–1 and 3–4 of a 5×3 frame.
+    const frame = { x0: 0, y0: 0, cell: 1e-4, cols: 5, rows: 3 }
+    const blocked = new Uint8Array(15)
+    for (let r = 0; r < 3; r++) blocked[r * 5 + 2] = 1
+    const labels = labelWater(frame, blocked)
+    expect(labels[2]).toBe(-1)
+    expect(labels[0]).toBe(labels[2 * 5 + 1])
+    expect(labels[0]).not.toBe(labels[4])
+    expect(new Set(labels).size).toBe(3)
+    // A diagonal gap past two land corners doesn't join regions.
+    const diag = new Uint8Array([0, 1, 1, 0])
+    const two = labelWater({ cols: 2, rows: 2 }, diag)
+    expect(two[0]).not.toBe(two[3])
+    // From a point on the land column, each lake's nearest cell, in reach.
+    const p: XY = [2.5e-4, 1.5e-4]
+    const km = 10 * 40075 * 1e-4
+    const near = nearestByRegion(frame, blocked, labels, p, km)
+    expect(near.get(labels[0]!)?.cell).toBe(1 * 5 + 1)
+    expect(near.get(labels[4]!)?.cell).toBe(1 * 5 + 3)
+    expect(nearestByRegion(frame, blocked, labels, p, 0).size).toBe(0)
+    // A point in water gets its own cell at distance 0.
+    expect(nearestByRegion(frame, blocked, labels, [0.5e-4, 0.5e-4], 0).get(labels[0]!)).toEqual({ cell: 0, d: 0 })
   })
 
   it('maps points to cells and back', () => {

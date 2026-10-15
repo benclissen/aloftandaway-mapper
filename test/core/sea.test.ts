@@ -160,6 +160,72 @@ describe('routeSea', () => {
     expect(performance.now() - t0).toBeLessThan(1500)
   })
 
+  // Real cruise legs whose ports sit up estuaries, in archipelagos or past narrow straits.
+  const ports: Record<string, LngLat> = {
+    barcelona: [2.18, 41.38],
+    lisbon: [-9.14, 38.7],
+    piraeus: [23.62, 37.94],
+    istanbul: [28.98, 41.01],
+    southampton: [-1.4, 50.9],
+    newYork: [-74.01, 40.7],
+    stockholm: [18.07, 59.33],
+    helsinki: [24.95, 60.17],
+    copenhagen: [12.59, 55.69],
+    oslo: [10.74, 59.9],
+    seattle: [-122.34, 47.6],
+    juneau: [-134.42, 58.3],
+    bergen: [5.32, 60.39],
+    geiranger: [7.21, 62.1],
+    miami: [-80.17, 25.77],
+    singapore: [103.85, 1.26],
+    hongKong: [114.17, 22.28],
+  }
+  const legs: [string, string][] = [
+    ['barcelona', 'lisbon'],
+    ['piraeus', 'istanbul'],
+    ['southampton', 'newYork'],
+    ['lisbon', 'newYork'],
+    ['stockholm', 'helsinki'],
+    ['copenhagen', 'oslo'],
+    ['seattle', 'juneau'],
+    ['bergen', 'geiranger'],
+    ['miami', 'barcelona'],
+    ['singapore', 'hongKong'],
+  ]
+  for (const [a, b] of legs) {
+    it(`keeps ${a} to ${b} at sea`, () => {
+      const from = ports[a]!
+      const to = ports[b]!
+      const r = ok(routeSea(from, to, [], land))
+      expect(r.path[0]).toEqual(from)
+      expect(r.path.at(-1)).toEqual(to)
+      expect(r.crossesLand).toBeUndefined()
+      atSeaBetweenConnectors(r.path)
+    })
+  }
+
+  it('widens the search when the way round lies outside the first box', () => {
+    // Naples to Bari: the only way round Italy's toe is well south of both ports.
+    const from: LngLat = [14.27, 40.84]
+    const to: LngLat = [16.87, 41.13]
+    const r = ok(routeSea(from, to, [], land))
+    expect(Math.min(...r.path.map((p) => p[1]))).toBeLessThan(39.5)
+    atSeaBetweenConnectors(r.path)
+  })
+
+  it('keeps one knot per control with several and coincident vias', () => {
+    const v1: LngLat = [24.5, 37.6]
+    const v2: LngLat = [26.0, 36.3]
+    const via = [{ at: v1 }, { at: v1 }, { at: v2, sharp: true }, { at: southOfAmorgos }]
+    const r = ok(routeSea(piraeus, rhodes, via, land))
+    expect(r.knots).toHaveLength(via.length + 2)
+    const controls = [piraeus, ...via.map((v) => v.at), rhodes]
+    r.knots.forEach((k, i) => expect(r.path[k]).toEqual(controls[i]))
+    for (let i = 1; i < r.knots.length; i++) expect(r.knots[i]!).toBeGreaterThanOrEqual(r.knots[i - 1]!)
+    expect(r.knots[1]).toBe(r.knots[2])
+    expect(r.knots.at(-1)).toBe(r.path.length - 1)
+  })
+
   it('seaLegKey is stable and input-sensitive', () => {
     const key = seaLegKey(piraeus, rhodes, [{ at: southOfAmorgos }])
     expect(key).toMatch(/^[0-9a-f]{16}$/)

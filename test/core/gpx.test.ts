@@ -34,6 +34,25 @@ describe('gpx', () => {
     expect(g.lines[0]!.points).toEqual([[11, 47], [11.01, 47.01], [11.03, 47.02], [11.04, 47.03]])
   })
 
+  it('decodes character references in names but leaves CDATA as written', () => {
+    const g = parseGpx(fixture('entities.gpx'))
+    expect(g.waypoints.map((w) => w.name)).toEqual([
+      "Côte d'Azur & Nice",
+      'Cannes & Co &amp; more',
+      '<Antibes> "Old Port" \u2014 &unknown; &#1114112;',
+    ])
+    expect(g.lines[0]!.name).toBe('Day 1 & 2')
+    expect(gpxToStops(g, { track: 'Day 1 & 2', stops: 'ends' }).line?.name).toBe('Day 1 & 2')
+  })
+
+  it('skips points with an empty latitude or longitude', () => {
+    const g = parseGpx(fixture('entities.gpx'))
+    expect(g.lines[0]!.points).toEqual([
+      [7.26, 43.7],
+      [7.0, 43.5],
+    ])
+  })
+
   it('joins track segments in order', () => {
     const pts = parseGpx(fixture('track.gpx')).lines[0]!.points
     expect(pts).toHaveLength(12)

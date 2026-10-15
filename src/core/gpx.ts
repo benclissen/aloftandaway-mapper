@@ -32,7 +32,9 @@ const NAME_KM = 1
 type Node = Record<string, unknown>
 
 const parser = new XMLParser({
+  // Entity handling stays off (no DTD or custom entities); textOf decodes the predefined and numeric references.
   processEntities: false,
+  cdataPropName: '#cdata',
   ignoreAttributes: false,
   attributeNamePrefix: '@_',
   removeNSPrefix: true,
@@ -43,17 +45,39 @@ const parser = new XMLParser({
 
 const asNodes = (v: unknown): Node[] => (Array.isArray(v) ? v.filter((x): x is Node => typeof x === 'object' && x !== null) : [])
 
+const NAMED: Record<string, string> = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" }
+
+/** `text` with XML's predefined entities and numeric character references decoded. Others are left as written. */
+function decodeRefs(text: string): string {
+  return text.replace(/&(lt|gt|amp|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);/g, (ref, name: string) => {
+    if (!name.startsWith('#')) return NAMED[name]!
+    const code = name[1] === 'x' ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10)
+    const valid = code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
+    return valid ? String.fromCodePoint(code) : ref
+  })
+}
+
 function textOf(v: unknown): string | undefined {
-  const raw = typeof v === 'object' && v !== null ? (v as Node)['#text'] : v
-  if (typeof raw !== 'string') return undefined
+  let raw: string
+  if (typeof v === 'string') raw = decodeRefs(v)
+  else if (typeof v === 'object' && v !== null) {
+    const node = v as Node
+    const text = node['#text']
+    const cdata = node['#cdata']
+    const parts = (x: unknown): string[] => (Array.isArray(x) ? x : x === undefined ? [] : [x]).map(String)
+    raw = parts(text).map(decodeRefs).join('') + parts(cdata).join('')
+  } else return undefined
   const t = raw.trim()
   return t === '' ? undefined : t
 }
 
 function pointOf(node: Node): LngLat | undefined {
-  const lat = Number(node['@_lat'])
-  const lon = Number(node['@_lon'])
-  if (node['@_lat'] === undefined || node['@_lon'] === undefined) return undefined
+  const rawLat = node['@_lat']
+  const rawLon = node['@_lon']
+  // Number('') is 0, so a blank coordinate would land on the equator or the prime meridian.
+  if (typeof rawLat !== 'string' || typeof rawLon !== 'string' || rawLat.trim() === '' || rawLon.trim() === '') return undefined
+  const lat = Number(rawLat)
+  const lon = Number(rawLon)
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > MAX_LAT || Math.abs(lon) > 180) return undefined
   return [lon, lat]
 }

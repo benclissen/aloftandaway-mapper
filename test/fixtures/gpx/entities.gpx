@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Mapper tests" xmlns="http://www.topografix.com/GPX/1/1">
+  <wpt lat="43.7" lon="7.26"><name>C&#244;te d&apos;Azur &amp; Nice</name></wpt>
+  <wpt lat="43.5" lon="7.0"><name><![CDATA[Cannes & Co &amp; more]]></name></wpt>
+  <wpt lat="43.55" lon="7.1"><name>&lt;Antibes&gt; &quot;Old Port&quot; &#x2014; &unknown; &#1114112;</name></wpt>
+  <trk>
+    <name>Day 1 &amp; 2</name>
+    <trkseg>
+      <trkpt lat="43.7" lon="7.26"/>
+      <trkpt lat="" lon="7.2"/>
+      <trkpt lat="43.6" lon=" "/>
+      <trkpt lat="43.5" lon="7.0"/>
+    </trkseg>
+  </trk>
+</gpx>

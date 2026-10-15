@@ -439,7 +439,8 @@ function fine(
   const kmP = pStop ? snapKm(fineKm) : 0
   const kmQ = qStop ? snapKm(fineKm) : 0
   const ends = snapPair(grid, grid.land, labels, p, q, kmP, kmQ)
-  if (ends && 'snap' in ends) return { snap: ends.snap }
+  // An open cell's centre is always in water, so only a control can fail to snap.
+  if (ends && 'snap' in ends) return (ends.snap === 0 ? pStop : qStop) ? { snap: ends.snap } : { shut: 0 }
   if (!ends) {
     // The coarse route went through a gap the fine grid doesn't have. Shut the stretch's coarse cells that the
     // water at its open end (or nearest its start) doesn't reach.

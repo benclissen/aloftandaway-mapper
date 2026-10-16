@@ -168,6 +168,21 @@ describe('look', () => {
       expect(used, 'the overlay drew without a screen angle').toBeDefined()
       expect(off(used!, line), `drawn at ${used}, line at ${line}`).toBeLessThanOrEqual(2)
       expect(leaks, 'the page made requests the stubs do not answer').toEqual([])
+
+      // On the last frame the head sits at the end of the route, so the direction comes from the point behind it.
+      const lastFrame = timeline.totalFrames - 1
+      expect(timeline.stateAt(lastFrame).distance).toBeCloseTo(route.length, 9)
+      await snapshot(page, lastFrame)
+      const end = await page.evaluate(
+        ([a, b]) => {
+          const mapper = (window as unknown as { mapper: MapperPage }).mapper
+          return { used: mapper.lastScreenAngle(), from: mapper.project(a), to: mapper.project(b) }
+        },
+        [pointAt(route, route.length - km).at, pointAt(route, route.length).at] as const,
+      )
+      const endLine = screenAngle(end.from, end.to)!
+      expect(end.used, 'the overlay drew the last frame without a screen angle').toBeDefined()
+      expect(off(end.used!, endLine), `at the end drawn at ${end.used}, line at ${endLine}`).toBeLessThanOrEqual(2)
     } finally {
       await close()
     }

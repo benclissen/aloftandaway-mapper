@@ -758,7 +758,7 @@ describe('render summaries', () => {
   test('leftover names the scene of each part a joined render left', async () => {
     const dir = path.join(tmp, 'parts')
     await mkdir(dir, { recursive: true })
-    const scenes = [{ id: 'a', name: 'Drive' }, { id: 'b', name: '' }]
+    const scenes = [{ id: 'a', name: 'Drive', position: 1 }, { id: 'b', name: '', position: 3 }]
     await writeFile(path.join(dir, 'manifest.json'), JSON.stringify({ scenes, credit: '' }))
     const part = (sceneId: string, request: string, layer: string, file: string) => ({ sceneId, request, layer, path: `${dir}/${file}` }) as never
     const lines = await leftover({
@@ -769,7 +769,7 @@ describe('render summaries', () => {
       'Finished outputs kept:',
       `- clip of Drive: ${dir}/01-drive.part.mp4`,
       `- map of Drive: ${dir}/01-drive/map.mov`,
-      `- preview of Scene 2: ${dir}/02-scene-preview.part.mp4`,
+      `- preview of Scene 3: ${dir}/02-scene-preview.part.mp4`,
     ])
   })
 

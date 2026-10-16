@@ -393,6 +393,7 @@ function sceneExports(scenes: PlannedScene[], completed: CompletedPass[], dir: s
     return [{
       id: scene.id,
       name: scene.name,
+      position: scene.position,
       frames: map.frames,
       sourceRange,
       layers: { map: path.join(dir, map.path), route: path.join(dir, route.path), signs: path.join(dir, signs.path) },

@@ -112,7 +112,8 @@ export function writeFcpxml(input: FcpxmlInput): string {
     const assets = { map: id(), route: id(), signs: id() }
     return { assets, media: id() }
   })
-  const compoundName = (scene: SceneExport, index: number) => `${input.projectName} · ${sceneTitleOf(scene.name, index)}`
+  const sceneTitle = (scene: SceneExport) => sceneTitleOf(scene.name, scene.position - 1)
+  const compoundName = (scene: SceneExport) => `${input.projectName} · ${sceneTitle(scene)}`
 
   const lines: string[] = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -127,13 +128,13 @@ export function writeFcpxml(input: FcpxmlInput): string {
     const duration = t(scene.frames)
     for (const layer of LAYERS) {
       lines.push(
-        `    <asset${attrs({ id: ids.assets[layer.key], name: `${sceneTitleOf(scene.name, i)} · ${layer.name}`, start: '0s', duration, hasVideo: 1, hasAudio: 0, format: formatId })}>`,
+        `    <asset${attrs({ id: ids.assets[layer.key], name: `${sceneTitle(scene)} · ${layer.name}`, start: '0s', duration, hasVideo: 1, hasAudio: 0, format: formatId })}>`,
         `      <media-rep${attrs({ kind: 'original-media', src: pathToFileURL(scene.layers[layer.key]).href })}/>`,
         '    </asset>',
       )
     }
     lines.push(
-      `    <media${attrs({ id: ids.media, name: compoundName(scene, i) })}>`,
+      `    <media${attrs({ id: ids.media, name: compoundName(scene) })}>`,
       `      <sequence${attrs({ format: formatId, duration, tcStart: '0s', tcFormat: 'NDF' })}>`,
     )
     if (input.credit === 'description' && input.creditLines.length > 0) {
@@ -160,7 +161,7 @@ export function writeFcpxml(input: FcpxmlInput): string {
 
   lines.push('  </resources>', '  <library>', `    <event${attrs({ name: 'Mapper' })}>`)
   input.scenes.forEach((scene, i) => {
-    lines.push(`      <ref-clip${attrs({ ref: sceneIds[i].media, name: compoundName(scene, i), start: '0s', duration: t(scene.frames) })}/>`)
+    lines.push(`      <ref-clip${attrs({ ref: sceneIds[i].media, name: compoundName(scene), start: '0s', duration: t(scene.frames) })}/>`)
   })
 
   if (input.join) {
@@ -172,7 +173,7 @@ export function writeFcpxml(input: FcpxmlInput): string {
     )
     let offset = 0
     input.scenes.forEach((scene, i) => {
-      lines.push(`            <ref-clip${attrs({ ref: sceneIds[i].media, name: compoundName(scene, i), offset: t(offset), start: '0s', duration: t(scene.frames) })}/>`)
+      lines.push(`            <ref-clip${attrs({ ref: sceneIds[i].media, name: compoundName(scene), offset: t(offset), start: '0s', duration: t(scene.frames) })}/>`)
       offset += scene.frames
     })
     lines.push(

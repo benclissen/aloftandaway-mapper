@@ -412,7 +412,7 @@ export async function doneSummary(r: RenderResult): Promise<string> {
 export async function leftover(status: Pick<RenderStatus, 'outputs' | 'dir' | 'warnings'>): Promise<string[]> {
   const { scenes } = status.dir && status.outputs?.length ? await readManifest(path.join(status.dir, 'manifest.json')) : {}
   const names = new Map(
-    Array.isArray(scenes) && scenes.length > 1 ? (scenes as { id: string; name: string }[]).map((s, i) => [s.id, sceneTitleOf(s.name, i)]) : [],
+    Array.isArray(scenes) && scenes.length > 1 ? (scenes as { id: string; name: string; position?: number }[]).map((s, i) => [s.id, sceneTitleOf(s.name, (s.position ?? i + 1) - 1)]) : [],
   )
   const label = (o: NonNullable<RenderStatus['outputs']>[number]) => {
     const what = o.request === 'preview' ? 'preview' : o.request === 'all' ? 'clip' : o.layer

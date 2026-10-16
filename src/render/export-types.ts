@@ -24,6 +24,8 @@ export interface ExportMarker { frame: number; value: string }
 export interface SceneExport {
   id: string
   name: string
+  /** 1-based position in the project's film order, which a partial render keeps. A blank name shows as `Scene <position>`. */
+  position: number
   frames: number
   sourceRange: { fromFrame: number; toFrame: number }
   /** Absolute paths to completed layer media. */

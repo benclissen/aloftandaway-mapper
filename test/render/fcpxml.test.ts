@@ -27,6 +27,7 @@ function scene(id: string, name: string, frames: number, dir: string, extra: Par
   return {
     id,
     name,
+    position: 1,
     frames,
     sourceRange: { fromFrame: 0, toFrame: frames },
     layers: { map: `${dir}/map.mov`, route: `${dir}/route.mov`, signs: `${dir}/signs.mov` },
@@ -42,7 +43,7 @@ function twoScenes(output: Output = out25): FcpxmlInput {
     join: true,
     credit: 'burned',
     creditLines: [MAP_CREDIT],
-    scenes: [scene('a', 'Drive', 50, '/renders/trip/01-drive'), scene('b', 'Sail', 75, '/renders/trip/02-sail')],
+    scenes: [scene('a', 'Drive', 50, '/renders/trip/01-drive'), scene('b', 'Sail', 75, '/renders/trip/02-sail', { position: 2 })],
   }
 }
 
@@ -103,6 +104,13 @@ describe('frameTime', () => {
 })
 
 describe('writeFcpxml', () => {
+  test('a blank scene name shows its project position, not its place among the rendered scenes', () => {
+    const only = scene('c', '', 50, '/renders/trip/03-scene', { position: 3 })
+    const doc = parse(writeFcpxml({ ...twoScenes(), join: false, scenes: [only] }))
+    expect(resources(doc).asset.map((a: Node) => a['@_name'])).toEqual(['Scene 3 · Map', 'Scene 3 · Route', 'Scene 3 · Signs'])
+    expect(resources(doc).media.map((m: Node) => m['@_name'])).toEqual(['Trip · Scene 3'])
+  })
+
   test('writes a v1.11 document with a DOCTYPE', () => {
     const xml = writeFcpxml(twoScenes())
     expect(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n')).toBe(true)
@@ -354,7 +362,7 @@ describe('writeFcpxml', () => {
   })
 
   test('a file with a blank scene name loads and exports as Scene N', () => {
-    const input: FcpxmlInput = { ...twoScenes(), scenes: [scene('a', 'Drive', 50, '/r/a'), scene('b', '   ', 75, '/r/b')] }
+    const input: FcpxmlInput = { ...twoScenes(), scenes: [scene('a', 'Drive', 50, '/r/a'), scene('b', '   ', 75, '/r/b', { position: 2 })] }
     for (const join of [true, false]) {
       const doc = parse(writeFcpxml({ ...input, join }))
       expect(resources(doc).media.map((m: Node) => m['@_name'])).toEqual(['Trip · Drive', 'Trip · Scene 2'])

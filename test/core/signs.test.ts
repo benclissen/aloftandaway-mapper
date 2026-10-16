@@ -37,9 +37,23 @@ describe('signLift', () => {
     expect(signLift(scene('none'))).toBe(16)
   })
 
-  test('a scene with a dot leg and a badge leg uses 41 px', () => {
+  test('a scene with a dot look and a ferry leg uses 41 px', () => {
     expect(signLift(scene('dot', { legSymbols: [undefined, 'ferry'] }))).toBe(41)
-    expect(signLift(scene('car', { legSymbols: ['dot', 'dot'] }))).toBe(41)
+  })
+
+  test('a badge look that every leg overrides with a dot keeps 16 px', () => {
+    expect(signLift(scene('car', { legSymbols: ['dot', 'dot'] }))).toBe(16)
+  })
+
+  test('a look symbol that no leg draws does not lift signs, but one a leg inherits does', () => {
+    expect(signLift(scene('car', { legSymbols: ['dot', 'none'] }))).toBe(16)
+    expect(signLift(scene('car', { legSymbols: ['dot', undefined] }))).toBe(41)
+  })
+
+  test('a scene with no legs uses its look symbol', () => {
+    const s = scene('car')
+    s.legs = []
+    expect(signLift(s)).toBe(41)
   })
 })
 

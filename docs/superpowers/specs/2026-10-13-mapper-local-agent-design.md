@@ -73,7 +73,7 @@ describe the layered export unless they say otherwise.
 - **Default glide** (no `camera.start`): opens on the first leg's fitted shot, capped at the style's maximum zoom. On a one-leg route, or when that fit is within 0.5 zoom of the whole route, it opens closer in on the first stop. It pulls out to the whole route over the first leg's travel, then holds. With an explicit `start`, the glide runs over the whole clip as before. A `fixed` camera with no start shows the whole route. This fixes the static default glide found in the stage 4 test.
 - **Credit depends on the style.** `sceneCredit(scene, 'burned' | 'written')` lists the lines a scene needs. Burned in, the map credit always comes first, also for satellite. Satellite adds "Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016), CC BY 4.0". Terrain adds "Terrain: USGS, Copernicus EU-DEM, NOAA ETOPO1 and others". The written form (FCPXML notes, render manifest, MCP tool text) carries the full EOxCloudless wording, with https://cloudless.eox.at and CC BY 4.0, and the full terrain attribution list. The strings are in `src/core/credit.ts`. `blank` without terrain has no credit.
 - **Changes for existing projects:** a glide with no `start` opens on the first leg; follow has the look-ahead cap and slower heading turns; `terrain: true` projects render 3D (they were flat); non-dot symbols draw icons in place of the dot; sign text uses Plus Jakarta Sans.
-- **Still parked:** the flight bow size and the Baltic skerries.
+- **Still parked:** the flight bow size and the Baltic skerries (taken up in stage 7; see below).
 
 **Revision, 2026-10-16 (stage 6 decisions):**
 
@@ -144,7 +144,7 @@ describe the layered export unless they say otherwise.
     409 and nothing changes.
 - **Not in this stage:** the open items from stages 4 and 5 (flight bow,
   Baltic skerries, the pale `aloftandaway` style, white signs on `monochrome`,
-  the badge under a sign, fontnik, thin assertions).
+  the badge under a sign, fontnik, thin assertions) (taken up in stage 7; see below).
 
 **Revision, 2026-10-16 (stage 7 decisions):**
 
@@ -164,8 +164,9 @@ describe the layered export unless they say otherwise.
   lists them. They show in the manifest, in the tool summaries (`render`,
   `render_status`, `preview_frame`, `preview_contact_sheet`) and on the CLI's
   stderr.
-  - A terrain frame whose camera height never settles no longer fails the
-    render. It becomes a warning that names the frames, as `Frames 12, 13 and
+  - A terrain frame whose camera height never settles is now reported as a
+    warning, where before it was only logged in the page. The render doesn't
+    fail either way. The warning names the frames, as `Frames 12, 13 and
     40: the camera height over terrain hadn't settled, so these frames may
     differ slightly between renders and between layers.` (`Frame 7: … this
     frame …` for one). Past ten frames the rest are counted.

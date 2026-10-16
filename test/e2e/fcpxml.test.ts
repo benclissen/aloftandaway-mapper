@@ -15,6 +15,7 @@ function scene(id: string, name: string, frames: number, d: string): SceneExport
   return {
     id,
     name,
+    position: 1,
     frames,
     sourceRange: { fromFrame: 0, toFrame: frames },
     layers: { map: `${d}/map.mov`, route: `${d}/route.mov`, signs: `${d}/signs.mov` },

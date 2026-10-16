@@ -27,6 +27,7 @@ const input: FcpxmlInput = {
   output: { aspect: '16:9', height: 1080, fps: { num: 25, den: 1 } },
   join: true,
   credit: 'burned',
+  creditLines: [],
   scenes: [scene('a', 'Drive', 50, '/renders/trip/01-drive'), scene('b', 'Sail', 75, '/renders/trip/02-sail')],
 }
 

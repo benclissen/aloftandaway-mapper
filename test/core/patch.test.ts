@@ -3,6 +3,9 @@ import {
   ProjectError,
   buildRoute,
   ProjectPatchSchema,
+  SCENE_OP_NAMES,
+  SceneOpSchema,
+  isSceneOp,
   applyPatch,
   mergePatch,
   newStopId,
@@ -563,5 +566,19 @@ describe('scene-targeted patches', () => {
     expect(out.scenes[0]).toEqual(project.scenes[0])
     expect(out.scenes[1]!.stops.map((x) => x.name)).toEqual(['A', 'B'])
     expect(out.scenes[1]!.legs).toHaveLength(1)
+  })
+})
+
+describe('scene ops', () => {
+  test('SCENE_OP_NAMES matches the scene op schema', () => {
+    const schemaNames = SceneOpSchema.options.map((option) => option.shape.op.value)
+    expect([...SCENE_OP_NAMES]).toEqual(schemaNames)
+  })
+
+  test('isSceneOp is true for the scene ops and false for the stop ops', () => {
+    for (const name of SCENE_OP_NAMES) expect(isSceneOp({ op: name })).toBe(true)
+    for (const name of ['insert_stop', 'update_stop', 'remove_stop', 'update_leg', 'insert_via', 'remove_via', 'scene_note']) {
+      expect(isSceneOp({ op: name })).toBe(false)
+    }
   })
 })

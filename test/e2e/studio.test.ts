@@ -1083,9 +1083,9 @@ describe('scene tabs', () => {
     project.scenes[0]!.look.terrain = true
     let held: Route[] | undefined = []
     const answer = (route: Route) => route.fulfill({ contentType: 'image/png', body: flatTerrainTile() })
-    const studio = await openStudioPage(project, VIEWPORT, (page) =>
-      page.context().route('**/tiles/terrain/**', (route) => (held ? void held.push(route) : answer(route))),
-    )
+    const studio = await openStudioPage(project, VIEWPORT, async (page) => {
+      await page.context().route('**/tiles/terrain/**', (route) => (held ? void held.push(route) : answer(route)))
+    })
     await expect.poll(() => handles(studio.page).count()).toBe(4)
     const release = async () => {
       const routes = held ?? []

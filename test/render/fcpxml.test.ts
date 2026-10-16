@@ -217,6 +217,7 @@ describe('writeFcpxml', () => {
       output: out25,
       join: true,
       credit: 'burned',
+      creditLines: [],
       scenes: [scene('a', sceneName, 50, dir, { markers: [{ frame: 10, value: marker }] })],
     }
     const xml = writeFcpxml(input)
@@ -238,6 +239,7 @@ describe('writeFcpxml', () => {
       output: out25,
       join: true,
       credit: 'burned',
+      creditLines: [],
       scenes: [scene('a', 'Dr\u001Bive\uFFFE', 50, '/r/a', { markers: [{ frame: 1, value: 'A\u0001B\uD800C\tD' }] })],
     }
     const xml = writeFcpxml(input)

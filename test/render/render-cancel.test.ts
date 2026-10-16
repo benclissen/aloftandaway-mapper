@@ -189,7 +189,7 @@ describe('cancelling a pass', () => {
     }
     const dir = await mkdtemp(path.join(tmp, 'loading-'))
     const rendering = realRenderPass(
-      { browser: {} as Browser, project, scene: plan.scenes[0]!, pass, dir, signal: controller.signal },
+      { browser: {} as Browser, project, seaPaths: {}, scene: plan.scenes[0]!, pass, dir, signal: controller.signal },
       { openPage: async () => page, startEncoder: () => expect.fail('no frame should be encoded') },
     )
     await expect(rendering).rejects.toThrow('has been closed')

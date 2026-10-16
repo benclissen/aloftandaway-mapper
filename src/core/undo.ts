@@ -1,4 +1,4 @@
-import { applyPatch, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
+import { applyPatch, isSceneOp, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
 import { resolveScene } from './scenes.js'
 import { defaultModeFor, type Project } from './schema.js'
 
@@ -85,8 +85,6 @@ function invertOp(project: Project, op: PatchOp, sceneId: string): PatchOp {
   }
 }
 
-const SCENE_OPS = new Set(['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene', 'restore_scene'])
-
 /**
  * The patch that undoes `patch` on `before`: applied to `applyPatch(before, patch)` it gives back `before`.
  * Supports `scene`, `sceneSet`, the stop, leg and via ops, and the scene ops. The inverse names the scene by id.
@@ -102,7 +100,7 @@ export function invertPatch(before: Project, patch: ProjectPatch): ProjectPatch 
     if (!SUPPORTED.has(op.op)) throw new Error(`invertPatch does not support ${op.op}`)
   }
   const sceneId = resolveScene(before, parsed.scene).scene.id
-  const editsStops = ops.some((op) => !SCENE_OPS.has(op.op))
+  const editsStops = ops.some((op) => !isSceneOp(op))
   const removesScene = ops.some((op) => op.op === 'remove_scene' && op.id === sceneId)
   if (removesScene && patch.sceneSet) throw new Error('invertPatch does not support sceneSet together with removing that scene')
   if (removesScene && editsStops) throw new Error('invertPatch does not support editing stops together with removing that scene')
@@ -116,7 +114,7 @@ export function invertPatch(before: Project, patch: ProjectPatch): ProjectPatch 
   for (const op of ops) {
     inverted.push(invertOp(state, op, sceneId))
     // A scene op doesn't need the chosen scene, which it may have removed.
-    state = applyPatch(state, SCENE_OPS.has(op.op) ? { ops: [op] } : { scene: sceneId, ops: [op] })
+    state = applyPatch(state, isSceneOp(op) ? { ops: [op] } : { scene: sceneId, ops: [op] })
   }
   if (inverted.length) inverse.ops = inverted.reverse()
   return inverse

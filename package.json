@@ -13,7 +13,7 @@
     "build": "tsc -p tsconfig.node.json && vite build",
     "test": "vitest run --project unit",
     "test:e2e": "npm run build && vitest run --project e2e",
-    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.bench.json && tsc -p tsconfig.studio.json",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.bench.json && tsc -p tsconfig.studio.json && tsc -p tsconfig.test.json",
     "build:land": "tsx scripts/build-land.ts",
     "bench:render": "tsx bench/render-speed.ts",
     "bench:pipeline": "npm run build && tsx bench/pipeline.ts",

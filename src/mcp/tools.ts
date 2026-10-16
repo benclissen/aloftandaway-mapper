@@ -11,6 +11,7 @@ import {
   GpxError,
   gpxToStops,
   importGpx,
+  isSceneOp,
   LegModeSchema,
   MAP_CREDIT,
   OutputSchema,
@@ -198,9 +199,6 @@ function sceneSentence(label: string | undefined, sentence: string): string {
 function scenesLine(project: Project): string {
   return `Scenes: ${project.scenes.map((s, i) => `${i + 1} ${s.name || 'Untitled'}`).join(', ')}.`
 }
-
-/** True for the ops that add, duplicate, remove, move or restore scenes, as opposed to editing a scene's stops. */
-const isSceneOp = (op: { op: string }) => op.op.endsWith('_scene')
 
 // GPX
 

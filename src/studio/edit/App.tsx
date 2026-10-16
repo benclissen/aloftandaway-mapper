@@ -5,6 +5,7 @@ import {
   buildTimeline,
   fpsValue,
   invertPatch,
+  isSceneOp,
   newSceneId,
   type PatchResponse,
   type SeaPaths,
@@ -13,7 +14,7 @@ import {
   type Scene,
 } from '../../core/index.js'
 import { CLIENT_ID, getProject, patch, RequestError, sceneParam, setSceneParam, subscribe } from './api.js'
-import { EditHistory, EditQueue, OutsideWrites, redoPatch, SCENE_OPS, scenesAround, type Entry } from './history.js'
+import { EditHistory, EditQueue, OutsideWrites, redoPatch, scenesAround, type Entry } from './history.js'
 import { LegsPanel } from './LegsPanel.js'
 import { PointMenu } from './PointMenu.js'
 import { isSharp, removeViaEdit, sharpEdit, type PointMenuTarget } from './RouteEditor.js'
@@ -293,7 +294,7 @@ export function App() {
     (input: ProjectPatch, label: string, opts: { saved?: string; seen?: string } = {}): Promise<boolean> => {
       const { saved, seen = current.current?.updatedAt } = opts
       // An edit to a scene's contents names the scene it was made on, even if the tab changes before it is sent.
-      const editsStops = input.ops?.some((op) => !SCENE_OPS.has(op.op)) ?? false
+      const editsStops = input.ops?.some((op) => !isSceneOp(op)) ?? false
       const touchesScene = input.sceneSet !== undefined || editsStops
       const body: ProjectPatch =
         touchesScene && input.scene === undefined && activeRef.current !== undefined ? { ...input, scene: activeRef.current } : input

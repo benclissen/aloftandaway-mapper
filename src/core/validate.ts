@@ -3,7 +3,7 @@ import { haversineKm } from './geo.js'
 import { buildRoute } from './route.js'
 import { THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
 import { NO_LAND_DATA, type SeaPaths } from './sea.js'
-import { signBox, signText } from './signs.js'
+import { signBox, signLift, signText } from './signs.js'
 import { buildTimeline, formatTimecode, legSeconds, SIGN_FADE_SECONDS } from './timeline.js'
 
 export interface Issue {
@@ -49,6 +49,7 @@ function signOverlaps(
   const timeline = buildTimeline(scene, fps, route)
   const fadeFrames = Math.round(SIGN_FADE_SECONDS * (fps.num / fps.den))
   const stopIndex = new Map(scene.stops.map((s, i) => [s.id, i]))
+  const lift = signLift(scene)
   const issues: Issue[] = []
   const seen = new Set<string>()
   for (const arrival of timeline.arrivals) {
@@ -61,7 +62,7 @@ function signOverlaps(
       .flatMap((s) => {
         const j = stopIndex.get(s.stopId)
         const stop = j === undefined ? undefined : scene.stops[j]
-        return stop && j !== undefined ? [{ j, box: signBox(projectToLayout(shot, aspect, stop.at), signText(stop)) }] : []
+        return stop && j !== undefined ? [{ j, box: signBox(projectToLayout(shot, aspect, stop.at), signText(stop), lift) }] : []
       })
     // Sorted by left edge, so a box can stop looking once the next one starts past its right edge.
     boxes.sort((x, y) => x.box.left - y.box.left)

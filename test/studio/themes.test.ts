@@ -13,6 +13,30 @@ const symbols = (style: StyleSpecification) =>
 
 const layerIndex = (style: StyleSpecification, id: string) => style.layers.findIndex((l) => l.id === id)
 
+describe('palettes', () => {
+  const colour = (theme: ThemeId, id: string, prop: 'background-color' | 'fill-color') => {
+    const layer = build(theme).layers.find((l) => l.id === id)
+    return (layer?.paint as Record<string, unknown>)[prop]
+  }
+  // Perceived brightness of a #rrggbb colour.
+  const luma = (hex: unknown) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(String(hex).slice(i, i + 2), 16))
+    return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!
+  }
+
+  test('aloftandaway has a blue-grey sea', () => {
+    expect(colour('aloftandaway', 'water', 'fill-color')).toBe('#b7c8d3')
+    expect(colour('aloftandaway', 'land', 'background-color')).toBe('#e9ecee')
+    expect(luma(colour('aloftandaway', 'water', 'fill-color'))).toBeLessThan(luma(colour('aloftandaway', 'land', 'background-color')))
+  })
+
+  test("monochrome's sea is grey", () => {
+    expect(colour('monochrome', 'water', 'fill-color')).toBe('#d6d6d6')
+    expect(colour('monochrome', 'land', 'background-color')).toBe('#f4f4f4')
+    expect(luma(colour('monochrome', 'water', 'fill-color'))).toBeLessThan(luma(colour('monochrome', 'land', 'background-color')))
+  })
+})
+
 describe('buildStyle', () => {
   test('every theme builds a valid style', () => {
     for (const theme of THEMES) {

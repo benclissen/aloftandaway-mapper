@@ -184,8 +184,8 @@ describe.skipIf(process.env.MAPPER_NET !== '1')('look (MAPPER_NET only)', () => 
     const { page, close } = await openRenderPage(project, 0.5)
     try {
       const png = PNG.sync.read(await snapshot(page, 0))
-      const WATER = [0xee, 0xf2, 0xf4]
-      const LAND = [0xd4, 0xda, 0xdf]
+      const WATER = [0xb7, 0xc8, 0xd3]
+      const LAND = [0xe9, 0xec, 0xee]
       // Open sea south of the Cyclades paints the style's water, not the land colour behind it.
       const [wx, wy] = layoutPx(project, 0, [25.0, 36.0]).map((v) => v * 0.5)
       expect(near(rgb(png, wx!, wy!), WATER, 6), `sea pixel ${rgb(png, wx!, wy!)}`).toBe(true)

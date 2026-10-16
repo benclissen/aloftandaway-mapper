@@ -513,6 +513,7 @@ describe('tools', () => {
       expect(get).not.toContain('scenes[0]')
       const update = tools.find((t) => t.name === 'update_project')!.description!
       for (const word of ['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene']) expect(update).toContain(word)
+      for (const words of ['0-based', 'scene id', 'appends', 'copyLookFrom is an id or 1-based position']) expect(update).toContain(words)
       expect(update).not.toContain('restore_scene')
     })
 

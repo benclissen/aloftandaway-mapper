@@ -60,6 +60,27 @@ export function greekIslands(scene: Partial<Scene> = {}): Project {
   )
 }
 
+/**
+ * Two scenes on the blank theme: "Drive", a three-stop land route on the French Riviera, and "Sail", the Greek Islands
+ * stops. Every camera is fixed on the whole route. Drive keeps the project's scene id; Sail's is
+ * `00000000-0000-4000-8000-000000000002`.
+ */
+export function twoScenes(): Project {
+  const drive = lineProject(
+    'Two Scenes',
+    [
+      stop('nice', 'Nice', [7.262, 43.7102]),
+      stop('cannes', 'Cannes', [7.0174, 43.5528]),
+      stop('tropez', 'Saint-Tropez', [6.6407, 43.2727]),
+    ],
+    { name: 'Drive' },
+  )
+  const sail = sceneOf(greekIslands())
+  const project = { ...drive, scenes: [sceneOf(drive), { ...sail, id: '00000000-0000-4000-8000-000000000002', name: 'Sail' }] }
+  for (const scene of project.scenes) scene.camera = { mode: 'fixed', easing: 'smooth' }
+  return project
+}
+
 /** Three stops around Mont Blanc and the Matterhorn, on the outdoor theme with terrain on. */
 export function alpine(scene: Partial<Scene> = {}): Project {
   const project = lineProject(

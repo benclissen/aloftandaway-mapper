@@ -79,6 +79,7 @@ export function removeViaEdit(leg: number, index: number): Edit {
 export class RouteEditor {
   private readonly map: MapLibreMap
   private project: Project | undefined
+  private sceneId: string | undefined
   private selectedLeg: number | undefined
   private stopMarkers = new Map<string, Marker>()
   /** Handles for the via points of `viaLeg`, in order. */
@@ -97,9 +98,10 @@ export class RouteEditor {
     this.map.on('click', this.onMapClick)
   }
 
-  /** Shows the handles for `project`, which the stage has just loaded. */
-  sync(project: Project): void {
+  /** Shows the handles for scene `sceneId` of `project`, which the stage has just loaded. */
+  sync(project: Project, sceneId: string): void {
     this.project = project
+    this.sceneId = sceneId
     this.syncStops()
     this.syncVias()
   }
@@ -119,7 +121,7 @@ export class RouteEditor {
   }
 
   private get scene(): Scene | undefined {
-    return this.project?.scenes[0]
+    return this.project?.scenes.find((s) => s.id === this.sceneId)
   }
 
   private readonly onMapClick = (e: MapMouseEvent): void => {

@@ -22,7 +22,7 @@ const SWALLOW_MS = 1000
  * Stops the click that follows the press which dismissed the menu, so dismissing never also edits the map (MapLibre's
  * click comes from the DOM click). The guard goes on the next press or after a while, so it never eats a later click.
  */
-function swallowNextClick(): void {
+export function swallowNextClick(): void {
   const stop = (e: MouseEvent) => {
     e.stopPropagation()
     e.preventDefault()

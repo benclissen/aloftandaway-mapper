@@ -3,9 +3,9 @@ import path from 'node:path'
 import type { Map as MapLibreMap } from 'maplibre-gl'
 import type { Page } from 'playwright'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
-import { buildRoute, buildTimeline, formatTimecode, pointAt, type LngLat, type Project } from '../../src/core/index.js'
+import { applyPatch, buildRoute, buildTimeline, formatTimecode, pointAt, type LngLat, type Project, type Scene } from '../../src/core/index.js'
 import { loadProject, mutateProject } from '../../src/server/store.js'
-import { greekIslands, pacific, sceneOf } from '../fixtures/projects.js'
+import { greekIslands, pacific, sceneOf, twoScenes } from '../fixtures/projects.js'
 import { closeAll, openStudioPage } from './helpers.js'
 
 afterAll(closeAll)
@@ -672,6 +672,238 @@ describe('undo and redo', () => {
       await expect.poll(() => page.getByTestId('leg-symbol-0').inputValue()).toBe('ferry')
       await page.waitForTimeout(500)
       expect(await enabled(page, 'undo')).toBe(false)
+    } finally {
+      await close()
+    }
+  })
+})
+
+describe('scene tabs', () => {
+  const SAIL = '00000000-0000-4000-8000-000000000002'
+
+  /** Opens the studio on "Drive" and "Sail", showing Drive, and waits until frame 0 is on screen. */
+  async function openTwo() {
+    const studio = await openStudioPage(twoScenes(), VIEWPORT)
+    await studio.page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
+    return studio
+  }
+
+  const tabNames = (page: Page) => page.getByTestId('scene-tab').allTextContents()
+  const activeTab = (page: Page) => page.locator('[data-testid="scene-tab"][aria-selected="true"]')
+  const handles = (page: Page) => page.locator('.stop-handle')
+  const sceneNames = async (folder: string) => (await loadProject(folder)).scenes.map((s) => s.name)
+  const byName = async (folder: string, name: string): Promise<Scene> =>
+    (await loadProject(folder)).scenes.find((s) => s.name === name)!
+
+  /** Opens the menu of tab `i` with its button and picks `item`. */
+  async function choose(page: Page, i: number, item: string, how: 'button' | 'right-click' = 'button') {
+    const tab = page.locator('.scene-tab').nth(i)
+    if (how === 'button') await tab.getByRole('button', { name: 'Scene menu' }).click()
+    else await tab.getByRole('tab').click({ button: 'right' })
+    await page.getByTestId('scene-menu').getByRole('menuitem', { name: item }).click()
+  }
+
+  async function dragStop(page: Page, id: string, dx: number, dy: number) {
+    const [x, y] = (await center(page, `stop-marker-${id}`)).map(Math.round) as [number, number]
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await page.mouse.move(x + dx / 2, y + dy / 2, { steps: 4 })
+    await page.mouse.move(x + dx, y + dy, { steps: 4 })
+    await page.mouse.up()
+  }
+
+  test('tabs list the scenes in order with their lengths', async () => {
+    const { page, close } = await openTwo()
+    try {
+      expect(await tabNames(page)).toEqual(['Drive · 13 s', 'Sail · 14 s'])
+      expect(await page.getByRole('tablist').count()).toBe(1)
+      expect(await activeTab(page).textContent()).toBe('Drive · 13 s')
+    } finally {
+      await close()
+    }
+  })
+
+  test("switching tabs shows that scene's stops", async () => {
+    const { page, close } = await openTwo()
+    try {
+      await expect.poll(() => handles(page).count()).toBe(3)
+      expect(await page.getByTestId('leg-row-0').textContent()).toContain('1 · Nice → Cannes')
+      await page.getByTestId('scene-tab').nth(1).click()
+      await expect.poll(() => handles(page).count()).toBe(4)
+      await expect.poll(() => page.getByTestId('leg-row-0').textContent()).toContain('1 · Piraeus → Mykonos')
+      expect(await page.locator('[data-testid^="leg-row-"]').count()).toBe(3)
+      expect(await activeTab(page).textContent()).toBe('Sail · 14 s')
+      await page.getByTestId('scene-tab').nth(0).click()
+      await expect.poll(() => handles(page).count()).toBe(3)
+    } finally {
+      await close()
+    }
+  })
+
+  test('switching tabs goes back to frame 0, free view off and no selected leg', async () => {
+    const { page, close } = await openTwo()
+    try {
+      await page.getByTestId('scrubber').fill('40')
+      await page.waitForSelector('[data-testid="stage"][data-shown-frame="40"]')
+      await page.getByTestId('leg-row-1').click()
+      await expect.poll(() => page.getByTestId('stage').getAttribute('data-selected-leg')).toBe('1')
+      await page.getByTestId('scene-tab').nth(1).click()
+      await page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
+      expect(await page.getByTestId('stage').getAttribute('data-selected-leg')).toBeNull()
+      expect(await page.getByTestId('scrubber').inputValue()).toBe('0')
+    } finally {
+      await close()
+    }
+  })
+
+  test('edits go to the active scene', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      await page.getByTestId('scene-tab').nth(1).click()
+      await page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
+      await expect.poll(() => handles(page).count()).toBe(4)
+      const before = await loadProject(folder)
+      await dragStop(page, 'mykonos', 60, 30)
+      await expect
+        .poll(async () => (await byName(folder, 'Sail')).stops.find((s) => s.id === 'mykonos')!.at.join(), { timeout: 2000, interval: 100 })
+        .not.toBe(before.scenes[1]!.stops[1]!.at.join())
+      const after = await loadProject(folder)
+      expect(after.scenes[0]).toEqual(before.scenes[0])
+      expect(after.scenes[1]!.stops.filter((s) => s.id !== 'mykonos')).toEqual(before.scenes[1]!.stops.filter((s) => s.id !== 'mykonos'))
+
+      // A scene-level edit goes to the active scene too.
+      await page.getByRole('button', { name: 'Glide' }).click()
+      await expect.poll(async () => (await byName(folder, 'Sail')).camera.mode).toBe('glide')
+      expect((await byName(folder, 'Drive')).camera.mode).toBe('fixed')
+    } finally {
+      await close()
+    }
+  })
+
+  test('add, rename, duplicate, move and delete a scene', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      // Add: a new scene after the active one, shown at once.
+      await page.getByTestId('scene-add').click()
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Scene 2', 'Sail'])
+      await expect.poll(() => tabNames(page)).toHaveLength(3)
+      await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Scene 2')).toBe(true)
+      await expect.poll(() => page.getByTestId('legs-panel').textContent()).toContain('Add stops through your agent to see legs here.')
+      expect(await page.getByTestId('undo').getAttribute('title')).toContain('Undo Add a scene')
+
+      // Rename: Escape and an empty name leave it alone.
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill('Nope')
+      await page.keyboard.press('Escape')
+      await page.getByTestId('scene-rename').waitFor({ state: 'detached' })
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill('   ')
+      await page.keyboard.press('Enter')
+      await page.getByTestId('scene-rename').waitFor({ state: 'detached' })
+      expect(await sceneNames(folder)).toEqual(['Drive', 'Scene 2', 'Sail'])
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill('Detour')
+      await page.keyboard.press('Enter')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Detour', 'Sail'])
+      expect(await page.getByTestId('undo').getAttribute('title')).toContain('Undo Rename Scene 2 to Detour')
+      await expect.poll(() => tabNames(page)).toEqual(['Drive · 13 s', 'Detour · 13 s', 'Sail · 14 s'])
+
+      // Duplicate Sail: the copy sits after it and is shown.
+      await choose(page, 2, 'Duplicate')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Detour', 'Sail', 'Sail copy'])
+      await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Sail copy')).toBe(true)
+      await expect.poll(() => handles(page).count()).toBe(4)
+      expect(await page.getByTestId('undo').getAttribute('title')).toContain('Undo Duplicate Sail')
+
+      // Move: ends are turned off, and moving doesn't change the active tab.
+      await choose(page, 3, 'Move left', 'right-click')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Detour', 'Sail copy', 'Sail'])
+      expect(await page.getByTestId('undo').getAttribute('title')).toContain('Undo Move Sail copy left')
+      expect((await activeTab(page).textContent())?.startsWith('Sail copy')).toBe(true)
+      await page.locator('.scene-tab').nth(3).getByRole('button', { name: 'Scene menu' }).click()
+      expect(await page.getByRole('menuitem', { name: 'Move right' }).isDisabled()).toBe(true)
+      await page.keyboard.press('Escape')
+      await page.locator('.scene-tab').nth(0).getByRole('button', { name: 'Scene menu' }).click()
+      expect(await page.getByRole('menuitem', { name: 'Move left' }).isDisabled()).toBe(true)
+      await page.getByRole('menuitem', { name: 'Move right' }).click()
+      await expect.poll(() => sceneNames(folder)).toEqual(['Detour', 'Drive', 'Sail copy', 'Sail'])
+      expect(await page.getByTestId('undo').getAttribute('title')).toContain('Undo Move Drive right')
+
+      // Delete the active scene: the one now at its place is shown, with no notice.
+      await choose(page, 2, 'Delete')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Detour', 'Drive', 'Sail'])
+      await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Sail ·')).toBe(true)
+      expect(await page.getByTestId('undo').getAttribute('title')).toContain('Undo Delete Sail copy')
+      // Delete the last one: the scene before it is shown.
+      await choose(page, 2, 'Delete')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Detour', 'Drive'])
+      await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Drive')).toBe(true)
+      expect(await page.getByText('That scene was removed').count()).toBe(0)
+
+      // Delete another tab: the active one stays.
+      await choose(page, 0, 'Delete')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive'])
+      expect((await activeTab(page).textContent())?.startsWith('Drive')).toBe(true)
+      await page.locator('.scene-tab').nth(0).getByRole('button', { name: 'Scene menu' }).click()
+      expect(await page.getByRole('menuitem', { name: 'Delete' }).isDisabled()).toBe(true)
+    } finally {
+      await close()
+    }
+  })
+
+  test('reload keeps the active scene', async () => {
+    const { page, close } = await openTwo()
+    try {
+      await page.getByTestId('scene-tab').nth(1).click()
+      await expect.poll(() => new URL(page.url()).searchParams.get('scene')).toBe(SAIL)
+      expect(new URL(page.url()).searchParams.get('project')).toBeTruthy()
+      await page.reload()
+      await page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
+      await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Sail')).toBe(true)
+      await expect.poll(() => handles(page).count()).toBe(4)
+    } finally {
+      await close()
+    }
+  })
+
+  test('an agent move keeps the active tab on the same scene', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      await page.getByTestId('scene-tab').nth(1).click()
+      await expect.poll(() => handles(page).count()).toBe(4)
+      await mutateProject(folder, (p) => applyPatch(p, { ops: [{ op: 'move_scene', id: SAIL, index: 0 }] }))
+      await expect.poll(() => tabNames(page)).toEqual(['Sail · 14 s', 'Drive · 13 s'])
+      expect((await activeTab(page).textContent())?.startsWith('Sail')).toBe(true)
+      expect(await handles(page).count()).toBe(4)
+      expect(await page.locator('.notice').count()).toBe(0)
+    } finally {
+      await close()
+    }
+  })
+
+  test('the agent removing the active scene switches tabs with a notice', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      await page.getByTestId('scene-tab').nth(1).click()
+      await expect.poll(() => handles(page).count()).toBe(4)
+      await mutateProject(folder, (p) => applyPatch(p, { ops: [{ op: 'remove_scene', id: SAIL }] }))
+      await page.getByRole('status').filter({ hasText: 'That scene was removed. Showing Drive.' }).waitFor()
+      expect(await tabNames(page)).toEqual(['Drive · 13 s'])
+      await expect.poll(() => handles(page).count()).toBe(3)
+    } finally {
+      await close()
+    }
+  })
+
+  test('an empty scene shows the add-stops message', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      await mutateProject(folder, (p) => applyPatch(p, { ops: [{ op: 'add_scene', name: 'Blank' }] }))
+      await expect.poll(() => tabNames(page)).toHaveLength(3)
+      await page.getByTestId('scene-tab').nth(2).click()
+      await expect.poll(() => page.getByTestId('legs-panel').textContent()).toContain('Add stops through your agent to see legs here.')
+      await expect.poll(() => handles(page).count()).toBe(0)
+      expect(await page.locator('.notice-error').count()).toBe(0)
     } finally {
       await close()
     }

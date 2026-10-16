@@ -18,6 +18,18 @@ function projectKey(): string {
   return key
 }
 
+/** The scene id in the page's `?scene=` parameter, if there is one. */
+export function sceneParam(): string | undefined {
+  return new URLSearchParams(location.search).get('scene') ?? undefined
+}
+
+/** Puts `id` in the `?scene=` parameter without adding a history entry. The project key and the rest of the address stay. */
+export function setSceneParam(id: string): void {
+  const url = new URL(location.href)
+  url.searchParams.set('scene', id)
+  history.replaceState(history.state, '', url)
+}
+
 /** This page's id, sent with every patch. The server echoes it as the `origin` of the broadcast the patch causes. */
 export const CLIENT_ID = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
 

@@ -5,27 +5,33 @@ import {
   buildTimeline,
   fpsValue,
   invertPatch,
+  newSceneId,
   type PatchResponse,
   type SeaPaths,
   type Project,
   type ProjectPatch,
 } from '../../core/index.js'
-import { CLIENT_ID, getProject, patch, RequestError, subscribe } from './api.js'
+import { CLIENT_ID, getProject, patch, RequestError, sceneParam, setSceneParam, subscribe } from './api.js'
 import { EditHistory, EditQueue, type Entry } from './history.js'
 import { LegsPanel } from './LegsPanel.js'
 import { PointMenu } from './PointMenu.js'
 import { isSharp, removeViaEdit, sharpEdit, type PointTarget } from './RouteEditor.js'
+import { SceneTabs, type SceneSummary } from './SceneTabs.js'
 import { Scrubber, type Tick } from './Scrubber.js'
 import { ShotPanel } from './ShotPanel.js'
 import { StylePicker } from './StylePicker.js'
 import { Stage, type StageHandle } from './Stage.js'
 import './edit.css'
 
-type Notice = { kind: 'info' | 'error'; text: string }
+/** `keep` stops a later notice from replacing this one. */
+type Notice = { kind: 'info' | 'error'; text: string; keep?: boolean }
 
 const INFO_NOTICE_MS = 2500
 
 const newer = (a: Project, b: Project) => Date.parse(a.updatedAt) > Date.parse(b.updatedAt)
+
+/** The ops that change the list of scenes; a patch with only these names no scene. */
+const SCENE_OPS = new Set(['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene', 'restore_scene'])
 
 const HISTORY_CLEARED = 'Your agent changed the project. Undo history cleared.'
 
@@ -51,6 +57,12 @@ export function App() {
   const [notice, setNotice] = useState<Notice>()
   const [selectedLeg, setSelectedLeg] = useState<number>()
   const [pointMenu, setPointMenu] = useState<{ target: PointTarget; at: { x: number; y: number } }>()
+  /** The scene on screen. It is a scene of `project` whenever `project` is. */
+  const [activeSceneId, setActiveSceneId] = useState<string>()
+  /** `activeSceneId`, readable outside a render and set at once. */
+  const activeRef = useRef<string | undefined>(undefined)
+  /** A scene this studio is deleting, so that seeing it go isn't reported as the agent's doing. */
+  const deleting = useRef<string | undefined>(undefined)
   const stage = useRef<StageHandle | null>(null)
   /** The project on screen, readable outside a render. */
   const current = useRef<Project | undefined>(undefined)
@@ -59,17 +71,48 @@ export function App() {
   // EditHistory isn't React state; this re-renders the undo and redo buttons when it changes.
   const [, historyChanged] = useReducer((n: number) => n + 1, 0)
 
+  /** Shows scene `id`, from its first frame, with free view off and nothing selected. */
+  const showScene = useCallback((id: string) => {
+    activeRef.current = id
+    setActiveSceneId(id)
+    setFrame(0)
+    setPlaying(false)
+    setFreeView(false)
+    setSelectedLeg(undefined)
+    setPointMenu(undefined)
+  }, [])
+
   /**
    * Keeps the newest project; an older or equal one (such as the echo of our own patch) is ignored. Returns whether
-   * `incoming` was newer.
+   * `incoming` was newer. When it has no scene on screen, shows the scene now at that position, or the last one.
    */
-  const accept = useCallback((incoming: Project, paths: SeaPaths): boolean => {
-    if (current.current && !newer(incoming, current.current)) return false
-    current.current = incoming
-    setProject(incoming)
-    setSeaPaths(paths)
-    return true
-  }, [])
+  const accept = useCallback(
+    (incoming: Project, paths: SeaPaths): boolean => {
+      const before = current.current
+      if (before && !newer(incoming, before)) return false
+      current.current = incoming
+      const active = activeRef.current
+      if (!incoming.scenes.some((s) => s.id === active)) {
+        const at = before && active !== undefined ? before.scenes.findIndex((s) => s.id === active) : -1
+        if (at < 0) {
+          // The first project: the link's scene if it names one, else the first.
+          const linked = sceneParam()
+          showScene((incoming.scenes.find((s) => s.id === linked) ?? incoming.scenes[0]!).id)
+        } else {
+          const next = incoming.scenes[Math.min(at, incoming.scenes.length - 1)]!
+          showScene(next.id)
+          if (deleting.current !== active) {
+            setNotice({ kind: 'info', text: `That scene was removed. Showing ${next.name || 'Untitled'}.`, keep: true })
+          }
+        }
+      }
+      deleting.current = undefined
+      setProject(incoming)
+      setSeaPaths(paths)
+      return true
+    },
+    [showScene],
+  )
 
   /**
    * Counts outside changes. An edit or step in flight when one is seen must not touch the history when it settles: its
@@ -87,7 +130,7 @@ export function App() {
       if (!tell && !history.canUndo && !history.canRedo) return
       history.clear()
       historyChanged()
-      setNotice({ kind: 'info', text: HISTORY_CLEARED })
+      setNotice((n) => (n?.keep ? n : { kind: 'info', text: HISTORY_CLEARED }))
     },
     [history],
   )
@@ -129,7 +172,11 @@ export function App() {
     return () => clearTimeout(timer)
   }, [notice])
 
-  const scene = project?.scenes[0]
+  useEffect(() => {
+    if (activeSceneId !== undefined) setSceneParam(activeSceneId)
+  }, [activeSceneId])
+
+  const scene = project?.scenes.find((s) => s.id === activeSceneId)
   // A leg that no longer exists can't stay selected.
   const legCount = scene?.legs.length ?? 0
   const selected = selectedLeg !== undefined && selectedLeg < legCount ? selectedLeg : undefined
@@ -150,6 +197,17 @@ export function App() {
   const timeline = useMemo(
     () => (project && scene && route ? buildTimeline(scene, project.output.fps, route) : undefined),
     [project, scene, route],
+  )
+  const summaries = useMemo<SceneSummary[]>(
+    () =>
+      project
+        ? project.scenes.map((s) => ({
+            id: s.id,
+            name: s.name,
+            seconds: Math.round(buildTimeline(s, project.output.fps, buildRoute(s, seaPaths)).durationSeconds),
+          }))
+        : [],
+    [project, seaPaths],
   )
   const last = timeline ? timeline.totalFrames - 1 : 0
   const shown = Math.min(frame, last)
@@ -185,7 +243,11 @@ export function App() {
    * names the edit for undo; `saved`, when given, is shown once it's saved.
    */
   const edit = useCallback(
-    (body: ProjectPatch, label: string, saved?: string): Promise<boolean> => {
+    (input: ProjectPatch, label: string, saved?: string): Promise<boolean> => {
+      // An edit to a scene's contents names the scene it was made on, even if the tab changes before it is sent.
+      const touchesScene = input.sceneSet !== undefined || input.ops?.some((op) => !SCENE_OPS.has(op.op))
+      const body: ProjectPatch =
+        touchesScene && input.scene === undefined && activeRef.current !== undefined ? { ...input, scene: activeRef.current } : input
       let held = ''
       let sentIn = 0
       let inverse: ProjectPatch | undefined
@@ -269,6 +331,40 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [step])
 
+  const sceneName = (id: string) => current.current?.scenes.find((s) => s.id === id)?.name || 'Untitled'
+
+  const addScene = () => {
+    const scenes = current.current?.scenes ?? []
+    const at = scenes.findIndex((s) => s.id === activeRef.current)
+    const id = newSceneId()
+    void edit({ ops: [{ op: 'add_scene', index: at + 1, copyLookFrom: activeRef.current!, id }] }, 'Add a scene').then((saved) => {
+      if (saved) showScene(id)
+    })
+  }
+
+  const renameScene = (id: string, name: string) =>
+    void edit({ scene: id, sceneSet: { name } }, `Rename ${sceneName(id)} to ${name}`)
+
+  const duplicateScene = (id: string) => {
+    const newId = newSceneId()
+    void edit({ ops: [{ op: 'duplicate_scene', id, newId }] }, `Duplicate ${sceneName(id)}`).then((saved) => {
+      if (saved) showScene(newId)
+    })
+  }
+
+  const moveScene = (id: string, direction: 'left' | 'right') => {
+    const at = current.current?.scenes.findIndex((s) => s.id === id) ?? -1
+    if (at < 0) return
+    void edit({ ops: [{ op: 'move_scene', id, index: direction === 'left' ? at - 1 : at + 1 }] }, `Move ${sceneName(id)} ${direction}`)
+  }
+
+  const deleteScene = (id: string) => {
+    deleting.current = id
+    void edit({ ops: [{ op: 'remove_scene', id }] }, `Delete ${sceneName(id)}`).then((saved) => {
+      if (!saved) deleting.current = undefined
+    })
+  }
+
   const onEdit = useCallback((body: ProjectPatch, label: string) => edit(body, label), [edit])
   const onPointMenu = useCallback((target: PointTarget, at: { x: number; y: number }) => setPointMenu({ target, at }), [])
   const closePointMenu = useCallback(() => setPointMenu(undefined), [])
@@ -287,9 +383,20 @@ export function App() {
 
   return (
     <div className="studio">
+      <SceneTabs
+        scenes={summaries}
+        activeId={scene.id}
+        onSelect={(id) => id !== scene.id && showScene(id)}
+        onAdd={addScene}
+        onRename={renameScene}
+        onDuplicate={duplicateScene}
+        onMove={moveScene}
+        onDelete={deleteScene}
+      />
       <div className="workspace">
         <Stage
           project={project}
+          sceneId={scene.id}
           seaPaths={seaPaths}
           frame={shown}
           freeView={freeView}

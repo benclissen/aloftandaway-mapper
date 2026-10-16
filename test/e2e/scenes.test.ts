@@ -58,6 +58,8 @@ function shortTwoScenes(): Project {
   for (const scene of project.scenes) scene.stops = scene.stops.map((stop) => ({ ...stop, pause: 0 }))
   return project
 }
+/** Mean colour distance (RGB, 0 to 441) the styles test needs between aloftandaway and satellite. */
+const THRESHOLD = 20
 const DRIVE_FRAMES = 40
 const SAIL_FRAMES = 50
 
@@ -260,13 +262,17 @@ test('MCP: add a scene, fill it, preview it and render joined', async () => {
 }, 180_000)
 
 test.skipIf(process.env.MAPPER_NET !== '1')('scenes in different styles join cleanly (MAPPER_NET only)', async () => {
+  // Both scenes cover the same route, so a difference between their frames comes from the style alone.
   const project = shortTwoScenes()
+  const [drive, sail] = project.scenes as [Scene, Scene]
+  project.scenes[0] = { ...structuredClone(sail), id: drive.id, name: drive.name }
   project.scenes[0]!.look.theme = 'aloftandaway'
   project.scenes[1]!.look.theme = 'satellite'
   const folder = await writeFolder(project)
   const result = await renderProject({ folder })
-  expect(result.frames).toBe(DRIVE_FRAMES + SAIL_FRAMES)
-  expect(await countFrames(result.video!)).toBe(DRIVE_FRAMES + SAIL_FRAMES)
+  const total = 2 * SAIL_FRAMES
+  expect(result.frames).toBe(total)
+  expect(await countFrames(result.video!)).toBe(total)
 
   const manifest = readManifest(result.manifest)
   expect(manifest.credit).toBe(joinCredit([MAP_CREDIT, SATELLITE_CREDIT_WRITTEN]))
@@ -274,7 +280,17 @@ test.skipIf(process.env.MAPPER_NET !== '1')('scenes in different styles join cle
   expect(manifest.credit).toContain('EOxCloudless')
   expect(manifest.credit).toContain('2016')
 
-  const colours = [await videoFramePng(result.video!, 5), await videoFramePng(result.video!, DRIVE_FRAMES + 5)].map(meanColour)
-  const distance = Math.hypot(...colours[0]!.map((c, i) => c - colours[1]![i]!))
-  expect(distance, `mean colours ${colours.map((c) => c.map(Math.round))}`).toBeGreaterThan(10)
+  // The same moment of each scene, as the joined clip has it and as a preview of the scene alone draws it.
+  const frame = 5
+  const joined = [await videoFramePng(result.video!, frame), await videoFramePng(result.video!, SAIL_FRAMES + frame)].map(meanColour)
+  const alone = [1, 2].map(async (scene) => meanColour((await previewFrame({ folder, scene, at: { frame }, width: 1920 })).png))
+  const [first, second] = await Promise.all(alone)
+  const distance = (a: number[], b: number[]) => Math.hypot(...a.map((c, i) => c - b[i]!))
+  const apart = distance(joined[0]!, joined[1]!)
+  const measured = `joined ${joined.map((c) => c.map(Math.round))}, previews ${[first, second].map((c) => c!.map(Math.round))}`
+  process.stderr.write(`styles test: aloftandaway vs satellite mean colour distance ${apart.toFixed(1)} (${measured})\n`)
+  expect(apart, measured).toBeGreaterThan(THRESHOLD)
+  // Each half of the joined clip is the style its scene asked for.
+  expect(distance(joined[0]!, first!), measured).toBeLessThan(THRESHOLD / 4)
+  expect(distance(joined[1]!, second!), measured).toBeLessThan(THRESHOLD / 4)
 }, 180_000)

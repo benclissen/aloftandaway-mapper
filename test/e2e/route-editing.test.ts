@@ -154,6 +154,34 @@ test('studio edits reach the agent', async () => {
   expect(differing, `${differing} of ${width * height} pixels differ`).toBeGreaterThan(width * height * 0.005)
 }, 120_000)
 
+test('an agent edit to another scene clears history and keeps the tab', async () => {
+  const folder = path.join(tmp, 'two-scenes')
+  await call('create_project', { folder, name: 'Two' })
+  await call('set_stops', { folder, stops: STOPS })
+  await call('update_project', { folder, ops: [{ op: 'add_scene', name: 'Sail' }] })
+  await call('set_stops', { folder, scene: 2, stops: STOPS.slice(0, 3) })
+
+  const { page, close } = await openStudio(folder)
+  try {
+    const activeTab = () => page.locator('[data-testid="scene-tab"][aria-selected="true"]').textContent()
+    await page.getByTestId('scene-tab').nth(1).click()
+    await expect.poll(() => page.locator('.stop-handle').count()).toBe(3)
+    await page.getByTestId('leg-symbol-0').selectOption('ferry')
+    await expect.poll(async () => (await loadProject(folder)).scenes[1]!.legs[0]!.symbol).toBe('ferry')
+    await expect.poll(() => page.getByTestId('undo').isEnabled()).toBe(true)
+
+    // The agent renames scene 1 while the user is on scene 2.
+    await call('update_project', { folder, scene: 1, sceneSet: { name: 'Drive' } })
+    await page.getByRole('status').filter({ hasText: 'Your agent changed the project. Undo history cleared.' }).waitFor()
+    expect(await page.getByTestId('undo').isEnabled()).toBe(false)
+    expect((await page.getByTestId('scene-tab').first().textContent())?.startsWith('Drive')).toBe(true)
+    expect((await activeTab())?.startsWith('Sail')).toBe(true)
+    expect(await page.locator('.stop-handle').count()).toBe(3)
+  } finally {
+    await close()
+  }
+}, 60_000)
+
 test('a version 1 file opens in the studio and is saved as version 2', async () => {
   const folder = path.join(tmp, 'legacy')
   await mkdir(folder, { recursive: true })

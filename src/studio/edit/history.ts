@@ -1,10 +1,52 @@
-import type { PatchResponse, Project, ProjectPatch } from '../../core/index.js'
+import { applyPatch, type PatchResponse, type Project, type ProjectPatch } from '../../core/index.js'
 
-/** One studio edit: the patch that made it and the patch that undoes it. */
+/** One studio edit: the patch that made it, the patch that undoes it, and the scene to show after each. */
 export interface Entry {
   label: string
   forward: ProjectPatch
   inverse: ProjectPatch
+  /** The scene on screen when the edit was made, shown again after an undo. */
+  sceneBefore: string
+  /** The scene shown after the edit: the new one for add and duplicate, the neighbour for delete. Shown after a redo. */
+  sceneAfter: string
+}
+
+/** The ops that change the list of scenes; a patch with only these names no scene. */
+export const SCENE_OPS = new Set(['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene', 'restore_scene'])
+
+/**
+ * The scenes to show around `patch`, made on `before` while scene `shown` was on screen. A scene that is added or
+ * duplicated is shown after it. When the scene on screen is removed, the one that takes its place is shown, or the
+ * new last scene when it was last.
+ */
+export function scenesAround(before: Project, patch: ProjectPatch, shown: string): { sceneBefore: string; sceneAfter: string } {
+  let after = shown
+  let state = before
+  for (const op of patch.ops ?? []) {
+    if (op.op === 'add_scene' && op.id !== undefined) after = op.id
+    else if (op.op === 'duplicate_scene' && op.newId !== undefined) after = op.newId
+    else if (op.op === 'restore_scene') after = op.scene.id
+    else if (op.op === 'remove_scene' && op.id === after) {
+      const at = state.scenes.findIndex((s) => s.id === after)
+      const left = state.scenes.toSpliced(at, 1)
+      after = left[Math.min(at, left.length - 1)]?.id ?? after
+    }
+    if (SCENE_OPS.has(op.op)) state = applyPatch(state, { ops: [op] })
+  }
+  return { sceneBefore: shown, sceneAfter: after }
+}
+
+/**
+ * The patch to redo `forward` with, given `saved`, the project it made. A duplicate gives the copy's stops fresh ids,
+ * so doing it again would make a copy that later edits to these stops can't find; it is redone by putting back the
+ * copy as saved. Anything else is redone as it was made.
+ */
+export function redoPatch(forward: ProjectPatch, saved: Project): ProjectPatch {
+  const op = forward.ops?.length === 1 ? forward.ops[0] : undefined
+  if (op?.op !== 'duplicate_scene' || op.newId === undefined) return forward
+  const index = saved.scenes.findIndex((s) => s.id === op.newId)
+  if (index < 0) return forward
+  return { ops: [{ op: 'restore_scene', index, scene: structuredClone(saved.scenes[index]!) }] }
 }
 
 /** The studio's undo and redo stacks. It holds patches only; sending them is the caller's job. */
@@ -61,6 +103,25 @@ export class EditHistory {
 }
 
 const newer = (a: Project, b: Project) => Date.parse(a.updatedAt) > Date.parse(b.updatedAt)
+
+/**
+ * The newest version written from outside the studio (by the agent or the CLI) that the studio knows of. An edit that
+ * finds a leg or via point by index is refused when the view it was made on is older than that write, since the
+ * write may have moved what the index points at.
+ */
+export class OutsideWrites {
+  private last: string | undefined
+
+  /** Notes that version `updatedAt` was written from outside the studio. */
+  saw(updatedAt: string): void {
+    if (this.last === undefined || Date.parse(updatedAt) > Date.parse(this.last)) this.last = updatedAt
+  }
+
+  /** Whether something outside the studio wrote after version `seen`. */
+  since(seen: string): boolean {
+    return this.last !== undefined && Date.parse(this.last) > Date.parse(seen)
+  }
+}
 
 /**
  * Sends patches one at a time. Each `make` runs only once the previous send has settled, and gets the newest project

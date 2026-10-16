@@ -18,7 +18,7 @@ import {
 } from '../../src/render/preview.js'
 import { getServer } from '../../src/server/server.js'
 import { createProject, loadProject, saveProject } from '../../src/server/store.js'
-import { greekIslands, sceneOf } from '../fixtures/projects.js'
+import { greekIslands, projectWithScenes, sceneOf } from '../fixtures/projects.js'
 import { pixelDiff } from './helpers.js'
 
 let tempDir: string
@@ -65,6 +65,40 @@ describe('previewFrame', () => {
     expect(result.seconds).toBeCloseTo(result.frame / 25, 6)
     expect(result.path).toBe(path.join(folder, '.mapper', 'previews', `frame-${result.frame}.png`))
     expect(readFileSync(result.path).equals(result.png)).toBe(true)
+    // One scene: it is named in the result, with no label for the summary.
+    expect(result.scene).toEqual({ id: sceneOf(project).id, position: 1, name: sceneOf(project).name })
+    expect(result.sceneLabel).toBeUndefined()
+  })
+
+  test('a scene preview shows that scene and names its file after its position', async () => {
+    const project = projectWithScenes(2, ['Drive', 'Sail'])
+    // Scene 2 is shorter, so its clip ends sooner than scene 1's.
+    project.scenes[1]!.stops = project.scenes[1]!.stops.slice(0, 2)
+    project.scenes[1]!.legs = project.scenes[1]!.legs.slice(0, 1)
+    const folder = await writeFolder(project)
+    const second = project.scenes[1]!
+    const total = buildTimeline(second, project.output.fps, buildRoute(second)).totalFrames
+    expect(total).toBeLessThan(timelineOf(project).totalFrames)
+
+    const sail = { id: second.id, position: 2, name: 'Sail' }
+    const result = await previewFrame({ folder, at: { progress: 1 }, scene: 2 })
+    expect(result.frame).toBe(total - 1)
+    expect(result.path).toBe(path.join(folder, '.mapper', 'previews', `scene2-frame-${total - 1}.png`))
+    expect(result.scene).toEqual(sail)
+    expect(result.sceneLabel).toBe('Scene 2 of 2 · Sail')
+    const byId = await previewFrame({ folder, at: { progress: 1 }, scene: second.id })
+    expect(byId.png.equals(result.png)).toBe(true)
+    expect(byId.scene).toEqual(sail)
+
+    const first = await previewFrame({ folder, at: { progress: 1 } })
+    expect(first.path).toBe(path.join(folder, '.mapper', 'previews', `scene1-frame-${first.frame}.png`))
+    expect(first.scene).toEqual({ id: project.scenes[0]!.id, position: 1, name: 'Drive' })
+    expect(first.sceneLabel).toBe('Scene 1 of 2 · Drive')
+    await expect(previewFrame({ folder, at: { frame: 0 }, scene: 3 })).rejects.toThrow(/no scene 3/)
+    const sheet = await contactSheet({ folder, count: 2, width: 640, scene: 2 })
+    expect(path.basename(sheet.path)).toMatch(/^scene2-contact-\d{8}-\d{6}\.png$/)
+    expect(sheet.scene).toEqual(sail)
+    expect(sheet.sceneLabel).toBe('Scene 2 of 2 · Sail')
   })
 
   test('seconds and frame agree', async () => {
@@ -173,9 +207,9 @@ describe('contactSheet', () => {
     const project = greekIslands()
     const timeline = timelineOf(project)
     const arrival = timeline.arrivals[1]!
-    expect(frameCaption(project, timeline, 0)).toBe('00:00:00 · f0')
-    expect(frameCaption(project, timeline, 102)).toBe('00:04:02 · f102')
-    expect(frameCaption(project, timeline, arrival.frame)).toBe(
+    expect(frameCaption(project, sceneOf(project), timeline, 0)).toBe('00:00:00 · f0')
+    expect(frameCaption(project, sceneOf(project), timeline, 102)).toBe('00:04:02 · f102')
+    expect(frameCaption(project, sceneOf(project), timeline, arrival.frame)).toBe(
       `${Math.floor(arrival.frame / 1500).toString().padStart(2, '0')}:${(Math.floor(arrival.frame / 25) % 60).toString().padStart(2, '0')}:${(arrival.frame % 25).toString().padStart(2, '0')} · f${arrival.frame} · Mykonos`,
     )
   })

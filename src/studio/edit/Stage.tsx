@@ -2,7 +2,7 @@ import type { Map as MapLibreMap } from 'maplibre-gl'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { clampLat, layoutSize, type Project, type ProjectPatch, type SeaPaths, type Shot } from '../../core/index.js'
 import { MapStage } from '../stage/MapStage.js'
-import { RouteEditor, type PointTarget, type RouteEditorCallbacks } from './RouteEditor.js'
+import { RouteEditor, type PointMenuTarget, type RouteEditorCallbacks } from './RouteEditor.js'
 
 declare global {
   interface Window {
@@ -18,6 +18,8 @@ export interface StageHandle {
 
 interface StageProps {
   project: Project
+  /** The scene of `project` to show and edit. */
+  sceneId: string
   /** The sea routes of the project's sea legs. */
   seaPaths: SeaPaths
   /** Frame to show. Must be within the project's timeline. */
@@ -30,9 +32,12 @@ interface StageProps {
   /** The user panned, zoomed, rotated or tilted the map. */
   onUserMove(): void
   onSelectLeg(leg: number | undefined): void
-  /** Applies an edit made on the map and resolves to whether it was saved; if not, a dragged handle goes back. */
-  onEdit(patch: ProjectPatch, label: string): Promise<boolean>
-  onPointMenu(target: PointTarget, client: { x: number; y: number }): void
+  /**
+   * Applies an edit made on the map and resolves to whether it was saved; if not, a dragged handle goes back. `seen`
+   * is the project version the gesture began on.
+   */
+  onEdit(patch: ProjectPatch, label: string, seen?: string): Promise<boolean>
+  onPointMenu(target: PointMenuTarget, client: { x: number; y: number }, seen?: string): void
   onError(message: string): void
 }
 
@@ -99,6 +104,7 @@ class StageController {
   private ratio = 0
   private rebuildTimer: ReturnType<typeof setTimeout> | undefined
   private project: Project | undefined
+  private sceneId: string | undefined
   private seaPaths: SeaPaths = {}
   private selectedLeg: number | undefined
   private frame = 0
@@ -119,8 +125,9 @@ class StageController {
     this.rebuildTimer = setTimeout(() => this.build(ratio), REBUILD_DEBOUNCE_MS)
   }
 
-  setProject(project: Project, seaPaths: SeaPaths): void {
+  setProject(project: Project, sceneId: string, seaPaths: SeaPaths): void {
     this.project = project
+    this.sceneId = sceneId
     this.seaPaths = seaPaths
     this.loadProject()
   }
@@ -192,11 +199,12 @@ class StageController {
   }
 
   private loadProject(): void {
-    const { stage, project, seaPaths } = this
-    if (!stage || !project) return
-    stage.load(project, undefined, seaPaths).then(
+    const { stage, project, sceneId, seaPaths } = this
+    if (!stage || !project || sceneId === undefined) return
+    this.editor?.loading(sceneId)
+    stage.load(project, sceneId, seaPaths).then(
       () => {
-        if (this.stage === stage && this.project === project) this.editor?.sync(project)
+        if (this.stage === stage && this.project === project && this.sceneId === sceneId) this.editor?.sync(project, sceneId)
       },
       (e: unknown) => {
         if (this.stage === stage) this.cb.onError((e as Error).message)
@@ -222,7 +230,7 @@ class StageController {
  * screen at that scale, so the map stays sharp without laying out differently from a render.
  */
 export function Stage(props: StageProps) {
-  const { project, seaPaths, frame, freeView, handle, selectedLeg } = props
+  const { project, sceneId, seaPaths, frame, freeView, handle, selectedLeg } = props
   const areaRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const controllerRef = useRef<StageController | null>(null)
@@ -249,8 +257,8 @@ export function Stage(props: StageProps) {
     const controller = new StageController(containerRef.current!, {
       onUserMove: () => callbacks.current.onUserMove(),
       onSelectLeg: (leg) => callbacks.current.onSelectLeg(leg),
-      onEdit: (patch, label) => callbacks.current.onEdit(patch, label),
-      onPointMenu: (target, client) => callbacks.current.onPointMenu(target, client),
+      onEdit: (patch, label, seen) => callbacks.current.onEdit(patch, label, seen),
+      onPointMenu: (target, client, seen) => callbacks.current.onPointMenu(target, client, seen),
       onError: (message) => callbacks.current.onError(message),
       onShown: setShownFrame,
     })
@@ -268,8 +276,8 @@ export function Stage(props: StageProps) {
   }, [fit])
 
   useEffect(() => {
-    controllerRef.current?.setProject(project, seaPaths)
-  }, [project, seaPaths])
+    controllerRef.current?.setProject(project, sceneId, seaPaths)
+  }, [project, sceneId, seaPaths])
 
   useEffect(() => {
     controllerRef.current?.setSelectedLeg(selectedLeg)
@@ -277,7 +285,7 @@ export function Stage(props: StageProps) {
 
   useEffect(() => {
     controllerRef.current?.show(frame, !freeView)
-  }, [frame, freeView, project])
+  }, [frame, freeView, project, sceneId])
 
   return (
     <div className="stage-area" ref={areaRef}>

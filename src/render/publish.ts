@@ -23,10 +23,11 @@ export async function publishFcpxml(args: {
   dir: string
   project: Pick<Project, 'name' | 'output' | 'credit' | 'scenes'>
   scenes: SceneExport[]
+  join: boolean
   signal?: AbortSignal
   dtdPath?: string
 }): Promise<PublishedFcpxml> {
-  const { dir, project, scenes, signal } = args
+  const { dir, project, scenes, join, signal } = args
   const name = `${slug(project.name)}.fcpxml`
   const final = path.join(dir, name)
   const temp = `${final}.tmp`
@@ -35,6 +36,7 @@ export async function publishFcpxml(args: {
     output: project.output,
     credit: project.credit,
     creditLines: projectCredit(project, 'written'),
+    join,
     scenes,
   })
   await writeFile(temp, xml, 'utf8')

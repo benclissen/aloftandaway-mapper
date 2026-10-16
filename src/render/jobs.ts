@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { fixOf } from '../server/errors.js'
-import { renderProject, type CompletedOutput, type RenderArgs, type RenderProgress, type RenderResult } from './render.js'
+import { addOutput, renderProject, type CompletedOutput, type RenderArgs, type RenderProgress, type RenderResult } from './render.js'
 
 export type JobState = 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -16,7 +16,10 @@ export interface RenderStatus {
   fix?: string
   /** The render folder, once it exists. */
   dir?: string
-  /** Layers finished so far, with absolute paths. Kept when a later layer fails or the job is cancelled. */
+  /**
+   * Outputs finished so far, with absolute paths. Kept when a later pass fails or the job is cancelled. A joined clip
+   * replaces the scene parts it was made from.
+   */
   outputs?: CompletedOutput[]
 }
 
@@ -56,7 +59,7 @@ async function runJob(job: Job, args: Omit<RenderArgs, 'onProgress' | 'onStart' 
       signal: job.controller.signal,
       onStart: ({ dir }) => (status.dir = dir),
       onProgress: (progress) => (status.progress = progress),
-      onOutput: (output) => (status.outputs ??= []).push({ ...output }),
+      onOutput: (output) => addOutput((status.outputs ??= []), { ...output }),
     })
     status.state = 'done'
   } catch (e) {

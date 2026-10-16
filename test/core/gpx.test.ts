@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { GpxError, haversineKm, importGpx, parseGpx, gpxToStops, type LngLat } from '../../src/core/index.js'
-import { emptyProject, sceneOf } from '../fixtures/projects.js'
+import { emptyProject, projectWithScenes, sceneOf } from '../fixtures/projects.js'
 
 const fixture = (name: string): string => readFileSync(new URL(`../fixtures/gpx/${name}`, import.meta.url), 'utf8')
 
@@ -148,6 +148,16 @@ describe('gpx', () => {
     expect(scene.legs[0]!.symbol).toBe('car')
     const plain = sceneOf(importGpx(project, out, {}))
     expect(plain.legs.map((l) => l.mode)).toEqual(['line', 'line'])
+  })
+
+  it('importGpx writes only the chosen scene', () => {
+    const out = gpxToStops(parseGpx(fixture('track.gpx')), { stops: 'waypoints' })
+    const project = projectWithScenes(2)
+    const next = importGpx(project, out, { scene: 2, legMode: 'land' })
+    expect(next.scenes[0]).toEqual(project.scenes[0])
+    expect(next.scenes[1]!.stops.map((s) => s.name)).toEqual(['Old Quay', 'Lighthouse', 'Harbour'])
+    expect(next.scenes[1]!.legs.map((l) => l.via)).toEqual(out.via)
+    expect(next.scenes[1]!.legs.map((l) => l.mode)).toEqual(['land', 'land'])
   })
 
   it('defaults to ends mode', () => {

@@ -12,13 +12,18 @@ something that works.
 | 3 | **Route editing** (built): project file v2 (scenes in the format, curved/sharp points), studio waypoints, curved/sharp toggle, legs panel with transport picker, style picker, undo | The user can reshape a route by hand in the studio, and the agent sees the result |
 | 4 | **Routes** (built): sea routing around land, flight arcs, follow camera, GPX import, validation warnings | A cruise route stays at sea |
 | 5 | **Look** (built): about 20 transports (motorcycle, ferry, cruise ship, campervan…), eleven map styles including the Aloft & Away theme, terrain and tilt | Videos look on-brand, with the right vehicle on each leg |
-| 6 | **Scenes**: several scenes per project, studio scene tabs, renders per scene or joined, a compound clip per scene in FCPXML | A two-scene project imports into Final Cut as two clips on one timeline |
+| 6 | **Scenes** (built): several scenes per project, studio scene tabs, renders per scene or joined, a compound clip per scene in FCPXML | A two-scene project imports into Final Cut as two clips on one timeline |
 
 **Decision, 2026-10-14:** the default render is one flattened H.264 MP4
 (`all.mp4`). Layered ProRes plus FCPXML stays as an option (`layers`), and a
 flattened ProRes master is `codec: 'prores'`. Stage 2 is complete for the
 default path. The Final Cut import check is an outstanding acceptance item for
 the optional layered export only, and does not block later stages.
+
+**Stage 6, built:** the Final Cut import check for a two-scene layered export
+is pending the user's import of that export. It has not been checked yet, so
+stage 6's last "Done when" line is unconfirmed. The Stage 2 import check above
+is still outstanding too.
 
 Out of scope for now: connecting to trip-data APIs (the agent fetches the
 data and passes stops in), hosting, a full manual editor, editable Final Cut titles,

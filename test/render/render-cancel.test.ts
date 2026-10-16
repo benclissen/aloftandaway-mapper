@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { existsSync, readdirSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
@@ -10,7 +11,7 @@ import { planExport } from '../../src/render/export-plan.js'
 import { RenderPage } from '../../src/render/page.js'
 import { renderPass, type PassPage } from '../../src/render/render-pass.js'
 import { saveProject } from '../../src/server/store.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, twoScenes } from '../fixtures/projects.js'
 
 /** What happened to the fake Chrome, in order. */
 const events: string[] = []
@@ -69,6 +70,44 @@ describe('cancelling a render', () => {
     await expect(rendering).rejects.toBeInstanceOf(RenderCancelled)
     expect(events).toEqual(['page closing', 'page closed', 'browser.close'])
   })
+
+  test('during the scene join stops ffmpeg, keeps the scene parts and settles at once', async () => {
+    const folder = path.join(tmp, 'join-cancel')
+    await mkdir(folder)
+    await saveProject(folder, twoScenes())
+    vi.mocked(renderPass).mockImplementation(async ({ pass, dir, onFrame }) => {
+      const frames = pass.toFrame - pass.fromFrame
+      await writeFile(path.join(dir, pass.path), 'part')
+      onFrame?.(frames)
+      return { ...pass, frames, segments: 1, recoveries: 0 }
+    })
+    // An ffmpeg that starts writing the join, then runs until it is killed.
+    const bin = path.join(tmp, 'slow-ffmpeg')
+    await mkdir(bin)
+    await writeFile(path.join(bin, 'ffmpeg'), '#!/bin/sh\nfor last; do :; done\necho partial > "$last"\nexec sleep 30\n', { mode: 0o755 })
+    const savedPath = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${savedPath}`
+    const controller = new AbortController()
+    let dir = ''
+    try {
+      const rendering = renderProject({ folder, signal: controller.signal, h264Encoder: 'libx264', onStart: (info) => (dir = info.dir) })
+      rendering.catch(() => undefined)
+      await vi.waitFor(() => expect(dir && readdirSync(dir).some((file) => file.includes('.joining'))).toBe(true), { timeout: 4000, interval: 20 })
+      const cancelledAt = performance.now()
+      controller.abort()
+      await expect(rendering).rejects.toBeInstanceOf(RenderCancelled)
+      expect(performance.now() - cancelledAt).toBeLessThan(1000)
+    } finally {
+      process.env.PATH = savedPath
+    }
+
+    const manifest = JSON.parse(await readFile(path.join(dir, 'manifest.json'), 'utf8')) as { status: string; outputs: { path: string; sceneId: string }[] }
+    expect(manifest.status).toBe('cancelled')
+    expect(manifest.outputs.map((output) => output.sceneId)).toEqual(twoScenes().scenes.map((scene) => scene.id))
+    for (const output of manifest.outputs) expect(existsSync(path.join(dir, output.path)), output.path).toBe(true)
+    const left = readdirSync(dir, { recursive: true }).map(String)
+    expect(left.filter((file) => /(^|\/)all\.|\.joining/.test(file))).toEqual([])
+  })
 })
 
 describe('render speed', () => {
@@ -88,6 +127,30 @@ describe('render speed', () => {
     try {
       const result = await renderProject({ folder, layers: ['map', 'route', 'all'], codec: 'prores', range: { from: 0, to: 0.4 } })
       expect(result.outputs.map((o) => o.frames)).toEqual([10, 10, 10])
+      expect(result.renderFps).toBe(10)
+      expect(JSON.parse(await readFile(result.manifest, 'utf8')).renderFps).toBe(10)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  // Four passes, two scenes × two layers: each renders its frames at 20 fps, so the clip comes out at 10 fps whatever
+  // the scenes' lengths.
+  test.each([true, false])('renderFps counts clip frames over every scene (join: %s)', async (join) => {
+    const folder = path.join(tmp, `fps-scenes-${join}`)
+    await mkdir(folder)
+    await saveProject(folder, twoScenes())
+    let clock = 0
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    vi.mocked(renderPass).mockImplementation(async ({ pass, onFrame }) => {
+      const frames = pass.toFrame - pass.fromFrame
+      clock += frames * 50
+      onFrame?.(frames)
+      return { ...pass, frames, segments: 1, recoveries: 0 }
+    })
+    try {
+      const result = await renderProject({ folder, layers: ['map', 'route'], join })
+      expect(result.outputs).toHaveLength(4)
       expect(result.renderFps).toBe(10)
       expect(JSON.parse(await readFile(result.manifest, 'utf8')).renderFps).toBe(10)
     } finally {

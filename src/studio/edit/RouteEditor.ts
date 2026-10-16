@@ -14,12 +14,22 @@ import { EDIT_ROUTE_LAYER, type MapStage } from '../stage/MapStage.js'
 /** A point on the route the user can act on: a stop, or a via point of a leg. */
 export type PointTarget = { kind: 'stop'; id: string } | { kind: 'via'; leg: number; index: number }
 
+/** A point whose menu was asked for, in the scene whose handles were on screen when it was. */
+export interface PointMenuTarget {
+  /** The id of the scene the point is in. During a tab switch it is not the active scene until the new one loads. */
+  scene: string
+  point: PointTarget
+}
+
 export interface RouteEditorCallbacks {
   onSelectLeg(leg: number | undefined): void
-  /** Applies an edit. Resolves to whether it was saved. `label` names the edit for undo. */
-  onEdit(patch: ProjectPatch, label: string): Promise<boolean>
-  /** The user asked for a point's menu at this position in the window. */
-  onPointMenu(target: PointTarget, client: { x: number; y: number }): void
+  /**
+   * Applies an edit. Resolves to whether it was saved. `label` names the edit for undo. `seen` is the `updatedAt` of
+   * the project on screen when the gesture began, which an edit that finds a point by index is checked against.
+   */
+  onEdit(patch: ProjectPatch, label: string, seen?: string): Promise<boolean>
+  /** The user asked for a point's menu at this position in the window, on the project version `seen`. */
+  onPointMenu(target: PointMenuTarget, client: { x: number; y: number }, seen?: string): void
 }
 
 export interface Edit {
@@ -48,7 +58,10 @@ export function isSharp(scene: Scene, target: PointTarget): boolean | undefined 
   return via && via.sharp === true
 }
 
-/** The edit that switches the point between a sharp corner and a curve, or undefined if it no longer exists. */
+/**
+ * The edit that switches the point between a sharp corner and a curve, or undefined if it no longer exists. The patch
+ * names `scene`, so it goes to that scene whichever tab is active.
+ */
 export function sharpEdit(scene: Scene, target: PointTarget): Edit | undefined {
   const sharp = isSharp(scene, target)
   if (sharp === undefined) return undefined
@@ -57,18 +70,19 @@ export function sharpEdit(scene: Scene, target: PointTarget): Edit | undefined {
   if (target.kind === 'stop') {
     const name = scene.stops.find((s) => s.id === target.id)!.name
     return {
-      patch: { ops: [{ op: 'update_stop', id: target.id, changes: { sharp: value } }] },
+      patch: { scene: scene.id, ops: [{ op: 'update_stop', id: target.id, changes: { sharp: value } }] },
       label: sharp ? `Curve through ${name}` : `Make ${name} sharp`,
     }
   }
   return {
-    patch: { ops: [{ op: 'update_via', leg: target.leg, index: target.index, changes: { sharp: value } }] },
+    patch: { scene: scene.id, ops: [{ op: 'update_via', leg: target.leg, index: target.index, changes: { sharp: value } }] },
     label: sharp ? 'Curve through a via point' : 'Make a via point sharp',
   }
 }
 
-export function removeViaEdit(leg: number, index: number): Edit {
-  return { patch: { ops: [{ op: 'remove_via', leg, index }] }, label: 'Remove a via point' }
+/** The edit that removes via `index` of leg `leg` in the scene with id `sceneId`. */
+export function removeViaEdit(sceneId: string, leg: number, index: number): Edit {
+  return { patch: { scene: sceneId, ops: [{ op: 'remove_via', leg, index }] }, label: 'Remove a via point' }
 }
 
 /**
@@ -79,6 +93,10 @@ export function removeViaEdit(leg: number, index: number): Edit {
 export class RouteEditor {
   private readonly map: MapLibreMap
   private project: Project | undefined
+  /** The scene whose handles are on screen. */
+  private sceneId: string | undefined
+  /** The scene the stage is loading, or has loaded. Until it is `sceneId`, the old scene's handles aren't rebuilt. */
+  private loadingId: string | undefined
   private selectedLeg: number | undefined
   private stopMarkers = new Map<string, Marker>()
   /** Handles for the via points of `viaLeg`, in order. */
@@ -88,6 +106,8 @@ export class RouteEditor {
   private dragging = new Set<Marker>()
   /** A drag ends with a click on the handle; that click is not an Alt-click. */
   private justDragged = new Set<Marker>()
+  /** The project version each handle being dragged was picked up on. */
+  private dragSeen = new Map<Marker, string | undefined>()
 
   constructor(
     private readonly stage: MapStage,
@@ -97,11 +117,28 @@ export class RouteEditor {
     this.map.on('click', this.onMapClick)
   }
 
-  /** Shows the handles for `project`, which the stage has just loaded. */
-  sync(project: Project): void {
+  /**
+   * The stage has started loading scene `sceneId`. While it loads another scene than the one on screen, the old
+   * scene's via handles go and none are built, since a selected leg is the new scene's, and map clicks are ignored.
+   * Its stop handles stay, and edit the old scene, until `sync` shows the new one.
+   */
+  loading(sceneId: string): void {
+    this.loadingId = sceneId
+    this.syncVias()
+  }
+
+  /** Shows the handles for scene `sceneId` of `project`, which the stage has just loaded. */
+  sync(project: Project, sceneId: string): void {
     this.project = project
+    this.sceneId = sceneId
+    this.loadingId = sceneId
     this.syncStops()
     this.syncVias()
+  }
+
+  /** Whether the stage is loading a scene other than the one whose handles are on screen. */
+  private get switching(): boolean {
+    return this.loadingId !== this.sceneId
   }
 
   setSelectedLeg(leg: number | undefined): void {
@@ -116,15 +153,34 @@ export class RouteEditor {
     this.stopMarkers.clear()
     this.viaMarkers = []
     this.dragging.clear()
+    this.dragSeen.clear()
   }
 
   private get scene(): Scene | undefined {
-    return this.project?.scenes[0]
+    return this.project?.scenes.find((s) => s.id === this.sceneId)
+  }
+
+  /**
+   * Sends an edit to the scene whose handles are on screen, which during a tab switch is still the old one until the
+   * new scene has loaded. `seen` is the project version the gesture began on: by default the one on screen now.
+   */
+  private edit(patch: ProjectPatch, label: string, seen = this.project?.updatedAt): Promise<boolean> {
+    return this.cb.onEdit(this.sceneId === undefined ? patch : { ...patch, scene: this.sceneId }, label, seen)
+  }
+
+  /** Ends a drag of `marker`, returning the project version it was picked up on. */
+  private endDrag(marker: Marker): string | undefined {
+    const seen = this.dragSeen.get(marker)
+    this.dragging.delete(marker)
+    this.dragSeen.delete(marker)
+    return seen
   }
 
   private readonly onMapClick = (e: MapMouseEvent): void => {
     // Handles stop their own clicks; this is a second guard.
     if (e.originalEvent.target instanceof Element && e.originalEvent.target.closest('.edit-handle')) return
+    // The route on the map is the old scene's, and the legs panel already shows the new one.
+    if (this.switching) return
     const route = this.stage.route
     if (!route || !this.map.getLayer(EDIT_ROUTE_LAYER)) return
     const { x, y } = e.point
@@ -147,10 +203,7 @@ export class RouteEditor {
       return
     }
     const { at, insertIndex } = nearestOnLeg(route, selected, [e.lngLat.lng, e.lngLat.lat])
-    void this.cb.onEdit(
-      { ops: [{ op: 'insert_via', leg: selected, index: insertIndex, point: { at: savedAt(at) } }] },
-      'Add a via point',
-    )
+    void this.edit({ ops: [{ op: 'insert_via', leg: selected, index: insertIndex, point: { at: savedAt(at) } }] }, 'Add a via point')
   }
 
   private syncStops(): void {
@@ -192,8 +245,10 @@ export class RouteEditor {
     const route = this.stage.route
     const leg = this.selectedLeg
     const via = leg === undefined ? [] : (scene?.legs[leg]?.via ?? [])
-    // The route must be the one for this scene; a leg whose knots don't match is mid-reload.
-    const ready = route !== undefined && leg !== undefined && route.legs[leg]?.knots.length === via.length + 2
+    // The route must be the one for this scene; a leg whose knots don't match is mid-reload. A selected leg belongs to
+    // the scene being loaded, so the old scene shows no via handles for it.
+    const ready =
+      !this.switching && route !== undefined && leg !== undefined && route.legs[leg]?.knots.length === via.length + 2
     if (leg !== this.viaLeg || !ready) {
       for (const marker of this.viaMarkers) marker.remove()
       this.viaMarkers = []
@@ -233,16 +288,19 @@ export class RouteEditor {
       if (this.justDragged.delete(marker) || !e.altKey) return
       const t = target()
       const edit = t && this.scene && sharpEdit(this.scene, t)
-      if (edit) void this.cb.onEdit(edit.patch, edit.label)
+      if (edit) void this.edit(edit.patch, edit.label)
     })
     element.addEventListener('contextmenu', (e) => {
       e.preventDefault()
       e.stopPropagation()
-      const t = target()
-      if (t) this.cb.onPointMenu(t, { x: e.clientX, y: e.clientY })
+      const point = target()
+      if (point && this.sceneId !== undefined) {
+        this.cb.onPointMenu({ scene: this.sceneId, point }, { x: e.clientX, y: e.clientY }, this.project?.updatedAt)
+      }
     })
     marker.on('dragstart', () => {
       this.dragging.add(marker)
+      this.dragSeen.set(marker, this.project?.updatedAt)
       this.justDragged.add(marker)
     })
     // The click that ends a drag comes straight after the mouseup; anything later is a new click.
@@ -254,16 +312,15 @@ export class RouteEditor {
     const marker = this.createHandle('stop-handle', () => ({ kind: 'stop', id }))
     marker.getElement().dataset.testid = `stop-marker-${id}`
     marker.on('dragend', () => {
-      this.dragging.delete(marker)
+      const seen = this.endDrag(marker)
       const name = this.scene?.stops.find((s) => s.id === id)?.name ?? id
       const { lng, lat } = marker.getLngLat()
-      void this.cb
-        .onEdit({ ops: [{ op: 'update_stop', id, changes: { at: savedAt([lng, lat]) } }] }, `Move ${name}`)
-        .then((saved) => {
-          // Nothing was saved, so no new project will move the marker: put it back over the stop.
-          const stop = this.scene?.stops.find((s) => s.id === id)
-          if (!saved && stop && this.stopMarkers.get(id) === marker && !this.dragging.has(marker)) marker.setLngLat(stop.at)
-        })
+      const patch: ProjectPatch = { ops: [{ op: 'update_stop', id, changes: { at: savedAt([lng, lat]) } }] }
+      void this.edit(patch, `Move ${name}`, seen).then((saved) => {
+        // Nothing was saved, so no new project will move the marker: put it back over the stop.
+        const stop = this.scene?.stops.find((s) => s.id === id)
+        if (!saved && stop && this.stopMarkers.get(id) === marker && !this.dragging.has(marker)) marker.setLngLat(stop.at)
+      })
     })
     return marker
   }
@@ -285,22 +342,22 @@ export class RouteEditor {
       e.preventDefault()
       e.stopPropagation()
       const w = where()
-      if (!w) return
-      const edit = removeViaEdit(w.leg, w.index)
-      void this.cb.onEdit(edit.patch, edit.label)
+      if (!w || this.sceneId === undefined) return
+      const edit = removeViaEdit(this.sceneId, w.leg, w.index)
+      void this.edit(edit.patch, edit.label)
     })
     marker.on('dragend', () => {
-      this.dragging.delete(marker)
+      // An agent write during the drag can make this handle's index point at another via point; `seen` catches that.
+      const seen = this.endDrag(marker)
       const w = where()
       if (!w) return
       const { lng, lat } = marker.getLngLat()
-      void this.cb
-        .onEdit({ ops: [{ op: 'update_via', leg: w.leg, index: w.index, changes: { at: savedAt([lng, lat]) } }] }, 'Move a via point')
-        .then((saved) => {
-          const route = this.stage.route
-          const at = route && this.viaMarkers[w.index] === marker && this.viaLeg === w.leg && this.viaPosition(route, w.leg, w.index)
-          if (!saved && at && !this.dragging.has(marker)) marker.setLngLat(at)
-        })
+      const patch: ProjectPatch = { ops: [{ op: 'update_via', leg: w.leg, index: w.index, changes: { at: savedAt([lng, lat]) } }] }
+      void this.edit(patch, 'Move a via point', seen).then((saved) => {
+        const route = this.stage.route
+        const at = route && this.viaMarkers[w.index] === marker && this.viaLeg === w.leg && this.viaPosition(route, w.leg, w.index)
+        if (!saved && at && !this.dragging.has(marker)) marker.setLngLat(at)
+      })
     })
     return marker
   }

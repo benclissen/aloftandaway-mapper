@@ -1,6 +1,7 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { haversineKm, toXY, type XY } from './geo.js'
 import { setStops } from './patch.js'
+import { resolveScene, type SceneRef } from './scenes.js'
 import { MAX_LAT, parseProject, type LegMode, type LngLat, type Project, type SymbolKind, type ViaPoint } from './schema.js'
 
 export interface GpxLine {
@@ -284,16 +285,24 @@ function waypointsOnly(gpx: Gpx): GpxImport {
   return { stops, via: stops.slice(1).map(() => []), skipped: [] }
 }
 
-/** Replaces the first scene's stops with the imported ones and puts the simplified line on each leg as via points. */
-export function importGpx(project: Project, imported: GpxImport, opts: { legMode?: LegMode; symbol?: SymbolKind }): Project {
+/**
+ * Replaces the chosen scene's stops (the first by default) with the imported ones and puts the simplified line on each
+ * leg as via points. The other scenes are untouched.
+ */
+export function importGpx(
+  project: Project,
+  imported: GpxImport,
+  opts: { scene?: SceneRef; legMode?: LegMode; symbol?: SymbolKind },
+): Project {
   const legMode = opts.legMode ?? 'line'
   const last = imported.stops.length - 1
   const next = setStops(project, {
+    scene: opts.scene,
     stops: imported.stops.map((s, i) => (i < last ? { ...s, legMode, ...(opts.symbol ? { symbol: opts.symbol } : {}) } : { ...s })),
     legMode,
     replace: true,
   })
-  const scene = next.scenes[0]!
+  const { scene, index } = resolveScene(next, opts.scene)
   const legs = scene.legs.map((leg, i) => ({ ...leg, via: imported.via[i] ?? [] }))
-  return parseProject({ ...next, scenes: [{ ...scene, legs }, ...next.scenes.slice(1)] })
+  return parseProject({ ...next, scenes: next.scenes.map((s, i) => (i === index ? { ...scene, legs } : s)) })
 }

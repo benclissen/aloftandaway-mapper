@@ -32,6 +32,21 @@ function lineProject(name: string, stops: Stop[], overrides: Partial<Scene>): Pr
   return { ...base, scenes: [scene] }
 }
 
+/**
+ * `n` scenes, each a copy of the Greek Islands scene with its own id and a name from `names` (default "Scene 1" and
+ * so on). The first keeps the project's scene id.
+ */
+export function projectWithScenes(n: number, names: string[] = []): Project {
+  const project = greekIslands()
+  const first = sceneOf(project)
+  project.scenes = Array.from({ length: n }, (_, i) => ({
+    ...structuredClone(first),
+    id: i === 0 ? first.id : `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`,
+    name: names[i] ?? `Scene ${i + 1}`,
+  }))
+  return project
+}
+
 export function greekIslands(scene: Partial<Scene> = {}): Project {
   return lineProject(
     'Greek Islands',
@@ -43,6 +58,27 @@ export function greekIslands(scene: Partial<Scene> = {}): Project {
     ],
     scene,
   )
+}
+
+/**
+ * Two scenes on the blank theme: "Drive", a three-stop land route on the French Riviera, and "Sail", the Greek Islands
+ * stops. Every camera is fixed on the whole route. Drive keeps the project's scene id; Sail's is
+ * `00000000-0000-4000-8000-000000000002`.
+ */
+export function twoScenes(): Project {
+  const drive = lineProject(
+    'Two Scenes',
+    [
+      stop('nice', 'Nice', [7.262, 43.7102]),
+      stop('cannes', 'Cannes', [7.0174, 43.5528]),
+      stop('tropez', 'Saint-Tropez', [6.6407, 43.2727]),
+    ],
+    { name: 'Drive' },
+  )
+  const sail = sceneOf(greekIslands())
+  const project = { ...drive, scenes: [sceneOf(drive), { ...sail, id: '00000000-0000-4000-8000-000000000002', name: 'Sail' }] }
+  for (const scene of project.scenes) scene.camera = { mode: 'fixed', easing: 'smooth' }
+  return project
 }
 
 /** Three stops around Mont Blanc and the Matterhorn, on the outdoor theme with terrain on. */

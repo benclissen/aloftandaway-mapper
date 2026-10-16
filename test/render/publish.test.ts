@@ -22,12 +22,12 @@ const project = { name: 'Trip', output: { aspect: '16:9', height: 1080, fps: { n
 test('a cancel before the rename leaves no final or temporary XML', async () => {
   const controller = new AbortController()
   controller.abort()
-  await expect(publishFcpxml({ dir, project, scenes: [scene], signal: controller.signal })).rejects.toBeInstanceOf(RenderCancelled)
+  await expect(publishFcpxml({ dir, project, scenes: [scene], join: true, signal: controller.signal })).rejects.toBeInstanceOf(RenderCancelled)
   expect(await readdir(dir)).toEqual([])
 })
 
 test('a missing DTD keeps the temporary XML and publishes no final XML', async () => {
-  await expect(publishFcpxml({ dir, project, scenes: [scene], dtdPath: path.join(dir, 'nope.dtd') })).rejects.toThrow(/DTD is missing/)
+  await expect(publishFcpxml({ dir, project, scenes: [scene], join: true, dtdPath: path.join(dir, 'nope.dtd') })).rejects.toThrow(/DTD is missing/)
   expect(await readdir(dir)).toEqual(['trip.fcpxml.tmp'])
 })
 
@@ -36,7 +36,7 @@ test('description credit writes the full written credit into the FCPXML notes, t
   const first = base.scenes[0]!
   const satellite = { ...first, look: { ...first.look, theme: 'satellite' as const, terrain: true } }
   const described: Project = { ...base, credit: 'description', scenes: [satellite] }
-  await expect(publishFcpxml({ dir, project: described, scenes: [scene], dtdPath: path.join(dir, 'nope.dtd') })).rejects.toThrow()
+  await expect(publishFcpxml({ dir, project: described, scenes: [scene], join: true, dtdPath: path.join(dir, 'nope.dtd') })).rejects.toThrow()
   const xml = await readFile(path.join(dir, `${slug(described.name)}.fcpxml.tmp`), 'utf8')
   const written = joinCredit(projectCredit(described, 'written'))
   expect(written).toContain(SATELLITE_CREDIT_WRITTEN)

@@ -1,7 +1,7 @@
 # Mapper: local, agent-driven design
 
 Date: 2026-10-13
-Status: approved; revised 2026-10-15
+Status: approved; revised 2026-10-16
 
 **Revision, 2026-10-14:** the studio gains hands-on route editing (waypoints,
 curved/sharp points, transport per leg, map style, undo). The transport list
@@ -74,6 +74,77 @@ describe the layered export unless they say otherwise.
 - **Credit depends on the style.** `sceneCredit(scene, 'burned' | 'written')` lists the lines a scene needs. Burned in, the map credit always comes first, also for satellite. Satellite adds "Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016)". Terrain adds "Terrain: USGS, Copernicus EU-DEM, NOAA ETOPO1 and others". The written form (FCPXML notes, render manifest, MCP tool text) carries the full EOxCloudless wording, with https://cloudless.eox.at and CC BY 4.0, and the full terrain attribution list. The strings are in `src/core/credit.ts`. `blank` without terrain has no credit.
 - **Changes for existing projects:** a glide with no `start` opens on the first leg; follow has the look-ahead cap and slower heading turns; `terrain: true` projects render 3D (they were flat); non-dot symbols draw icons in place of the dot; sign text uses Plus Jakarta Sans.
 - **Still parked:** the flight bow size and the Baltic skerries.
+
+**Revision, 2026-10-16 (stage 6 decisions):**
+
+- **Scene references.** `scene` is a scene id or a 1-based position. Without
+  it, a call uses scene 1. On a project with more than one scene, every result
+  names the scene it touched, as `Scene 2 of 2 · Sail`.
+- **Patches.** `ProjectPatch` gains `scene?`, resolved to an id once, before
+  any op runs. `sceneSet` and the stop, leg and via ops act on that scene, even
+  if a scene op in the same patch moves it. A stop op after an op that removed
+  it fails. `invertPatch` refuses (throws) a patch whose `sceneSet` or whose
+  stop, leg or via ops target a scene that one of its ops removes.
+- **Scene ops.** Op indexes are 0-based, like the stop ops.
+  - `add_scene { index?, name?, copyLookFrom?, id? }` inserts an empty scene at
+    `index` (default: the end), named `Scene N` (N is its new position). It
+    copies `look` and `timing` from `copyLookFrom` (a scene reference; default:
+    the scene before the new one, or the one after it at index 0). From that
+    scene's camera it copies `mode`, `easing` and `follow`, never `start` or
+    `end`. The studio always sends `id`.
+  - `duplicate_scene { id, newId? }` is a deep copy placed right after the
+    original, named `<name> copy`. Its stops get fresh ids.
+  - `remove_scene { id }`. The last scene can't be removed.
+  - `move_scene { id, index }`.
+  - `restore_scene { index, scene }` puts a whole scene back, ids included.
+    Studio undo uses it. Tool descriptions don't mention it.
+- **Undo** covers every studio scene edit, delete included. Undoing a delete
+  restores the whole scene. Undo and redo switch to the tab the step was made
+  on. Redo of a duplicate restores the copy as saved (as `restore_scene`).
+- **Render arguments.**
+  - `scenes?` picks scenes by id or 1-based position. The default is all of
+    them. They're always rendered in film order, and duplicates are rejected.
+  - `join?` (default true) joins them into one clip. `false` writes one file
+    per scene. `ExportPlan.join` is the requested setting, so a joined render
+    whose range covers one scene still gets an FCPXML project.
+  - `range` is in seconds on the joined timeline. With `join: false` it's
+    allowed only when one scene is picked.
+  - `render` results list each joined scene's start time, as
+    `Scene 2 · Sail starts at 00:07:00` (MM:SS:FF).
+  - CLI flags: `--scenes 1,3` and `--each` (`--each` is `join: false`).
+- **The cut between scenes is a hard cut**, joined without re-encoding.
+  Transitions are added in Final Cut.
+- **Output folder:**
+
+  | | `join: true` | `join: false` |
+  |---|---|---|
+  | Flattened | `all.mp4` / `all.mov` | `01-<scene-slug>.mp4` / `.mov`, `02-…` |
+  | Preview | `preview.mp4` | `01-<scene-slug>-preview.mp4` |
+  | Layers | `01-<scene-slug>/map.mov`, `route.mov`, `signs.mov` | same |
+  | FCPXML | compound clips plus a project timeline | compound clips only |
+
+  The two-digit prefix is the scene's film position. A one-scene project's
+  layer folder is named after its scene, not the project.
+- **Validation:** errors block a render only in a picked scene. An unpicked
+  empty scene doesn't stop it.
+- **Credit:** the union over the rendered scenes only.
+- **FCPXML:** asset names become `<scene> · Map`, `<scene> · Route` and
+  `<scene> · Signs`.
+- **Studio tabs:**
+  - A strip across the top of the stage, with one tab per scene showing its
+    name and length.
+  - `+` adds a scene after the active one, with its look, and switches to it.
+  - Each tab has a menu: Rename, Duplicate, Move left, Move right and Delete.
+    Delete doesn't ask first, because undo restores the scene.
+  - The active scene is in the URL as `?scene=<id>`.
+- **Stage 4 deferral, done here:**
+  - The studio keys the selected leg by its stop pair.
+  - It sends index-based edits (`update_leg`, `insert_via`, `update_via`,
+    `remove_via`) with the base version, so a stale index is refused with a
+    409 and nothing changes.
+- **Not in this stage:** the open items from stages 4 and 5 (flight bow,
+  Baltic skerries, the pale `aloftandaway` style, white signs on `monochrome`,
+  the badge under a sign, fontnik, thin assertions).
 
 ## Purpose
 
@@ -398,7 +469,7 @@ position). Without it they use the first scene.
 | `preview_frame` | `folder`, `scene?`, `at` (exactly one of `{ seconds }`, `{ frame }`, `{ progress }` where progress is 0–1), `width?` | PNG image |
 | `preview_contact_sheet` | `folder`, `scene?`, `count?` (default 9), `width?` | One PNG grid with timestamps |
 | `open_studio` | `folder` | Local URL |
-| `render` | `folder`, `scenes?` (`'joined'` (default), `'each'`, or a list of scene ids), `layers?`, `codec?`, `range?` | Job id |
+| `render` | `folder`, `scenes?` (scene ids or positions; default all, in film order), `join?` (default true; false writes one file per scene), `layers?`, `codec?`, `range?` | Job id |
 | `render_status` | `jobId` | Progress, ETA, output paths, or error |
 | `cancel_render` | `jobId` | Final status |
 
@@ -410,11 +481,13 @@ position). Without it they use the first scene.
   `mode` also sets the transport's default mode.
 - Via points: `{ op: 'insert_via', leg, index, point }`,
   `{ op: 'update_via', leg, index, changes }`, `{ op: 'remove_via', leg, index }`.
-- Scenes: `{ op: 'add_scene', index?, name?, copyLookFrom? }`,
-  `{ op: 'duplicate_scene', id }`, `{ op: 'remove_scene', id }`,
-  `{ op: 'move_scene', id, index }`. A new scene starts empty, with the
-  look and camera settings of `copyLookFrom` (default: the scene before it).
-  The last scene can't be removed.
+- Scenes: `{ op: 'add_scene', index?, name?, copyLookFrom?, id? }`,
+  `{ op: 'duplicate_scene', id, newId? }`, `{ op: 'remove_scene', id }`,
+  `{ op: 'move_scene', id, index }`, and `restore_scene { index, scene }`
+  (studio undo only). A new scene starts empty. It copies the look and timing
+  of `copyLookFrom` (default: the scene before it, or the one after it at index
+  0), and the camera's `mode`, `easing` and `follow`, but never its `start` or
+  `end` shots. The last scene can't be removed.
 
 Legs are kept in step with stops automatically. A patch is applied in full
 or not at all, and the result must pass schema validation.
@@ -459,8 +532,11 @@ Studio edit mode:
     CLI) clears the undo history, so undo never overwrites the agent's work.
 - Drag a sign to offset it.
 - "Use this view as start/end shot" buttons, and a camera mode switcher.
-- **Scene tabs** (stage 6): switch scenes; add, rename, duplicate,
-  reorder and delete them.
+- **Scene tabs** (stage 6): a strip above the stage with one tab per scene,
+  showing its name and length. `+` adds a scene after the active one, with
+  its look, and switches to it. Each tab's menu renames, duplicates, moves the
+  scene left or right, or deletes it. Delete doesn't ask first, because undo
+  restores the scene. The active scene is in the URL as `?scene=<id>`.
 - No other editing UI. Line styling, sign text, timing and camera tuning go
   through the agent.
 
@@ -508,10 +584,14 @@ Studio render mode (`?mode=render&scene=<id>&layer=map|route|signs|all`):
 - Free disk space is checked first, from an estimate of the bitrate of each output (H.264 for the default MP4, ProRes for layers).
 
 **Output folder**: `renders/<YYYY-MM-DD-HHmmss>/`. By default it holds `all.mp4`
-(or `all.mov` with `codec: 'prores'`) and `manifest.json`. A layered export has one folder per
-scene (`01-<scene-slug>/map.mov`, `route.mov`, `signs.mov`), plus
-`preview.mp4` (if requested; every rendered scene joined), `<name>.fcpxml`
-and `manifest.json`. A one-scene project still gets one scene folder.
+(or `all.mov` with `codec: 'prores'`) and `manifest.json`. With `join: false`
+the flattened clip is one file per scene instead (`01-<scene-slug>.mp4`, and so
+on). A layered export has one folder per scene
+(`01-<scene-slug>/map.mov`, `route.mov`, `signs.mov`), plus `preview.mp4`
+(if requested; every rendered scene joined, or `01-<scene-slug>-preview.mp4`
+per scene with `join: false`), `<name>.fcpxml` and `manifest.json`. A one-scene
+project still gets one scene folder. The table in the stage 6 revision above
+lists the names.
 
 ## FCPXML
 
@@ -525,8 +605,8 @@ and `manifest.json`. A one-scene project still gets one scene folder.
 - An event named `Mapper`, holding one compound clip (`<media>` with a
   `<sequence>`) per scene, named `<project> · <scene>`: map on the spine,
   route on lane 1, signs on lane 2.
-- With `scenes: 'joined'`, a project (timeline) named after the Mapper
-  project places the scene compound clips back to back. With `'each'`,
+- With `join: true` (the default), a project (timeline) named after the Mapper
+  project places the scene compound clips back to back. With `join: false`,
   only the compound clips are created.
 - Video roles: `Map.Base`, `Map.Route`, `Map.Signs`.
 - `<marker>`s inside each scene's compound clip at each stop's arrival

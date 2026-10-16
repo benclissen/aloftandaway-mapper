@@ -4,7 +4,8 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
-import { renderProject, type CompletedOutput, type RenderResult } from '../render/render.js'
+import type { SceneRef } from '../core/index.js'
+import { addOutput, renderProject, type CompletedOutput, type RenderResult } from '../render/render.js'
 import { getServer } from '../server/server.js'
 import { assertAbsolute } from '../server/store.js'
 import { exitAfterDrain, installShutdown, runStdio } from '../mcp/server.js'
@@ -56,7 +57,7 @@ const firstSentence = (text: string) => text.split(/(?<=\.)\s/)[0] ?? text
 const OWN_COMMANDS: [usage: string, summary: string][] = [
   ['mcp', 'Serve MCP on stdin and stdout, for an AI agent'],
   ['studio <folder>', 'Open the studio for a project and keep it running until Ctrl-C (--no-open skips the browser)'],
-  ['render <folder>', 'Render the clip and wait for it. Default is a flattened H.264 MP4. Options: --codec prores|h264, --layers map,route,signs[,preview], --from <s> --to <s>'],
+  ['render <folder>', 'Render the clip and wait for it. Default is a flattened H.264 MP4 of every scene. Options: --codec prores|h264, --layers map,route,signs[,preview], --from <s> --to <s>, --scenes <list>, --each'],
   ['doctor', 'Check this machine and print a fix for anything missing'],
 ]
 
@@ -89,12 +90,15 @@ function toolHelp({ name, def }: ToolCommand): string {
   return `Usage: mapper ${name} [--json '<input>' | --json-file <path>]\n\n${def.description}\n\nWith neither flag the input is {}.${schema}`
 }
 
+const RENDER_USAGE =
+  'mapper render <folder> [--codec prores|h264] [--layers map,route,signs[,preview]] [--from <s> --to <s>] [--scenes <ids or positions>] [--each]'
+
 const OWN_HELP: Record<string, string> = {
   mcp: 'Usage: mapper mcp\n\nServes MCP on stdin and stdout until stdin closes or the process gets a signal.',
   studio:
     'Usage: mapper studio <folder> [--no-open]\n\nRegisters the project, prints the studio URL on stdout and opens it (macOS) unless --no-open.\nKeeps running until Ctrl-C.',
   render:
-    'Usage: mapper render <folder> [--codec prores|h264] [--layers map,route,signs[,preview]] [--from <s> --to <s>]\n\nRenders and waits. The default is one flattened H.264 MP4 (all.mp4); --codec prores makes a ProRes master (all.mov). --layers takes comma-separated names from map, route, signs, all and preview;\nmap, route and signs (always ProRes) together make the layered Final Cut Pro export and also write an FCPXML. Progress goes to stderr, the result as JSON to stdout.\nCtrl-C cancels the render cleanly (exit 130).',
+    `Usage: ${RENDER_USAGE}\n\nRenders and waits. The default is one flattened H.264 MP4 (all.mp4) with every scene back to back; --codec prores makes a ProRes master (all.mov). --layers takes comma-separated names from map, route, signs, all and preview;\nmap, route and signs (always ProRes) together make the layered Final Cut Pro export and also write an FCPXML.\n--scenes picks scenes by id or 1-based position, comma-separated, for example --scenes 1,3; they are always rendered in film order. --each writes one file per scene instead of joining them.\n--from and --to are seconds on the picked scenes back to back. Progress goes to stderr, the result as JSON to stdout.\nCtrl-C cancels the render cleanly (exit 130).`,
   doctor: 'Usage: mapper doctor\n\nChecks Node, ffmpeg and its encoders, Chrome and WebGL, and free disk space. Exit code 1 if something required is missing.',
 }
 
@@ -160,10 +164,12 @@ async function toolCommand(command: ToolCommand, args: string[]): Promise<number
 // mapper render
 
 async function renderCommand(args: string[]): Promise<number> {
-  const { values, positionals } = parse(args, { codec: { type: 'string' }, layers: { type: 'string' }, from: { type: 'string' }, to: { type: 'string' } }, true)
+  const { values, positionals } = parse(args, {
+    codec: { type: 'string' }, layers: { type: 'string' }, from: { type: 'string' }, to: { type: 'string' }, scenes: { type: 'string' }, each: { type: 'boolean' },
+  }, true)
   if (values.help) return help('render')
   const [folder, ...extra] = positionals
-  if (!folder || extra.length) throw new UsageError('render takes one project folder.', 'Usage: mapper render <folder> [--codec prores|h264] [--layers map,route,signs[,preview]] [--from s --to s]')
+  if (!folder || extra.length) throw new UsageError('render takes one project folder.', `Usage: ${RENDER_USAGE}`)
   const codec = values.codec
   if (codec !== undefined && codec !== 'prores' && codec !== 'h264') {
     throw new UsageError(`--codec must be prores or h264, not '${codec}'.`, 'Use --codec prores or --codec h264.')
@@ -187,6 +193,17 @@ async function renderCommand(args: string[]): Promise<number> {
       throw new UsageError('--from and --to must be numbers of seconds.', 'For example: --from 2 --to 10.')
     }
   }
+
+  // An entry of digits alone is a 1-based position; anything else is a scene id.
+  let scenes: SceneRef[] | undefined
+  if (values.scenes !== undefined) {
+    const entries = values.scenes.split(',').map((entry) => entry.trim())
+    if (entries.some((entry) => entry === '')) {
+      throw new UsageError('--scenes has an empty entry.', 'Pass scene ids or 1-based positions, comma-separated, for example --scenes 1,3.')
+    }
+    scenes = entries.map((entry) => (/^\d+$/.test(entry) ? Number(entry) : entry))
+  }
+  const join = values.each ? false : undefined
 
   const controller = new AbortController()
   let rendering: Promise<unknown> = Promise.resolve()
@@ -213,12 +230,14 @@ async function renderCommand(args: string[]): Promise<number> {
       codec,
       layers,
       range,
+      scenes,
+      join,
       signal: controller.signal,
       onStart: ({ dir }) => {
         renderDir = dir
       },
       onOutput: (output) => {
-        finished.push(output)
+        addOutput(finished, output)
       },
       onProgress: (p) => {
         const now = Date.now()

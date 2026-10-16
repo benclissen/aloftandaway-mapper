@@ -18,7 +18,10 @@ import {
   ProjectError,
   ProjectPatchSchema,
   resolveFollow,
+  resolveScene,
   resolveShots,
+  sceneLabel,
+  SceneRefSchema,
   setStops,
   StopInputSchema,
   SymbolKindSchema,
@@ -29,6 +32,7 @@ import {
   type Project,
   type Route,
   type Scene,
+  type SceneRef,
   type SeaPaths,
   type GpxImport,
   type Shot,
@@ -110,12 +114,16 @@ function legLine(scene: Scene, i: number, route: Route): string | undefined {
 /**
  * What every project-changing tool returns: the project, one entry per scene with its timeline and the camera's start
  * and end shots as rendered (fitted to the route where the scene has none), the follow settings in use when the camera
- * follows, and what validation says.
+ * follows, and what validation says. With more than one scene, the summary opens with the joined length and heads each
+ * scene's lines. `startSeconds` is where the scene starts in a join of every scene.
  */
 function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
   const { width, height } = frameSize(project.output)
-  const lines: string[] = []
-  const scenes = project.scenes.map((scene) => {
+  const many = project.scenes.length > 1
+  const blocks: string[][] = []
+  let startSeconds = 0
+  let totalFrames = 0
+  const scenes = project.scenes.map((scene, index) => {
     const route = buildRoute(scene, seaPaths)
     const timeline = buildTimeline(scene, project.output.fps, route)
     const shots = resolveShots(scene, project.output.aspect, route)
@@ -125,17 +133,20 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
       seconds: a.seconds,
       frame: a.frame,
     }))
-    lines.push(
+    blocks.push([
+      ...(many ? [`${sceneLabel(project, index)} (id ${scene.id})`] : []),
       `${project.name}: ${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
       `Style: ${scene.look.theme}, terrain ${scene.look.terrain ? 'on' : 'off'}.`,
       ...(scene.stops.length
         ? scene.stops.map((s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}${s.sharp ? ' · sharp' : ''}`)
         : ['No stops yet.']),
       ...scene.legs.flatMap((_, i) => legLine(scene, i, route) ?? []),
-    )
-    return {
+    ])
+    const entry = {
       id: scene.id,
       name: scene.name,
+      position: index + 1,
+      startSeconds,
       timeline: { durationSeconds: timeline.durationSeconds, totalFrames: timeline.totalFrames, arrivals },
       camera: {
         resolvedStart: wrapped(shots.start),
@@ -143,10 +154,14 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
         ...(scene.camera.mode === 'follow' ? { resolvedFollow: resolveFollow(scene, project.output.aspect, route) } : {}),
       },
     }
+    startSeconds += timeline.durationSeconds
+    totalFrames += timeline.totalFrames
+    return entry
   })
   const validation = validateProject(project, { seaPaths })
   const summary = [
-    ...lines,
+    ...(many ? [`${project.name}: ${project.scenes.length} scenes, ${startSeconds.toFixed(1)} s joined (${plural(totalFrames, 'frame')}), ${width}×${height}.`] : []),
+    ...blocks.flat(),
     validationLine(validation.errors, validation.warnings),
     ...issueLines('error', validation.errors),
     ...issueLines('warning', validation.warnings),
@@ -158,6 +173,34 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
 async function withPaths(folder: string, project: Project): Promise<ToolResult> {
   return projectResult(project, await resolveSeaPaths(folder, project))
 }
+
+/**
+ * `withPaths` for a write that changed one scene. With more than one scene the summary opens with `Changed <scene>.`,
+ * or with `lead` when it is given. `note` is a line of its own, after that one. `data.scene` names the scene, when it
+ * is still in the project.
+ */
+async function withChange(folder: string, project: Project, sceneId: string, opts: { lead?: string; note?: string } = {}): Promise<ToolResult> {
+  const result = await withPaths(folder, project)
+  const index = project.scenes.findIndex((s) => s.id === sceneId)
+  const head = project.scenes.length > 1 ? (opts.lead ?? (index >= 0 ? `Changed ${sceneLabel(project, index)}.` : undefined)) : undefined
+  return {
+    summary: [head, opts.note, result.summary].filter((line) => line !== undefined).join('\n'),
+    data: { ...result.data, ...(index >= 0 ? { scene: { id: sceneId, position: index + 1 } } : {}) },
+  }
+}
+
+/** `sentence`, led by the scene's label when there is one: `Scene 2 of 2 · Sail: frame 3 …`. */
+function sceneSentence(label: string | undefined, sentence: string): string {
+  return label ? `${label}: ${sentence[0]!.toLowerCase()}${sentence.slice(1)}` : sentence
+}
+
+/** `Scenes: 1 Drive, 2 Sail.` */
+function scenesLine(project: Project): string {
+  return `Scenes: ${project.scenes.map((s, i) => `${i + 1} ${s.name || 'Untitled'}`).join(', ')}.`
+}
+
+/** True for the ops that add, duplicate, remove, move or restore scenes, as opposed to editing a scene's stops. */
+const isSceneOp = (op: { op: string }) => op.op.endsWith('_scene')
 
 // GPX
 
@@ -268,6 +311,7 @@ export async function callTool(def: ToolDef<z.ZodObject>, rawInput: unknown): Pr
 
 const folder = z.string().describe('Absolute path of the project folder')
 const jobId = z.string().describe('The jobId that render returned')
+const sceneInput = SceneRefSchema.optional().describe('Scene id, or its 1-based position. Default: the first scene')
 
 // Render
 
@@ -300,17 +344,19 @@ export function etaText(seconds: number): string {
   return `about ${Math.round(seconds / 60)} min left`
 }
 
+/** The render's manifest as far as it can be read: nothing when it is missing or unreadable. */
+async function readManifest(manifestPath: string): Promise<{ creditPlacement?: unknown; credit?: unknown; scenes?: unknown }> {
+  try {
+    return JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
 /** The reminder to credit the map, with where the render put it. */
 export async function creditLine(manifestPath: string): Promise<string> {
-  let placement: unknown
-  let credit: unknown
-  try {
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { creditPlacement?: unknown; credit?: unknown }
-    placement = manifest.creditPlacement
-    credit = manifest.credit
-  } catch {
-    // The manifest is unreadable; say what to credit without saying where.
-  }
+  // An unreadable manifest gives neither, so the line says what to credit without saying where.
+  const { creditPlacement: placement, credit } = await readManifest(manifestPath)
   // The manifest holds the credit for what the render showed; the base line is the safe fallback.
   const text = typeof credit === 'string' ? credit : MAP_CREDIT
   if (text === '') return 'No map credit is required for this render.'
@@ -320,9 +366,14 @@ export async function creditLine(manifestPath: string): Promise<string> {
 }
 
 
-/** The finished render: every file it wrote, the folder and the required map credit. */
+/**
+ * The finished render: every file it wrote, where each scene starts in a joined clip, the folder and the required
+ * map credit.
+ */
 export async function doneSummary(r: RenderResult): Promise<string> {
   const layers = r.outputs.filter((o) => o.request !== 'all' && o.request !== 'preview')
+  // With one file per scene there is no single video or preview; each scene's file is listed.
+  const files = (request: 'all' | 'preview', one?: string) => (one ? [one] : r.outputs.filter((o) => o.request === request).map((o) => o.path))
   return [
     `Done. ${plural(r.frames, 'frame')} at ${r.renderFps.toFixed(1)} fps.`,
     ...(r.fcpxml
@@ -333,18 +384,35 @@ export async function doneSummary(r: RenderResult): Promise<string> {
             : 'FCPXML validation was skipped: Final Cut Pro is not installed, so the DTD is unavailable.',
         ]
       : []),
-    ...(r.video ? [`Video: ${r.video}`] : []),
+    ...files('all', r.video).map((file) => `Video: ${file}`),
     ...layers.map((o) => `Layer ${o.layer}: ${o.path}`),
-    ...(r.preview ? [`Preview: ${r.preview}`] : []),
+    ...files('preview', r.preview).map((file) => `Preview: ${file}`),
+    ...(r.sceneStarts.length > 1
+      ? r.sceneStarts.map((s) => {
+          const frame = Math.round((s.seconds * r.fps.num) / r.fps.den)
+          return `Scene ${s.position} · ${s.name || 'Untitled'} starts at ${formatTimecode(frame, r.fps)}`
+        })
+      : []),
     `Manifest: ${r.manifest}`,
     `Folder: ${r.dir}`,
     await creditLine(r.manifest),
   ].join('\n')
 }
 
-/** What a failed or cancelled render left behind. The CLI prints the same text. */
+/**
+ * What a failed or cancelled render left behind. The CLI prints the same text. When the render had more than one
+ * scene, each output names its scene, as in `clip of Drive` for a part that was never joined.
+ */
 export async function leftover(status: Pick<RenderStatus, 'outputs' | 'dir'>): Promise<string[]> {
-  const label = (o: NonNullable<RenderStatus['outputs']>[number]) => (o.request === 'preview' ? 'preview' : o.request === 'all' ? 'clip' : o.layer)
+  const { scenes } = status.dir && status.outputs?.length ? await readManifest(path.join(status.dir, 'manifest.json')) : {}
+  const names = new Map(
+    Array.isArray(scenes) && scenes.length > 1 ? (scenes as { id: string; name: string }[]).map((s) => [s.id, s.name || 'Untitled']) : [],
+  )
+  const label = (o: NonNullable<RenderStatus['outputs']>[number]) => {
+    const what = o.request === 'preview' ? 'preview' : o.request === 'all' ? 'clip' : o.layer
+    const scene = names.get(o.sceneId)
+    return scene === undefined ? what : `${what} of ${scene}`
+  }
   return [
     ...(status.outputs?.length ? ['Finished outputs kept:', ...status.outputs.map((o) => `- ${label(o)}: ${o.path}`)] : ['No outputs were finished.']),
     ...(status.dir ? [`Folder: ${status.dir}`, await creditLine(path.join(status.dir, 'manifest.json'))] : []),
@@ -395,7 +463,7 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'get_project',
     description:
-      'Read a project: name, output and credit, plus scenes. Stops, legs, look, camera and timing live in project.scenes[0]. The result also has scenes[0].timeline (arrival times) and scenes[0].camera (resolvedStart and resolvedEnd, the shots fitted to the route when none are stored, and resolvedFollow, the follow settings in use, when camera.mode is follow), and validation. Positions are [lng, lat]. Read it before changing anything; the user may have edited in the studio. The folder must be absolute.',
+      'Read a project: name, output and credit, plus scenes. The scenes are in project.scenes, in film order; each has its own stops, legs, look, camera and timing. The result also has, per scene, position, startSeconds (its start in a join of every scene), timeline (arrival times) and camera (resolvedStart and resolvedEnd, the shots fitted to the route when none are stored; resolvedFollow when camera.mode is follow), and validation. Positions are [lng, lat]. Read it before changing anything; the user may have edited in the studio. The folder must be absolute.',
     input: z.strictObject({ folder }),
     async run({ folder }) {
       return withPaths(folder, await loadProject(folder))
@@ -405,31 +473,34 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'set_stops',
     description:
-      "Set a project's stops in travel order. Each stop's 'at' is [lng, lat], longitude first. Replaces all stops unless replace is false, which appends. Makes one leg per pair, with legMode (default 'line'). A stop's 'symbol' is the transport for the leg leaving it, and sets that leg's usual mode when legMode is missing. The folder must be absolute.",
+      "Set a project's stops in travel order. Each stop's 'at' is [lng, lat], longitude first. Replaces all stops unless replace is false, which appends. Makes one leg per pair, with legMode (default 'line'). A stop's 'symbol' is the transport for the leg leaving it, and sets that leg's usual mode when legMode is missing. scene picks the scene to change; it defaults to the first. The folder must be absolute.",
     input: z.strictObject({
       folder,
+      scene: sceneInput,
       stops: z.array(StopInputSchema),
       legMode: LegModeSchema.optional().describe("Mode of every new leg; a stop's own legMode wins"),
       replace: z.boolean().optional().describe('Default true; false appends to the existing stops'),
     }),
-    async run({ folder, stops, legMode, replace }) {
-      return withPaths(folder, await mutateProject(folder, (project) => setStops(project, { stops, legMode, replace })))
+    async run({ folder, scene: ref, stops, legMode, replace }) {
+      const project = await mutateProject(folder, (p) => setStops(p, { scene: ref, stops, legMode, replace }))
+      return withChange(folder, project, resolveScene(project, ref).scene.id)
     },
   }),
 
   tool({
     name: 'import_gpx',
     description:
-      "Read a local GPX file into the scene's stops, replacing them. stops: 'ends' (default) makes a stop at the start and end of the track; 'waypoints' makes a stop of each named waypoint within 2 km of it. The track between stops becomes simplified via points. track picks a track or route by 1-based index or name. legMode (default 'line') and symbol set every leg. path and folder must be absolute.",
+      "Read a local GPX file into the scene's stops, replacing them. stops: 'ends' (default) makes a stop at the start and end of the track; 'waypoints' makes a stop of each named waypoint within 2 km of it. The track between stops becomes simplified via points. track picks a track or route by 1-based index or name. legMode (default 'line') and symbol set every leg. scene picks the scene to change; it defaults to the first. path and folder must be absolute.",
     input: z.strictObject({
       folder,
+      scene: sceneInput,
       path: z.string().describe('Absolute path of a .gpx file, at most 20 MB'),
       track: z.union([z.number().int().min(1), z.string()]).optional().describe('Track or route, by 1-based index or name'),
       stops: z.enum(['waypoints', 'ends']).optional().describe("Default 'ends'"),
       legMode: LegModeSchema.optional().describe("Mode of every leg; default 'line'"),
       symbol: SymbolKindSchema.optional().describe('Symbol of every leg'),
     }),
-    async run({ folder, path: file, track, stops, legMode, symbol }) {
+    async run({ folder, scene: ref, path: file, track, stops, legMode, symbol }) {
       const text = await readGpxFile(file)
       let imported: GpxImport
       try {
@@ -438,10 +509,10 @@ export const TOOLS: ToolDef<any>[] = [
         if (e instanceof GpxError) throw new ToolError(e.message, e.fix)
         throw e
       }
-      const project = await mutateProject(folder, (p) => importGpx(p, imported, { legMode, symbol }))
-      const result = await withPaths(folder, project)
+      const project = await mutateProject(folder, (p) => importGpx(p, imported, { scene: ref, legMode, symbol }))
+      const result = await withChange(folder, project, resolveScene(project, ref).scene.id, { note: importLine(imported) })
       return {
-        summary: `${importLine(imported)}\n${result.summary}`,
+        summary: result.summary,
         data: { ...result.data, import: { line: imported.line, stops: imported.stops.length, skipped: imported.skipped } },
       }
     },
@@ -450,10 +521,19 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'update_project',
     description:
-      "Change a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. 'sceneSet' patches the scene's name, timing, look and camera; null removes a key. look.theme: aloftandaway, aloftandaway-warm, paper, light, dark, nautical, atlas, outdoor, satellite, monochrome, blank. look.terrain: true adds hill shading and 3D elevation. look.symbolStyle: badge, badge-line, icon. camera.follow fields are optional; follow.pitch is 0 to 60. 'ops' edits stops, legs and via points. A leg symbol alone sets its usual mode. Coordinates are [lng, lat]. The folder must be absolute.",
+      "Change a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. scene (an id, or a 1-based position; default the first) picks the scene that sceneSet and the stop, leg and via ops change. 'sceneSet' patches its name, timing, look and camera; null removes a key. look.theme: aloftandaway, aloftandaway-warm, paper, light, dark, nautical, atlas, outdoor, satellite, monochrome, blank. look.terrain: true adds hill shading and 3D elevation. look.symbolStyle: badge, badge-line, icon. follow.pitch is 0 to 60. 'ops' edits stops, legs and via points, and scenes: add_scene { index?, name?, copyLookFrom? } appends unless index is given; duplicate_scene, remove_scene and move_scene { id, index } take a scene id. Op indexes are 0-based; copyLookFrom is an id or 1-based position. A leg symbol alone sets its usual mode. Coordinates are [lng, lat]. The folder must be absolute.",
     input: z.strictObject({ folder, ...ProjectPatchSchema.shape }),
-    async run({ folder, set, sceneSet, ops }) {
-      return withPaths(folder, await mutateProject(folder, (project) => applyPatch(project, { set, sceneSet, ops })))
+    async run({ folder, set, scene: ref, sceneSet, ops }) {
+      // The scene is found before the patch runs, so a scene op that moves it can't change which scene the result names.
+      let target = ''
+      const project = await mutateProject(folder, (p) => {
+        target = resolveScene(p, ref).scene.id
+        return applyPatch(p, { set, scene: ref, sceneSet, ops })
+      })
+      const editsScene = sceneSet !== undefined || (ops ?? []).some((op) => !isSceneOp(op))
+      const listsScenes = !editsScene && (ops ?? []).length > 0
+      if (!editsScene && !listsScenes) return withPaths(folder, project)
+      return withChange(folder, project, target, { lead: listsScenes ? scenesLine(project) : undefined })
     },
   }),
 
@@ -473,17 +553,18 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'preview_frame',
     description:
-      'Render one frame as a PNG to look at. Give "at" as exactly one of { seconds }, { frame } or { progress } (0 to 1). Width is 240 to 3840 px, default 960. The PNG is also saved under the project\'s .mapper/previews. The folder must be absolute.',
+      'Render one frame as a PNG to look at. Give "at" as exactly one of { seconds }, { frame } or { progress } (0 to 1). Width is 240 to 3840 px, default 960. scene picks the scene to show; it defaults to the first. The PNG is also saved under the project\'s .mapper/previews. The folder must be absolute.',
     input: z.strictObject({
       folder,
+      scene: sceneInput,
       at: PreviewAtSchema,
       width: z.number().int().min(240).max(3840).default(960),
     }),
-    async run({ folder, at, width }) {
-      const r = await previewFrame({ folder, at, width })
+    async run({ folder, scene: ref, at, width }) {
+      const r = await previewFrame({ folder, at, width, scene: ref })
       return {
-        summary: `Frame ${r.frame} at ${r.seconds.toFixed(2)} s, ${width} px wide. Saved to ${r.path}`,
-        data: { path: r.path, frame: r.frame, seconds: r.seconds },
+        summary: sceneSentence(r.sceneLabel, `Frame ${r.frame} at ${r.seconds.toFixed(2)} s, ${width} px wide. Saved to ${r.path}`),
+        data: { path: r.path, frame: r.frame, seconds: r.seconds, scene: r.scene },
         image: r.png,
       }
     },
@@ -492,17 +573,18 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'preview_contact_sheet',
     description:
-      'Render evenly spaced frames as one PNG grid, each with a timestamp. Use it to review the whole clip: framing, labels and stop timing. count is 2 to 25 (default 9); width is 640 to 3840 px (default 1920). The folder must be absolute.',
+      'Render evenly spaced frames as one PNG grid, each with a timestamp. Use it to review the whole clip: framing, labels and stop timing. count is 2 to 25 (default 9); width is 640 to 3840 px (default 1920); scene picks the scene to show (default the first). The folder must be absolute.',
     input: z.strictObject({
       folder,
+      scene: sceneInput,
       count: z.number().int().min(2).max(25).default(9),
       width: z.number().int().min(640).max(3840).default(1920),
     }),
-    async run({ folder, count, width }) {
-      const r = await contactSheet({ folder, count, width })
+    async run({ folder, scene: ref, count, width }) {
+      const r = await contactSheet({ folder, count, width, scene: ref })
       return {
-        summary: `Contact sheet of ${r.frames.length} frames, ${width} px wide. Saved to ${r.path}`,
-        data: { path: r.path, frames: r.frames },
+        summary: sceneSentence(r.sceneLabel, `Contact sheet of ${r.frames.length} frames, ${width} px wide. Saved to ${r.path}`),
+        data: { path: r.path, frames: r.frames, scene: r.scene },
         image: r.png,
       }
     },
@@ -523,15 +605,17 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'render',
     description:
-      "Render the clip to video. The default is one flattened H.264 MP4 (all.mp4); codec: 'prores' makes a ProRes master. Optional range { from, to } in seconds. Look at a contact sheet before rendering. Returns a jobId; poll render_status. The folder must be absolute. For a layered Final Cut Pro export, pass layers ['map','route','signs'] (ProRes plus FCPXML).",
+      "Render the clip to video. The default is one flattened H.264 MP4 (all.mp4) with every scene back to back; codec: 'prores' makes a ProRes master. scenes picks some scenes, and join: false writes one file per scene. Optional range { from, to } in seconds on the picked scenes back to back. Look at a contact sheet before rendering. Returns a jobId; poll render_status. The folder must be absolute. For a layered Final Cut Pro export, pass layers ['map','route','signs'] (ProRes plus FCPXML).",
     input: z.strictObject({
       folder,
       codec: z.enum(['prores', 'h264']).optional().describe("Codec of the flattened clip: h264 (default) or prores. Isolated layers are always ProRes"),
       range: z.strictObject({ from: z.number().min(0), to: z.number().min(0) }).optional(),
       layers: LayersSchema.optional().describe("Any of map, route, signs, all (the flattened clip, default) or preview (H.264 check clip). All can't join preview; map, route and signs are always ProRes, so codec h264 needs all alongside them"),
+      scenes: z.array(SceneRefSchema).optional().describe('Scenes to render, by id or 1-based position; default all. Always rendered in film order'),
+      join: z.boolean().optional().describe('Default true: one clip with the scenes back to back. false: one file per scene'),
     }),
-    async run({ folder, codec, range, layers }) {
-      const id = startRenderJob({ folder, codec, range, layers })
+    async run({ folder, codec, range, layers, scenes, join }) {
+      const id = startRenderJob({ folder, codec, range, layers, scenes, join })
       const deadline = Date.now() + START_WAIT_MS
       for (;;) {
         const status = statusOf(id)

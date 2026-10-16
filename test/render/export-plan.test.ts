@@ -1,8 +1,21 @@
-import { expect, test } from 'vitest'
-import { buildRoute, buildTimeline, seaLegKey, type SeaPaths } from '../../src/core/index.js'
-import { planExport, sceneMarkers, slug } from '../../src/render/export-plan.js'
+import { describe, expect, test } from 'vitest'
+import { buildRoute, buildTimeline, seaLegKey, type Project, type SeaPaths } from '../../src/core/index.js'
+import { pickedSceneIndexes, planExport, sceneMarkers, slug } from '../../src/render/export-plan.js'
 import type { LayerRequest } from '../../src/render/export-types.js'
-import { greekIslands, sceneOf } from '../fixtures/projects.js'
+import { RenderError } from '../../src/render/errors.js'
+import { greekIslands, sceneOf, stopsAt } from '../fixtures/projects.js'
+
+const SAIL_ID = '00000000-0000-4000-8000-000000000002'
+
+/** Two blank scenes at 25 fps: "Drive" of 50 frames, then "Sail" of 75. */
+function driveAndSail(names: [string, string] = ['Drive', 'Sail']): Project {
+  const project = stopsAt([[0, 0], [1, 1]], { name: names[0], timing: { holdStart: 0.5, travel: 1, holdEnd: 0.5 } })
+  const sail = sceneOf(stopsAt([[2, 2], [3, 3]], { id: SAIL_ID, name: names[1], timing: { holdStart: 0.5, travel: 2, holdEnd: 0.5 } }))
+  project.scenes.push(sail)
+  return project
+}
+
+const paths = (plan: ReturnType<typeof planExport>) => plan.passes.map(p => p.path)
 
 test('plans the first scene without changing the project', () => {
   const project = greekIslands()
@@ -71,12 +84,14 @@ test('accepts H.264 for the flattened clip alongside layers', () => {
 
 test.each([
   ['../../Crème & Cruise / <2026>', 'creme-cruise-2026'],
-  ['日本語', 'project'],
-  ['---', 'project'],
+  ['日本語', ''],
+  ['---', ''],
   ['a'.repeat(79) + ' b', 'a'.repeat(79)],
 ])('makes safe slugs for %s', (name, expected) => {
-  expect(slug(name)).toBe(expected)
-  expect(planExport({ ...greekIslands(), name }, { seaPaths: {}, layers: ['map'] }).passes[0].path).toBe(`01-${expected}/map.mov`)
+  expect(slug(name)).toBe(expected || 'project')
+  expect(slug(name, 'scene')).toBe(expected || 'scene')
+  const project = greekIslands({ name })
+  expect(planExport(project, { seaPaths: {}, layers: ['map'] }).passes[0].path).toBe(`01-${expected || 'scene'}/map.mov`)
 })
 
 test('uses the existing fractional-rate frame boundaries for every pass', () => {
@@ -120,4 +135,151 @@ test("arrival frames follow the sea path's length", () => {
   const timeline = buildTimeline(scene, project.output.fps, buildRoute(scene, seaPaths))
   expect(withPaths.scenes[0].totalFrames).toBe(timeline.totalFrames)
   expect(withPaths.scenes[0].arrivals).toEqual(timeline.arrivals)
+})
+
+describe('scenes', () => {
+  test('the fixture scenes are 50 and 75 frames long', () => {
+    expect(planExport(driveAndSail(), { seaPaths: {} }).scenes.map(s => s.totalFrames)).toEqual([50, 75])
+  })
+
+  test('a one-scene project plans as before', () => {
+    const project = greekIslands({ name: 'Island Hop' })
+    const plan = planExport(project, { seaPaths: {} })
+    expect(paths(plan)).toEqual(['all.mp4'])
+    expect(plan.join).toBe(true)
+    expect(plan.joins).toEqual([])
+    expect(plan.scenes.map(s => [s.position, s.slug, s.offsetFrame])).toEqual([[1, 'island-hop', 0]])
+    expect(plan.passes[0]).toMatchObject({ fromFrame: 0, toFrame: 350 })
+    const layered = planExport(project, { seaPaths: {}, layers: ['map', 'route', 'signs', 'preview'] })
+    expect(paths(layered)).toEqual(['01-island-hop/map.mov', '01-island-hop/route.mov', '01-island-hop/signs.mov', 'preview.mp4'])
+    expect(layered.joins).toEqual([])
+    expect(layered.fcpxml).toBe(true)
+  })
+
+  test('two scenes joined write parts and one join', () => {
+    const plan = planExport(driveAndSail(), { seaPaths: {} })
+    expect(plan.join).toBe(true)
+    expect(paths(plan)).toEqual(['01-drive.part.mp4', '02-sail.part.mp4'])
+    expect(plan.passes.map(p => [p.sceneId, p.fromFrame, p.toFrame])).toEqual([
+      [plan.scenes[0]!.id, 0, 50], [SAIL_ID, 0, 75],
+    ])
+    expect(plan.scenes.map(s => [s.name, s.position, s.slug, s.offsetFrame])).toEqual([
+      ['Drive', 1, 'drive', 0], ['Sail', 2, 'sail', 50],
+    ])
+    expect(plan.joins).toEqual([{ request: 'all', path: 'all.mp4', kind: 'h264', parts: ['01-drive.part.mp4', '02-sail.part.mp4'] }])
+
+    const prores = planExport(driveAndSail(), { seaPaths: {}, codec: 'prores' })
+    expect(prores.joins).toEqual([{ request: 'all', path: 'all.mov', kind: 'prores-hq', parts: ['01-drive.part.mov', '02-sail.part.mov'] }])
+    const preview = planExport(driveAndSail(), { seaPaths: {}, layers: ['preview'] })
+    expect(preview.joins).toEqual([
+      { request: 'preview', path: 'preview.mp4', kind: 'h264', parts: ['01-drive-preview.part.mp4', '02-sail-preview.part.mp4'] },
+    ])
+  })
+
+  test('join false writes one clip per scene', () => {
+    const plan = planExport(driveAndSail(), { seaPaths: {}, join: false })
+    expect(plan.join).toBe(false)
+    expect(paths(plan)).toEqual(['01-drive.mp4', '02-sail.mp4'])
+    expect(plan.joins).toEqual([])
+    expect(plan.scenes.map(s => s.offsetFrame)).toEqual([0, 0])
+    expect(paths(planExport(driveAndSail(), { seaPaths: {}, join: false, layers: ['preview'] })))
+      .toEqual(['01-drive-preview.mp4', '02-sail-preview.mp4'])
+    expect(paths(planExport(driveAndSail(), { seaPaths: {}, join: false, codec: 'prores' }))).toEqual(['01-drive.mov', '02-sail.mov'])
+    // One picked scene keeps its position in the name.
+    expect(paths(planExport(driveAndSail(), { seaPaths: {}, join: false, scenes: [2] }))).toEqual(['02-sail.mp4'])
+  })
+
+  test('layers go in a folder per scene', () => {
+    const plan = planExport(driveAndSail(), { seaPaths: {}, layers: ['map', 'route', 'signs'] })
+    expect(paths(plan)).toEqual([
+      '01-drive/map.mov', '01-drive/route.mov', '01-drive/signs.mov',
+      '02-sail/map.mov', '02-sail/route.mov', '02-sail/signs.mov',
+    ])
+    expect(plan.fcpxml).toBe(true)
+    expect(plan.joins).toEqual([])
+    const withAll = planExport(driveAndSail(), { seaPaths: {}, layers: ['all', 'signs', 'map', 'route'] })
+    expect(paths(withAll)).toEqual([
+      '01-drive/map.mov', '01-drive/route.mov', '01-drive/signs.mov', '01-drive.part.mp4',
+      '02-sail/map.mov', '02-sail/route.mov', '02-sail/signs.mov', '02-sail.part.mp4',
+    ])
+    expect(withAll.joins.map(j => j.path)).toEqual(['all.mp4'])
+  })
+
+  test('picks scenes in film order whatever order they are given', () => {
+    const project = driveAndSail()
+    const plan = planExport(project, { seaPaths: {}, scenes: [2, 1] })
+    expect(plan.scenes.map(s => s.name)).toEqual(['Drive', 'Sail'])
+    expect(paths(plan)).toEqual(['01-drive.part.mp4', '02-sail.part.mp4'])
+    expect(pickedSceneIndexes(project, [SAIL_ID, 1])).toEqual([0, 1])
+    expect(pickedSceneIndexes(project)).toEqual([0, 1])
+    const sailOnly = planExport(project, { seaPaths: {}, scenes: [SAIL_ID] })
+    expect(sailOnly.scenes.map(s => [s.name, s.position, s.offsetFrame])).toEqual([['Sail', 2, 0]])
+    expect(paths(sailOnly)).toEqual(['all.mp4'])
+    expect(sailOnly.joins).toEqual([])
+  })
+
+  test('rejects a duplicate pick, by id and position', () => {
+    const project = driveAndSail()
+    for (const scenes of [[2, 2], [SAIL_ID, 2], [1, project.scenes[0]!.id]]) {
+      expect(() => planExport(project, { seaPaths: {}, scenes })).toThrow('Each scene may be picked only once.')
+    }
+    expect(() => pickedSceneIndexes(project, [2, SAIL_ID])).toThrow(RenderError)
+  })
+
+  test('rejects an empty pick and an unknown scene', () => {
+    const project = driveAndSail()
+    expect(() => planExport(project, { seaPaths: {}, scenes: [] })).toThrow('Pick at least one scene.')
+    for (const ref of [3, 'nope']) {
+      let error: unknown
+      try { planExport(project, { seaPaths: {}, scenes: [1, ref] }) } catch (e) { error = e }
+      expect(error).toBeInstanceOf(RenderError)
+      expect((error as RenderError).message).toContain(String(ref))
+      expect((error as RenderError).fix).toContain('1 "Drive"')
+      expect((error as RenderError).fix).toContain(`2 "Sail" (id ${SAIL_ID})`)
+    }
+  })
+
+  test('a range across the cut', () => {
+    const plan = planExport(driveAndSail(), { seaPaths: {}, range: { from: 1, to: 3 } })
+    expect(plan.passes.map(p => [p.path, p.fromFrame, p.toFrame])).toEqual([
+      ['01-drive.part.mp4', 25, 50], ['02-sail.part.mp4', 0, 25],
+    ])
+    expect(plan.scenes.map(s => s.offsetFrame)).toEqual([0, 25])
+    expect(plan.joins).toEqual([{ request: 'all', path: 'all.mp4', kind: 'h264', parts: ['01-drive.part.mp4', '02-sail.part.mp4'] }])
+  })
+
+  test('a range inside one scene plans that scene alone with no join', () => {
+    const plan = planExport(driveAndSail(), { seaPaths: {}, range: { from: 2.2, to: 2.8 } })
+    expect(plan.scenes.map(s => [s.name, s.offsetFrame])).toEqual([['Sail', 0]])
+    expect(plan.passes.map(p => [p.sceneId, p.path, p.fromFrame, p.toFrame])).toEqual([[SAIL_ID, 'all.mp4', 5, 20]])
+    expect(plan.joins).toEqual([])
+    const layered = planExport(driveAndSail(), { seaPaths: {}, layers: ['map'], range: { from: 0, to: 1 } })
+    expect(layered.passes.map(p => [p.path, p.fromFrame, p.toFrame])).toEqual([['01-drive/map.mov', 0, 25]])
+  })
+
+  test('a range with join false and two scenes is refused', () => {
+    let error: unknown
+    try { planExport(driveAndSail(), { seaPaths: {}, join: false, range: { from: 0, to: 1 } }) } catch (e) { error = e }
+    expect(error).toBeInstanceOf(RenderError)
+    expect((error as RenderError).message).toBe('A range needs one scene, or a joined render.')
+    expect((error as RenderError).fix).toBe('Pick one scene with scenes, or leave join on.')
+    const one = planExport(driveAndSail(), { seaPaths: {}, join: false, scenes: [2], range: { from: 1, to: 2 } })
+    expect(one.passes.map(p => [p.path, p.fromFrame, p.toFrame])).toEqual([['02-sail.mp4', 25, 50]])
+  })
+
+  test('a range past the end of the joined timeline has no frames', () => {
+    expect(() => planExport(driveAndSail(), { seaPaths: {}, range: { from: 6, to: 7 } })).toThrow(/no frames in the 5\.00-second clip/)
+  })
+
+  test('same-named scenes get distinct folders', () => {
+    const plan = planExport(driveAndSail(['Day 1', 'Day 1']), { seaPaths: {}, layers: ['map'] })
+    expect(paths(plan)).toEqual(['01-day-1/map.mov', '02-day-1/map.mov'])
+    expect(paths(planExport(driveAndSail(['Day 1', 'Day 1']), { seaPaths: {} }))).toEqual(['01-day-1.part.mp4', '02-day-1.part.mp4'])
+  })
+
+  test('an empty scene name gets the slug scene', () => {
+    const plan = planExport(driveAndSail(['', 'Sail']), { seaPaths: {}, layers: ['map'] })
+    expect(plan.scenes.map(s => s.slug)).toEqual(['scene', 'sail'])
+    expect(paths(plan)).toEqual(['01-scene/map.mov', '02-sail/map.mov'])
+  })
 })

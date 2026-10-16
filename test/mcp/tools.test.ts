@@ -1,13 +1,27 @@
-import { chmod, copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { createMcpServer } from '../../src/mcp/server.js'
 import { creditLine, doneSummary, leftover, statusSummary, TOOLS } from '../../src/mcp/tools.js'
-import type { RenderStatus } from '../../src/render/jobs.js'
+import { startRenderJob, type RenderStatus } from '../../src/render/jobs.js'
+import { contactSheet, previewFrame } from '../../src/render/preview.js'
+
+// The real job runs; the spy records what the render tool asked for.
+vi.mock('../../src/render/jobs.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/render/jobs.js')>()
+  return { ...actual, startRenderJob: vi.fn(actual.startRenderJob) }
+})
+
+// No browser in unit tests: the preview functions are replaced, and the tests check what they were asked for.
+vi.mock('../../src/render/preview.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/render/preview.js')>()),
+  previewFrame: vi.fn(),
+  contactSheet: vi.fn(),
+}))
 
 const STOPS = [
   { name: 'Piraeus', at: [23.6466, 37.942] },
@@ -43,6 +57,8 @@ function text(result: CallToolResult): string {
 interface SceneResult {
   id: string
   name: string
+  position: number
+  startSeconds: number
   timeline: { durationSeconds: number; totalFrames: number; arrivals: { name: string; frame: number }[] }
   camera: {
     resolvedStart: { center: [number, number]; zoom: number }
@@ -68,7 +84,8 @@ describe('tools', () => {
       'render_status',
       'cancel_render',
     ])
-    for (const tool of TOOLS) expect(tool.description.length, tool.name).toBeLessThan(600)
+    // update_project carries the patch format and the scene ops, so it gets more room.
+    for (const tool of TOOLS) expect(tool.description.length, tool.name).toBeLessThan(tool.name === 'update_project' ? 900 : 600)
     expect(tools.find((t) => t.name === 'render')!.description).toContain('Look at a contact sheet before rendering.')
   })
 
@@ -265,7 +282,7 @@ describe('tools', () => {
   test('descriptions describe version 2', () => {
     const get = TOOLS.find((t) => t.name === 'get_project')!.description
     expect(get).toContain('scenes')
-    expect(get).toContain('scenes[0]')
+    expect(get).toContain('project.scenes')
     expect(TOOLS.find((t) => t.name === 'set_stops')!.description).toContain('symbol')
   })
 
@@ -367,6 +384,184 @@ describe('tools', () => {
     }
   })
 
+  describe('scenes', () => {
+    async function twoScenes(name: string): Promise<string> {
+      const folder = path.join(tmp, name)
+      await call('create_project', { folder, name: 'Trip' })
+      await call('update_project', { folder, sceneSet: { name: 'Drive' } })
+      await call('set_stops', { folder, stops: STOPS.slice(0, 2) })
+      const added = await call('update_project', { folder, ops: [{ op: 'add_scene', name: 'Sail' }] })
+      expect(added.isError, text(added)).toBeFalsy()
+      return folder
+    }
+
+    test('set_stops with scene 2 leaves scene 1 alone, and the summary names scene 2', async () => {
+      const folder = await twoScenes('scene-stops')
+      const set = await call('set_stops', { folder, scene: 2, stops: STOPS.slice(1), legMode: 'sea' })
+      expect(set.isError, text(set)).toBeFalsy()
+      const lines = text(set).split('\n')
+      expect(lines[0]).toBe('Changed Scene 2 of 2 · Sail.')
+      const data = set.structuredContent as {
+        project: { scenes: { id: string; stops: { name: string }[] }[] }
+        scene: { id: string; position: number }
+      }
+      expect(data.project.scenes[0]!.stops.map((s) => s.name)).toEqual(['Piraeus', 'Mykonos'])
+      expect(data.project.scenes[1]!.stops.map((s) => s.name)).toEqual(['Mykonos', 'Santorini', 'Rhodes'])
+      expect(data.scene).toEqual({ id: data.project.scenes[1]!.id, position: 2 })
+
+      // By id, too.
+      const byId = await call('set_stops', { folder, scene: data.scene.id, stops: STOPS.slice(0, 2) })
+      expect(text(byId).split('\n')[0]).toBe('Changed Scene 2 of 2 · Sail.')
+    })
+
+    test('update_project adds a scene and the summary lists the scenes', async () => {
+      const folder = path.join(tmp, 'scene-add')
+      await call('create_project', { folder, name: 'Trip' })
+      await call('update_project', { folder, sceneSet: { name: 'Drive' } })
+      const added = await call('update_project', { folder, ops: [{ op: 'add_scene', name: 'Sail' }] })
+      expect(added.isError, text(added)).toBeFalsy()
+      expect(text(added).split('\n')[0]).toBe('Scenes: 1 Drive, 2 Sail.')
+      const data = added.structuredContent as { project: { scenes: unknown[] }; scenes: SceneResult[] }
+      expect(data.project.scenes).toHaveLength(2)
+      expect(data.scenes.map((s) => s.name)).toEqual(['Drive', 'Sail'])
+
+      // A patch on scene 2's own fields names scene 2.
+      const renamed = await call('update_project', { folder, scene: 2, sceneSet: { name: 'Ferry' } })
+      expect(text(renamed).split('\n')[0]).toBe('Changed Scene 2 of 2 · Ferry.')
+      expect((renamed.structuredContent as { scene: unknown }).scene).toEqual({ id: data.scenes[1]!.id, position: 2 })
+    })
+
+    test('update_project names the scene it patched even when a scene op moves it', async () => {
+      const folder = await twoScenes('scene-move')
+      const moved = await call('update_project', {
+        folder,
+        scene: 1,
+        sceneSet: { name: 'Road' },
+        ops: [{ op: 'move_scene', id: (await sceneIds(folder))[0]!, index: 1 }],
+      })
+      expect(moved.isError, text(moved)).toBeFalsy()
+      expect(text(moved).split('\n')[0]).toBe('Changed Scene 2 of 2 · Road.')
+    })
+
+    async function sceneIds(folder: string): Promise<string[]> {
+      const got = await call('get_project', { folder })
+      return (got.structuredContent as { scenes: SceneResult[] }).scenes.map((s) => s.id)
+    }
+
+    test('get_project heads each scene and gives the joined length', async () => {
+      const folder = await twoScenes('scene-get')
+      await call('set_stops', { folder, scene: 2, stops: STOPS })
+      const got = await call('get_project', { folder })
+      const data = got.structuredContent as { scenes: SceneResult[] }
+      const [a, b] = data.scenes
+      expect(a!.position).toBe(1)
+      expect(a!.startSeconds).toBe(0)
+      expect(b!.position).toBe(2)
+      expect(b!.startSeconds).toBeCloseTo(a!.timeline.durationSeconds, 6)
+      const joined = a!.timeline.durationSeconds + b!.timeline.durationSeconds
+      const frames = a!.timeline.totalFrames + b!.timeline.totalFrames
+      const lines = text(got).split('\n')
+      expect(lines[0]).toBe(`Trip: 2 scenes, ${joined.toFixed(1)} s joined (${frames} frames), 3840×2160.`)
+      expect(lines).toContain(`Scene 1 of 2 · Drive (id ${a!.id})`)
+      expect(lines).toContain(`Scene 2 of 2 · Sail (id ${b!.id})`)
+      expect(lines.indexOf(`Scene 1 of 2 · Drive (id ${a!.id})`)).toBeLessThan(lines.indexOf(`Scene 2 of 2 · Sail (id ${b!.id})`))
+      expect(lines.filter((l) => l.startsWith('Style: '))).toHaveLength(2)
+    })
+
+    test('a one-scene summary is unchanged', async () => {
+      const folder = path.join(tmp, 'one-scene')
+      await call('create_project', { folder, name: 'Greek Islands', output: { height: 1080 } })
+      await call('update_project', {
+        folder,
+        sceneSet: { timing: { holdStart: 1, travel: 10, holdEnd: 2 } },
+      })
+      const set = await call('set_stops', { folder, stops: STOPS, legMode: 'line' })
+      expect(text(set)).toMatchInlineSnapshot(`
+        "Greek Islands: 4 stops, 14.0 s (350 frames), 1920×1080.
+        Style: aloftandaway, terrain off.
+        1. Piraeus [23.6466, 37.942] arrives 00:01:00
+        2. Mykonos [25.3289, 37.4467] arrives 00:04:01
+        3. Santorini [25.4317, 36.4166] arrives 00:06:07
+        4. Rhodes [28.2278, 36.451] arrives 00:12:00
+        0 errors, 0 warnings"
+      `)
+      const data = set.structuredContent as { scenes: SceneResult[] }
+      expect(data.scenes[0]!.position).toBe(1)
+      expect(data.scenes[0]!.startSeconds).toBe(0)
+    })
+
+    test('an unknown scene is a tool error that lists the scenes', async () => {
+      const folder = await twoScenes('scene-unknown')
+      for (const [tool, args] of [
+        ['set_stops', { stops: STOPS }],
+        ['update_project', { sceneSet: { name: 'x' } }],
+      ] as const) {
+        for (const scene of [3, 'nope']) {
+          const result = await call(tool, { folder, scene, ...args })
+          expect(result.isError, `${tool} ${scene}`).toBe(true)
+          expect(text(result)).toContain('scene:')
+          expect(text(result)).toContain('1 "Drive"')
+          expect(text(result)).toContain('2 "Sail"')
+        }
+      }
+    })
+
+    test('scene is described, with its default, on every tool that takes it', async () => {
+      const { tools } = await client.listTools()
+      for (const name of ['set_stops', 'import_gpx', 'update_project', 'preview_frame', 'preview_contact_sheet']) {
+        const schema = tools.find((t) => t.name === name)!.inputSchema as { properties: Record<string, { description?: string }> }
+        expect(schema.properties.scene, name).toBeDefined()
+      }
+      const scene = (tools.find((t) => t.name === 'set_stops')!.inputSchema as { properties: Record<string, { description?: string }> }).properties.scene!
+      expect(scene.description).toBe('Scene id, or its 1-based position. Default: the first scene')
+      const get = tools.find((t) => t.name === 'get_project')!.description!
+      expect(get).toContain('project.scenes')
+      expect(get).not.toContain('scenes[0]')
+      const update = tools.find((t) => t.name === 'update_project')!.description!
+      for (const word of ['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene']) expect(update).toContain(word)
+      for (const words of ['0-based', 'scene id', 'appends', 'copyLookFrom is an id or 1-based position']) expect(update).toContain(words)
+      expect(update).not.toContain('restore_scene')
+    })
+
+    test('preview_frame and preview_contact_sheet take a scene', async () => {
+      const folder = await twoScenes('scene-preview')
+      const sail = { id: 'b', position: 2, name: 'Sail' }
+      const label = 'Scene 2 of 2 · Sail'
+      vi.mocked(previewFrame).mockResolvedValue({ png: Buffer.from('png'), path: '/p/scene2-frame-3.png', frame: 3, seconds: 0.12, scene: sail, sceneLabel: label })
+      vi.mocked(contactSheet).mockResolvedValue({ png: Buffer.from('png'), path: '/p/scene2-contact.png', frames: [{ frame: 0, seconds: 0 }], scene: sail, sceneLabel: label })
+
+      const frame = await call('preview_frame', { folder, scene: 2, at: { frame: 3 } })
+      expect(frame.isError, text(frame)).toBeFalsy()
+      expect(previewFrame).toHaveBeenLastCalledWith({ folder, at: { frame: 3 }, width: 960, scene: 2 })
+      // The scene comes from the preview, which read it from the project it rendered.
+      expect(text(frame).split('\n')[0]).toBe('Scene 2 of 2 · Sail: frame 3 at 0.12 s, 960 px wide. Saved to /p/scene2-frame-3.png')
+      expect((frame.structuredContent as { scene: unknown }).scene).toEqual(sail)
+
+      await call('preview_frame', { folder, at: { frame: 3 } })
+      expect(previewFrame).toHaveBeenLastCalledWith({ folder, at: { frame: 3 }, width: 960, scene: undefined })
+
+      const sheet = await call('preview_contact_sheet', { folder, scene: 'abc', count: 4 })
+      expect(sheet.isError, text(sheet)).toBeFalsy()
+      expect(contactSheet).toHaveBeenLastCalledWith({ folder, count: 4, width: 1920, scene: 'abc' })
+      expect(text(sheet).split('\n')[0]).toBe('Scene 2 of 2 · Sail: contact sheet of 1 frames, 1920 px wide. Saved to /p/scene2-contact.png')
+      expect((sheet.structuredContent as { scene: unknown }).scene).toEqual(sail)
+    })
+
+    test('a one-scene preview keeps its wording and still names the scene in data', async () => {
+      const folder = path.join(tmp, 'one-scene-preview')
+      const only = { id: 'a', position: 1, name: 'Drive' }
+      vi.mocked(previewFrame).mockResolvedValue({ png: Buffer.from('png'), path: '/p/frame-3.png', frame: 3, seconds: 0.12, scene: only })
+      vi.mocked(contactSheet).mockResolvedValue({ png: Buffer.from('png'), path: '/p/contact.png', frames: [{ frame: 0, seconds: 0 }], scene: only })
+
+      const frame = await call('preview_frame', { folder, at: { frame: 3 } })
+      expect(text(frame).split('\n')[0]).toBe('Frame 3 at 0.12 s, 960 px wide. Saved to /p/frame-3.png')
+      expect((frame.structuredContent as { scene: unknown }).scene).toEqual(only)
+      const sheet = await call('preview_contact_sheet', { folder })
+      expect(text(sheet).split('\n')[0]).toBe('Contact sheet of 1 frames, 1920 px wide. Saved to /p/contact.png')
+      expect((sheet.structuredContent as { scene: unknown }).scene).toEqual(only)
+    })
+  })
+
   test('render rejects a project with errors and lists the fixes', async () => {
     const folder = path.join(tmp, 'p')
     await call('create_project', { folder, name: 'P' })
@@ -422,6 +617,20 @@ describe('tools', () => {
     expect(await statusSummary(running())).toMatch(/^Frame 120 of 900 · 12\.5 fps/)
   })
 
+  test('render tool passes scenes and join through', async () => {
+    const folder = path.join(tmp, 'picked')
+    await call('create_project', { folder, name: 'Picked' })
+    const added = await call('update_project', { folder, ops: [{ op: 'add_scene', name: 'Sail' }] })
+    const sailId = (added.structuredContent as { project: { scenes: { id: string }[] } }).project.scenes[1]!.id
+    vi.mocked(startRenderJob).mockClear()
+    // Neither scene has stops, so the job fails before a render folder exists.
+    const result = await call('render', { folder, scenes: [sailId, 1], join: false })
+    expect(result.isError).toBe(true)
+    expect(startRenderJob).toHaveBeenCalledWith(expect.objectContaining({ folder, scenes: [sailId, 1], join: false }))
+    const schema = TOOLS.find((t) => t.name === 'render')!.input
+    expect(schema.safeParse({ folder, scenes: ['x', 0] }).success).toBe(false)
+  })
+
   test('render_status and cancel_render reject an unknown job', async () => {
     for (const name of ['render_status', 'cancel_render']) {
       const result = await call(name, { jobId: 'missing' })
@@ -458,7 +667,7 @@ describe('render summaries', () => {
   const output = (request: string, layer: string, file: string) => ({ request, layer, path: `/r/${file}` }) as never
 
   test('the done summary names the default MP4 as the video', async () => {
-    const summary = await doneSummary({ video: '/r/all.mp4', outputs: [], frames: 25, renderFps: 10, manifest: '/nonexistent/manifest.json', dir: '/r' } as never)
+    const summary = await doneSummary({ video: '/r/all.mp4', outputs: [], sceneStarts: [], frames: 25, renderFps: 10, manifest: '/nonexistent/manifest.json', dir: '/r' } as never)
     expect(summary).toContain('Video: /r/all.mp4')
   })
 
@@ -476,6 +685,53 @@ describe('render summaries', () => {
     expect(lines).toContain('Folder: /nonexistent/render')
     expect(lines.at(-1)).toMatch(/^Credit required: /)
     expect(lines.at(-1)).not.toContain('(burned in)')
+  })
+
+  test('leftover names the scene of each part a joined render left', async () => {
+    const dir = path.join(tmp, 'parts')
+    await mkdir(dir, { recursive: true })
+    const scenes = [{ id: 'a', name: 'Drive' }, { id: 'b', name: '' }]
+    await writeFile(path.join(dir, 'manifest.json'), JSON.stringify({ scenes, credit: '' }))
+    const part = (sceneId: string, request: string, layer: string, file: string) => ({ sceneId, request, layer, path: `${dir}/${file}` }) as never
+    const lines = await leftover({
+      dir,
+      outputs: [part('a', 'all', 'all', '01-drive.part.mp4'), part('a', 'map', 'map', '01-drive/map.mov'), part('b', 'preview', 'all', '02-scene-preview.part.mp4')],
+    })
+    expect(lines.slice(0, 4)).toEqual([
+      'Finished outputs kept:',
+      `- clip of Drive: ${dir}/01-drive.part.mp4`,
+      `- map of Drive: ${dir}/01-drive/map.mov`,
+      `- preview of Untitled: ${dir}/02-scene-preview.part.mp4`,
+    ])
+  })
+
+  test('doneSummary says where each joined scene starts', async () => {
+    const result = {
+      dir: '/d',
+      manifest: '/d/manifest.json',
+      video: '/d/all.mp4',
+      frames: 650,
+      renderFps: 10,
+      fps: { num: 25, den: 1 },
+      outputs: [],
+      sceneStarts: [
+        { id: 'a', name: 'Drive', position: 1, seconds: 0 },
+        { id: 'b', name: 'Sail', position: 3, seconds: 13 },
+      ],
+    }
+    const text = await doneSummary(result as never)
+    expect(text).toContain('Scene 1 · Drive starts at 00:00:00\nScene 3 · Sail starts at 00:13:00')
+    const one = await doneSummary({ ...result, sceneStarts: result.sceneStarts.slice(0, 1) } as never)
+    expect(one).not.toContain('starts at')
+  })
+
+  test('doneSummary lists every clip of a render with one file per scene', async () => {
+    const out = (request: string, file: string) => ({ sceneId: 's', request, layer: 'all', path: `/d/${file}` }) as never
+    const text = await doneSummary({
+      dir: '/d', manifest: '/d/manifest.json', frames: 100, renderFps: 10, fps: { num: 25, den: 1 }, sceneStarts: [],
+      outputs: [out('all', '01-drive.mp4'), out('all', '02-sail.mp4')],
+    } as never)
+    expect(text).toContain('Video: /d/01-drive.mp4\nVideo: /d/02-sail.mp4')
   })
 
   test('creditLine says which credit is burned in and that the full text still goes in the description', async () => {
@@ -505,6 +761,7 @@ describe('render summaries', () => {
       frames: 50,
       renderFps: 10,
       outputs: [],
+      sceneStarts: [],
       fcpxml: '/nonexistent/render/trip.fcpxml',
       fcpxmlValidation: 'skipped-no-fcp',
     } as never)
@@ -520,6 +777,7 @@ describe('render summaries', () => {
       frames: 50,
       renderFps: 10,
       outputs: [],
+      sceneStarts: [],
       fcpxml: '/d/trip.fcpxml',
       fcpxmlValidation: 'passed',
     } as never)
@@ -559,6 +817,21 @@ describe('render summaries', () => {
       expect(sc.import.line.name).toBe('Coastal Walk')
       expect(sc.import.skipped.map((s) => s.name)).toEqual(['Inland Farm'])
       expect(sc.project.scenes[0]!.stops.map((s) => s.name)).not.toContain('Inland Farm')
+    })
+
+    test('import_gpx with scene 2 fills scene 2 and the summary names it', async () => {
+      const folder = path.join(tmp, 'gpx-scene')
+      await call('create_project', { folder, name: 'Walk' })
+      await call('update_project', { folder, ops: [{ op: 'add_scene', name: 'Hike' }] })
+      const result = await call('import_gpx', { folder, scene: 2, path: gpx('track.gpx'), stops: 'waypoints' })
+      expect(result.isError, text(result)).toBeFalsy()
+      const lines = text(result).split('\n')
+      expect(lines[0]).toBe('Changed Scene 2 of 2 · Hike.')
+      expect(lines[1]).toMatch(/^Imported \d+ stops from track "Coastal Walk"/)
+      const sc = result.structuredContent as { project: { scenes: { stops: unknown[] }[] }; scene: { position: number } }
+      expect(sc.project.scenes[0]!.stops).toHaveLength(0)
+      expect(sc.project.scenes[1]!.stops.length).toBeGreaterThan(1)
+      expect(sc.scene.position).toBe(2)
     })
 
     test('import_gpx rejects a relative path', async () => {

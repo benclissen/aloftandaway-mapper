@@ -39,6 +39,7 @@ function twoScenes(output: Output = out25): FcpxmlInput {
   return {
     projectName: 'Trip',
     output,
+    join: true,
     credit: 'burned',
     creditLines: [MAP_CREDIT],
     scenes: [scene('a', 'Drive', 50, '/renders/trip/01-drive'), scene('b', 'Sail', 75, '/renders/trip/02-sail')],
@@ -121,12 +122,12 @@ describe('writeFcpxml', () => {
     for (const ref of allRefs(doc)) expect(ids).toContain(ref)
 
     expect(r.asset.map((a: Node) => [a['@_name'], a['@_duration'], a['media-rep'][0]['@_src']])).toEqual([
-      ['Map', '2s', 'file:///renders/trip/01-drive/map.mov'],
-      ['Route', '2s', 'file:///renders/trip/01-drive/route.mov'],
-      ['Signs', '2s', 'file:///renders/trip/01-drive/signs.mov'],
-      ['Map', '3s', 'file:///renders/trip/02-sail/map.mov'],
-      ['Route', '3s', 'file:///renders/trip/02-sail/route.mov'],
-      ['Signs', '3s', 'file:///renders/trip/02-sail/signs.mov'],
+      ['Drive · Map', '2s', 'file:///renders/trip/01-drive/map.mov'],
+      ['Drive · Route', '2s', 'file:///renders/trip/01-drive/route.mov'],
+      ['Drive · Signs', '2s', 'file:///renders/trip/01-drive/signs.mov'],
+      ['Sail · Map', '3s', 'file:///renders/trip/02-sail/map.mov'],
+      ['Sail · Route', '3s', 'file:///renders/trip/02-sail/route.mov'],
+      ['Sail · Signs', '3s', 'file:///renders/trip/02-sail/signs.mov'],
     ])
     for (const a of r.asset) {
       expect(a).toMatchObject({ '@_start': '0s', '@_hasVideo': '1', '@_hasAudio': '0', '@_format': r.format[0]['@_id'] })
@@ -214,6 +215,7 @@ describe('writeFcpxml', () => {
     const input: FcpxmlInput = {
       projectName: project,
       output: out25,
+      join: true,
       credit: 'burned',
       scenes: [scene('a', sceneName, 50, dir, { markers: [{ frame: 10, value: marker }] })],
     }
@@ -234,6 +236,7 @@ describe('writeFcpxml', () => {
     const input: FcpxmlInput = {
       projectName: 'Tr\u0000ip\u0007',
       output: out25,
+      join: true,
       credit: 'burned',
       scenes: [scene('a', 'Dr\u001Bive\uFFFE', 50, '/r/a', { markers: [{ frame: 1, value: 'A\u0001B\uD800C\tD' }] })],
     }
@@ -251,6 +254,7 @@ describe('writeFcpxml', () => {
     const input: FcpxmlInput = {
       projectName: 'Crete',
       output: out25,
+      join: true,
       credit: 'burned',
       creditLines: [MAP_CREDIT],
       scenes: [scene('x', 'Crete', 25, '/r/x'), scene('y', 'Crete', 25, '/r/y')],
@@ -323,6 +327,46 @@ describe('writeFcpxml', () => {
     const xml = writeFcpxml(input)
     expect(xml).not.toContain('<marker')
     expect(compoundClips(parse(xml))[0].connected).toHaveLength(2)
+  })
+
+  test('join false writes compound clips and no project', () => {
+    const doc = parse(writeFcpxml({ ...twoScenes(), join: false }))
+    const ev = event(doc)
+    expect(ev.project).toBeUndefined()
+    expect(compoundClips(doc)).toHaveLength(2)
+    expect((ev['ref-clip'] as Node[]).map((c) => [c['@_ref'], c['@_name'], c['@_start'], c['@_duration']])).toEqual([
+      [resources(doc).media[0]['@_id'], 'Trip · Drive', '0s', '2s'],
+      [resources(doc).media[1]['@_id'], 'Trip · Sail', '0s', '3s'],
+    ])
+    expect(resources(doc)).toEqual(resources(parse(writeFcpxml(twoScenes()))))
+  })
+
+  test('asset names carry the scene name', () => {
+    const input: FcpxmlInput = { ...twoScenes(), scenes: [scene('a', '', 25, '/r/a'), scene('b', 'Sail', 25, '/r/b')] }
+    const doc = parse(writeFcpxml(input))
+    expect((resources(doc).asset as Node[]).map((a) => a['@_name'])).toEqual([
+      'Untitled · Map', 'Untitled · Route', 'Untitled · Signs',
+      'Sail · Map', 'Sail · Route', 'Sail · Signs',
+    ])
+    expect(compoundClips(doc).map((c) => c.map['@_name'])).toEqual(['Map', 'Map'])
+  })
+
+  test('same-named scenes stay distinct', () => {
+    const input: FcpxmlInput = { ...twoScenes(), scenes: [scene('a', 'Day 1', 25, '/r/a'), scene('b', 'Day 1', 25, '/r/b')] }
+    for (const join of [true, false]) {
+      const doc = parse(writeFcpxml({ ...input, join }))
+      const r = resources(doc)
+      const ids = allIds(doc)
+      expect(new Set(ids).size).toBe(ids.length)
+      expect(new Set((r.asset as Node[]).map((a) => a['@_id'])).size).toBe(6)
+      expect((r.asset as Node[]).map((a) => a['@_name'])).toEqual([
+        'Day 1 · Map', 'Day 1 · Route', 'Day 1 · Signs', 'Day 1 · Map', 'Day 1 · Route', 'Day 1 · Signs',
+      ])
+      expect(new Set((r.media as Node[]).map((m) => m['@_id'])).size).toBe(2)
+      const refs = (event(doc)['ref-clip'] as Node[]).map((c) => c['@_ref'])
+      expect(refs).toEqual((r.media as Node[]).map((m) => m['@_id']))
+      if (join) expect((event(doc).project.sequence.spine['ref-clip'] as Node[]).map((c) => c['@_ref'])).toEqual(refs)
+    }
   })
 
   const bad: [string, (input: FcpxmlInput) => void][] = [

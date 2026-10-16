@@ -238,7 +238,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     // The scene parts are joined only once every pass has finished. Until a join succeeds, its parts are the outputs.
     for (const join of plan.joins) {
       throwIfAborted(signal)
-      const joined = await joinScenes(dir, join, completed)
+      const joined = await joinScenes(dir, join, completed, signal)
       addOutput(completed, joined)
       await writeManifest(manifestFile, makeManifest('running'))
       args.onOutput?.(absolute(joined))
@@ -303,9 +303,10 @@ const JOINED = 'joined'
 
 /**
  * Joins the finished parts of `join` into its clip without re-encoding and deletes them. The joined clip's frames,
- * segments and recoveries are the parts' totals. If the join fails, the parts are kept and named in the fix.
+ * segments and recoveries are the parts' totals. If the join fails or `signal` aborts it, the parts are kept, and a
+ * failure names them in the fix.
  */
-async function joinScenes(dir: string, join: PlannedJoin, completed: CompletedPass[]): Promise<CompletedPass> {
+async function joinScenes(dir: string, join: PlannedJoin, completed: CompletedPass[], signal: AbortSignal | undefined): Promise<CompletedPass> {
   const parts = join.parts.map((part) => {
     const pass = completed.find((p) => p.path === part)
     if (!pass) throw new Error(`The part ${part} was not rendered.`)
@@ -316,6 +317,7 @@ async function joinScenes(dir: string, join: PlannedJoin, completed: CompletedPa
     out: path.join(dir, join.path),
     codec: MEDIA[join.kind].codec,
     kept: 'scene clips',
+    signal,
   })
   const sum = (key: 'frames' | 'segments' | 'recoveries') => parts.reduce((total, pass) => total + pass[key], 0)
   const frames = sum('frames')

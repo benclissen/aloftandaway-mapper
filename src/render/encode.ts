@@ -95,15 +95,20 @@ export function concatList(files: string[]): string {
  * Joins `parts` into `out` without re-encoding, using ffmpeg's concat demuxer. The join is written to
  * `<stem>.joining<ext>` and renamed to `out` on success, so a failed join leaves nothing under the final name. The
  * list file is `list`, or `concat.txt` next to `out`, and is deleted afterwards. The parts are left for the caller
- * to delete.
+ * to delete. Aborting `signal` kills ffmpeg, and the join fails once it has exited.
  */
-export async function joinSegments(args: { parts: string[]; out: string; codec: Codec; list?: string }): Promise<void> {
+export async function joinSegments(args: { parts: string[]; out: string; codec: Codec; list?: string; signal?: AbortSignal }): Promise<void> {
   const list = args.list ?? path.join(path.dirname(args.out), 'concat.txt')
   const ext = path.extname(args.out)
   const joining = `${args.out.slice(0, args.out.length - ext.length)}.joining${ext}`
+  const { signal } = args
   await writeFile(list, concatList(args.parts))
+  // Killed by hand rather than through execFile's `signal`, so the promise settles only once ffmpeg has exited and
+  // can no longer write the file removed below. SIGKILL, since ffmpeg would otherwise finish writing the file first.
+  let kill: (() => void) | undefined
   try {
-    await promisify(execFile)('ffmpeg', [
+    signal?.throwIfAborted()
+    const joined = promisify(execFile)('ffmpeg', [
       '-hide_banner',
       '-nostats',
       '-loglevel',
@@ -121,12 +126,16 @@ export async function joinSegments(args: { parts: string[]; out: string; codec: 
       ...(args.codec === 'h264' ? ['-movflags', '+faststart'] : []),
       joining,
     ])
+    kill = () => joined.child.kill('SIGKILL')
+    signal?.addEventListener('abort', kill, { once: true })
+    await joined
     await rename(joining, args.out)
   } catch (e) {
     await rm(joining, { force: true })
     const stderr = (e as { stderr?: string }).stderr?.trim()
     throw new Error(`Could not join the render's segments${stderr ? `:\n${stderr}` : '.'}`, { cause: e })
   } finally {
+    if (kill) signal?.removeEventListener('abort', kill)
     await rm(list, { force: true })
   }
 }

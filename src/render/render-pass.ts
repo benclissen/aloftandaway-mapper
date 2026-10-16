@@ -216,7 +216,7 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
     if (parts.length === 1) {
       await rename(parts[0]!, out)
     } else {
-      await joinParts({ parts, out, codec: media.codec })
+      await joinParts({ parts, out, codec: media.codec, signal })
     }
     return { ...pass, frames, segments: parts.length, recoveries }
   } finally {
@@ -233,14 +233,15 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
 /**
  * Joins the parts into `out` and deletes them. The concat list sits beside `out`, named after it, so joins in the
  * same folder never share one. If the join fails, the parts are kept and named in the fix, as `kept` (default
- * "segments rendered so far").
+ * "segments rendered so far"). Aborting `signal` stops the join, keeps the parts and rejects with `RenderCancelled`.
  */
-export async function joinParts(args: { parts: string[]; out: string; codec: Codec; kept?: string }): Promise<void> {
+export async function joinParts(args: { parts: string[]; out: string; codec: Codec; kept?: string; signal?: AbortSignal }): Promise<void> {
   const ext = path.extname(args.out)
   const list = `${args.out.slice(0, args.out.length - ext.length)}.concat.txt`
   try {
-    await joinSegments({ parts: args.parts, out: args.out, codec: args.codec, list })
+    await joinSegments({ parts: args.parts, out: args.out, codec: args.codec, list, signal: args.signal })
   } catch (e) {
+    throwIfAborted(args.signal)
     throw new RenderError(
       errorMessage(e),
       `Render again. The ${args.parts.length} ${args.kept ?? 'segments rendered so far'} are kept: ${args.parts.join(', ')}`,

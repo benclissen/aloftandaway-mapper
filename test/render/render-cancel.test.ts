@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { existsSync, readdirSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
@@ -68,6 +69,44 @@ describe('cancelling a render', () => {
     })
     await expect(rendering).rejects.toBeInstanceOf(RenderCancelled)
     expect(events).toEqual(['page closing', 'page closed', 'browser.close'])
+  })
+
+  test('during the scene join stops ffmpeg, keeps the scene parts and settles at once', async () => {
+    const folder = path.join(tmp, 'join-cancel')
+    await mkdir(folder)
+    await saveProject(folder, twoScenes())
+    vi.mocked(renderPass).mockImplementation(async ({ pass, dir, onFrame }) => {
+      const frames = pass.toFrame - pass.fromFrame
+      await writeFile(path.join(dir, pass.path), 'part')
+      onFrame?.(frames)
+      return { ...pass, frames, segments: 1, recoveries: 0 }
+    })
+    // An ffmpeg that starts writing the join, then runs until it is killed.
+    const bin = path.join(tmp, 'slow-ffmpeg')
+    await mkdir(bin)
+    await writeFile(path.join(bin, 'ffmpeg'), '#!/bin/sh\nfor last; do :; done\necho partial > "$last"\nexec sleep 30\n', { mode: 0o755 })
+    const savedPath = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${savedPath}`
+    const controller = new AbortController()
+    let dir = ''
+    try {
+      const rendering = renderProject({ folder, signal: controller.signal, h264Encoder: 'libx264', onStart: (info) => (dir = info.dir) })
+      rendering.catch(() => undefined)
+      await vi.waitFor(() => expect(dir && readdirSync(dir).some((file) => file.includes('.joining'))).toBe(true), { timeout: 4000, interval: 20 })
+      const cancelledAt = performance.now()
+      controller.abort()
+      await expect(rendering).rejects.toBeInstanceOf(RenderCancelled)
+      expect(performance.now() - cancelledAt).toBeLessThan(1000)
+    } finally {
+      process.env.PATH = savedPath
+    }
+
+    const manifest = JSON.parse(await readFile(path.join(dir, 'manifest.json'), 'utf8')) as { status: string; outputs: { path: string; sceneId: string }[] }
+    expect(manifest.status).toBe('cancelled')
+    expect(manifest.outputs.map((output) => output.sceneId)).toEqual(twoScenes().scenes.map((scene) => scene.id))
+    for (const output of manifest.outputs) expect(existsSync(path.join(dir, output.path)), output.path).toBe(true)
+    const left = readdirSync(dir, { recursive: true }).map(String)
+    expect(left.filter((file) => /(^|\/)all\.|\.joining/.test(file))).toEqual([])
   })
 })
 

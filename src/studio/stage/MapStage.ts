@@ -13,6 +13,7 @@ import {
   sceneCredit,
   joinCredit,
   MAP_DATA_ERROR,
+  MAX_TERRAIN_SETTLES,
   slicePath,
   unwrapLng,
   type FrameState,
@@ -27,6 +28,7 @@ import {
   type Timeline,
 } from '../../core/index.js'
 import { CREDIT_FONT, drawOverlay, SIGN_FONT, signText } from './overlay.js'
+import { waitForStyleLoad } from './style-load.js'
 import { dropElevationTiles, redrawTerrain } from './terrain-internals.js'
 import { buildStyle } from './themes.js'
 
@@ -55,8 +57,8 @@ const EDIT_SOURCE = 'mapper-edit'
 export const EDIT_ROUTE_LAYER = 'mapper-edit-route'
 const EDIT_SELECTED_LAYER = 'mapper-edit-selected'
 const IDLE_TIMEOUT_MS = 60_000
-/** At most this many extra camera placements over terrain before a frame counts as settled. */
-const MAX_TERRAIN_SETTLES = 4
+/** How long a new style may take to load before the stage gives up on it. */
+const STYLE_TIMEOUT_MS = 60_000
 
 interface Loaded {
   project: Project
@@ -251,7 +253,9 @@ export class MapStage {
       const styleKey = `${theme}/${labels}/${terrain}`
       if (styleKey !== this.styleKey) {
         this.mapError = undefined
-        const styled = new Promise<void>((resolve) => this.map.once('style.load', () => resolve()))
+        // A style that fails to load leaves the map with a half-built one, so the next load must rebuild it.
+        this.styleKey = undefined
+        const styled = waitForStyleLoad(this.map, STYLE_TIMEOUT_MS, () => this.throwMapError())
         this.map.setStyle(buildStyle(theme, { tileBase: this.opts.tileBase, labels, terrain }), { diff: false })
         await styled
         this.baseVisibility = new Map(

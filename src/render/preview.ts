@@ -19,7 +19,7 @@ import {
 import { resolveSeaPaths } from '../server/paths.js'
 import { loadProject } from '../server/store.js'
 import { launchBrowser } from './chrome.js'
-import { RenderPage } from './page.js'
+import { LOAD_TIMEOUT_MS, RenderPage } from './page.js'
 import { describeWarnings } from './warnings.js'
 
 const DEFAULT_PREVIEW_WIDTH = 960
@@ -194,12 +194,22 @@ async function withProject<T>(folder: string, ref: SceneRef | undefined, frameWi
   const { aspect } = project.output
   const { page, entry } = await pageFor(aspect)
   try {
-    await page.load(project, frameWidth(aspect) / layoutSize(aspect).width, { scene: scene.id, seaPaths })
+    await withTimeout(page.load(project, frameWidth(aspect) / layoutSize(aspect).width, { scene: scene.id, seaPaths }), LOAD_TIMEOUT_MS, 'load the scene')
     return await use({ project, scene, index, timeline, page })
   } catch (e) {
     evict(aspect, entry, page)
     throw e
   }
+}
+
+/** Rejects if `work` takes over `ms`. A late result or rejection from `work` is ignored. */
+function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Could not ${what} within ${ms / 1000} s.`)), ms)
+  })
+  work.catch(() => undefined)
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer))
 }
 
 function assertWholeNumber(name: string, value: number): void {

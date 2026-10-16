@@ -4,8 +4,26 @@ import { EnvironmentError } from '../server/errors.js'
 import { getServer } from '../server/server.js'
 import { capturePng } from './capture.js'
 
-const MAP_DATA_FIX =
-  'Check the internet connection. Map tiles come from tiles.openfreemap.org, and Mapper caches them after the first load.'
+/**
+ * How long loading a scene into a page may take. The page gives up on its own style after 60 s with a message that says
+ * what failed, so this is longer, to let that message arrive first.
+ */
+export const LOAD_TIMEOUT_MS = 70_000
+
+/**
+ * The fix for a map-data failure, by the source that failed. The message names the failing URL, and the local tile
+ * proxy keeps each source under its own path: `/tiles/satellite/` (EOX) and `/tiles/terrain/` (AWS Terrarium). Anything
+ * else is the OpenFreeMap vector tiles, glyphs or style.
+ */
+export function mapDataFix(message: string): string {
+  if (message.includes('/tiles/satellite/')) {
+    return 'Check the internet connection. Satellite imagery comes from tiles.maps.eox.at, and Mapper caches it after the first load.'
+  }
+  if (message.includes('/tiles/terrain/')) {
+    return 'Check the internet connection. Terrain comes from the elevation tiles on s3.amazonaws.com, and Mapper caches them after the first load.'
+  }
+  return 'Check the internet connection. Map tiles come from tiles.openfreemap.org, and Mapper caches them after the first load.'
+}
 
 /**
  * Errors from the page reach Node as text. This turns render mode's map-data failure back into a typed error with a
@@ -15,7 +33,8 @@ export function pageError(e: unknown): unknown {
   if (!(e instanceof Error)) return e
   const at = e.message.indexOf(MAP_DATA_ERROR)
   if (at < 0) return e
-  return new EnvironmentError(e.message.slice(at).split('\n', 1)[0]!, MAP_DATA_FIX)
+  const message = e.message.slice(at).split('\n', 1)[0]!
+  return new EnvironmentError(message, mapDataFix(message))
 }
 
 const rethrowTyped = (e: unknown): never => {

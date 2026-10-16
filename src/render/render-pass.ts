@@ -3,19 +3,27 @@ import path from 'node:path'
 import type { Browser } from 'playwright'
 import {
   frameSize,
+  MAX_TERRAIN_SETTLES,
   outputScale,
   type Aspect,
   type Project,
   type RenderPageOptions,
   type SeaPaths,
+  usesElevation,
 } from '../core/index.js'
 import { Encoder, ffmpegArgs, joinSegments, pickH264Encoder, type Codec, type H264Encoder, type ProresProfile } from './encode.js'
 import { RenderCancelled, RenderError } from './errors.js'
 import type { CompletedPass, MediaKind, PlannedScene, RenderPass } from './export-types.js'
-import { RenderPage } from './page.js'
+import { LOAD_TIMEOUT_MS, RenderPage } from './page.js'
 
 /** How long one `renderFrame` or `capturePng` may take before the pass fails. */
-const STEP_TIMEOUT_MS = 60_000
+export const STEP_TIMEOUT_MS = 60_000
+/**
+ * How long one terrain frame may take. The page waits for the map to go idle once to show the frame and up to
+ * `MAX_TERRAIN_SETTLES` more times to place the camera, and each wait has its own 60 s limit. This budget outlasts them
+ * all, so the page's own timeout fires first, with the clearer message.
+ */
+export const TERRAIN_FRAME_TIMEOUT_MS = (MAX_TERRAIN_SETTLES + 2) * 60_000 + 10_000
 /** How many times one pass may reopen the page and carry on. The next failure fails the render. */
 const MAX_RECOVERIES = 3
 
@@ -130,10 +138,20 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
   const openPage = async (faults: { faultAtFrame?: number; faultAfterRenderFrame?: number } = {}) => {
     const opened = await deps.openPage({ browser, aspect: output.aspect })
     loading = opened
+    const failed = new Promise<never>((_, reject) => {
+      opened.onCrash(() => reject(new Error('the render page crashed or lost its WebGL context')))
+    })
+    failed.catch(() => undefined)
     try {
       throwIfAborted(signal)
       const unsettled = args.forceUnsettledAt === undefined ? {} : { forceUnsettledAt: args.forceUnsettledAt }
-      const frameCount = await opened.load(project, outputScale(output), { layer: pass.layer, scene: scene.id, seaPaths, ...faults, ...unsettled })
+      // The page's own errors (a map-data failure with its fix) pass through as they are.
+      const frameCount = await step(
+        opened.load(project, outputScale(output), { layer: pass.layer, scene: scene.id, seaPaths, ...faults, ...unsettled }),
+        'load the scene',
+        failed,
+        { budgetMs: LOAD_TIMEOUT_MS, keepErrors: true },
+      )
       if (frameCount !== scene.totalFrames) {
         throw new Error(`The render page counted ${frameCount} frames, but the timeline has ${scene.totalFrames}.`)
       }
@@ -143,10 +161,6 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
     } finally {
       loading = undefined
     }
-    const failed = new Promise<never>((_, reject) => {
-      opened.onCrash(() => reject(new Error('the render page crashed or lost its WebGL context')))
-    })
-    failed.catch(() => undefined)
     page = opened
     pageFailed = failed
   }
@@ -187,12 +201,13 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
       }
     }
 
+    const frameBudget = usesElevation(scene.scene.look) ? TERRAIN_FRAME_TIMEOUT_MS : STEP_TIMEOUT_MS
     let n = fromFrame
     while (n < toFrame) {
       let png: Buffer
       let settled: boolean
       try {
-        settled = (await step(page!.renderFrame(n), `render frame ${n}`, pageFailed)).settled
+        settled = (await step(page!.renderFrame(n), `render frame ${n}`, pageFailed, { budgetMs: frameBudget })).settled
         png = await step(page!.capturePng(), `capture frame ${n}`, pageFailed)
         // The context can go after the frame was painted. The capture may then be a correctly sized blank map, and the
         // loss event may not have reached Node yet, so ask the page before trusting the PNG.
@@ -267,15 +282,22 @@ export function throwIfAborted(signal: AbortSignal | undefined): void {
 
 /**
  * Waits for `work`, which does `what` (e.g. "render frame 12"), and fails with an error naming it if `work` rejects,
- * `pageFailed` rejects or it takes over 60 s. A late rejection from `work` is ignored, since the step has already
- * failed by then.
+ * `pageFailed` rejects or it takes over `budgetMs` (default 60 s). With `keepErrors`, a rejection of `work` or
+ * `pageFailed` passes through as it is, for errors that already say what they are. A late rejection from `work` is
+ * ignored, since the step has already failed by then.
  */
-function step<T>(work: Promise<T>, what: string, pageFailed: Promise<never>): Promise<T> {
+function step<T>(
+  work: Promise<T>,
+  what: string,
+  pageFailed: Promise<never>,
+  { budgetMs = STEP_TIMEOUT_MS, keepErrors = false }: { budgetMs?: number; keepErrors?: boolean } = {},
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Could not ${what} within ${STEP_TIMEOUT_MS / 1000} s.`)), STEP_TIMEOUT_MS)
+    timer = setTimeout(() => reject(new Error(`Could not ${what} within ${budgetMs / 1000} s.`)), budgetMs)
   })
   const named = Promise.race([work, pageFailed]).catch((e: unknown) => {
+    if (keepErrors) throw e
     throw new Error(`Could not ${what}: ${errorMessage(e)}`, { cause: e })
   })
   named.catch(() => undefined)

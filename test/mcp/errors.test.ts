@@ -25,6 +25,8 @@ vi.mock('playwright', () => ({
 const BUG_FIX = 'This looks like a bug in Mapper'
 const FIXES = {
   mapData: 'Check the internet connection. Map tiles come from tiles.openfreemap.org, and Mapper caches them after the first load.',
+  satellite: 'Check the internet connection. Satellite imagery comes from tiles.maps.eox.at, and Mapper caches it after the first load.',
+  terrain: 'Check the internet connection. Terrain comes from the elevation tiles on s3.amazonaws.com, and Mapper caches them after the first load.',
   chrome: 'Install Google Chrome, or run: npx playwright install chromium',
   ffmpeg: 'brew install ffmpeg',
   h264: 'Install an ffmpeg build with h264_videotoolbox or libx264: brew reinstall ffmpeg',
@@ -102,6 +104,27 @@ describe('environment failures say what to do', () => {
     // Anything else from the page is passed on as it is.
     const other = new Error('page.evaluate: RangeError: Frame 900 is outside 0 to 299.')
     expect(pageError(other)).toBe(other)
+  })
+
+  test('the fix names the satellite source', () => {
+    const e = pageError(new Error(`${MAP_DATA_ERROR}: AJAXError: Forbidden (403): http://127.0.0.1:1/tiles/satellite/3/4/2.jpg`))
+    expect(e).toBeInstanceOf(EnvironmentError)
+    expectFix(errorText(e, 'preview_frame'), FIXES.satellite)
+  })
+
+  test('the fix names the terrain source', () => {
+    const e = pageError(new Error(`${MAP_DATA_ERROR}: AJAXError: Forbidden (403): http://127.0.0.1:1/tiles/terrain/3/4/2.png`))
+    expect(e).toBeInstanceOf(EnvironmentError)
+    expectFix(errorText(e, 'preview_frame'), FIXES.terrain)
+  })
+
+  test('the fix names OpenFreeMap otherwise', () => {
+    for (const url of ['http://127.0.0.1:1/tiles/planet/3/4/2.pbf', 'http://127.0.0.1:1/tiles/fonts/Noto/0-255.pbf', '']) {
+      const e = pageError(new Error(`${MAP_DATA_ERROR}: AJAXError: Forbidden (403): ${url}`))
+      expectFix(errorText(e, 'preview_frame'), FIXES.mapData)
+    }
+    // The style timeout names no URL.
+    expectFix(errorText(pageError(new Error(`${MAP_DATA_ERROR} the map style did not load within 60 s.`)), 'render'), FIXES.mapData)
   })
 
   test('no Chrome', async () => {

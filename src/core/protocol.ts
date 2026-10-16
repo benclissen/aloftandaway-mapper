@@ -6,6 +6,12 @@ import type { SeaPaths } from './sea.js'
 export const MAP_DATA_ERROR = 'The map could not load its data'
 
 /**
+ * At most this many extra camera placements over terrain before a frame counts as settled. The page places the camera
+ * this often, waiting for the map to go idle each time, so Node sizes a terrain frame's time budget from it.
+ */
+export const MAX_TERRAIN_SETTLES = 4
+
+/**
  * Messages the server sends to the studio. `origin` is the client id of the studio whose patch made this version, when
  * a studio made it; a version written any other way (the agent, the CLI) has none.
  */

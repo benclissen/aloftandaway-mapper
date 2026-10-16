@@ -111,7 +111,7 @@ export { joinParts } from './render-pass.js'
 /**
  * Renders the project in `folder` to `renders/<YYYY-MM-DD-HHmmss>/`, one pass per requested layer, with a
  * `manifest.json`. With no `layers`, that is the flattened `all.mp4` (H.264, the default) or, with `codec: 'prores'`, `all.mov` (ProRes 422 HQ). Isolated
- * layers go to `01-<project>/map.mov` (422 HQ), `route.mov` and `signs.mov` (4444 with alpha); `preview` is
+ * layers go to `01-<scene>/map.mov` (422 HQ), `route.mov` and `signs.mov` (4444 with alpha); `preview` is
  * `preview.mp4`. Every pass covers the same frames.
  *
  * The project is read once, so later edits don't affect a running render. Each pass recovers from page faults on its

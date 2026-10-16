@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { WebSocket } from 'ws'
-import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, seaLegKey, validateProject, type LandSource, type LngLat, type Project, type ServerMessage } from '../../src/core/index.js'
+import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, seaLegKey, STALE_BASE_MESSAGE, validateProject, type LandSource, type LngLat, type Project, type ServerMessage } from '../../src/core/index.js'
 import { PROJECT_FILE, createProject, loadProject, mutateProject, saveProject } from '../../src/server/store.js'
 import { getServer, startServer, type MapperServer } from '../../src/server/server.js'
 
@@ -407,6 +407,26 @@ describe('websocket sync', () => {
     expect(reply.status).toBe(409)
     expect(reply.json().error.message).toBe('The project changed since the studio last saw it.')
     expect(await readFile(file, 'utf8')).toBe(before)
+  })
+
+  test.each([
+    ['update_leg', { op: 'update_leg', index: 0, changes: { symbol: 'ferry' } }, (p: Project) => p.scenes[0]!.legs[0]!.symbol],
+    ['insert_via', { op: 'insert_via', leg: 0, index: 0, point: { at: [24.5, 37.7] } }, (p: Project) => p.scenes[0]!.legs[0]!.via.length],
+  ])('a stale %s is refused with 409 and nothing changes', async (_, op, observe) => {
+    const stale = (await loadProject(folder)).updatedAt
+    await mutateProject(folder, (p) => ({ ...p, name: 'From the agent' }))
+    const file = path.join(folder, PROJECT_FILE)
+    const before = await readFile(file, 'utf8')
+    const reply = await patchProject({ ops: [op] }, { 'X-Mapper-Base': stale })
+    expect(reply.status).toBe(409)
+    expect(reply.json().error.message).toBe(STALE_BASE_MESSAGE)
+    expect(await readFile(file, 'utf8')).toBe(before)
+    // The same op is fine against the current version, so the refusal was the base and nothing else.
+    const unchanged = observe(await loadProject(folder))
+    const current = (await loadProject(folder)).updatedAt
+    const applied = await patchProject({ ops: [op] }, { 'X-Mapper-Base': current })
+    expect(applied.status).toBe(200)
+    expect(observe(await loadProject(folder))).not.toEqual(unchanged)
   })
 
   test('patch with the current base applies', async () => {

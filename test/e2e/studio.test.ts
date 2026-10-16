@@ -1489,6 +1489,40 @@ describe('index edits', () => {
     }
   })
 
+  test('a transport change after an unseen agent write is refused', async () => {
+    // The studio's WebSocket runs through here, so the test can hold the server's messages back.
+    let holding = false
+    const held: Array<string | Buffer> = []
+    let toPage: WebSocketRoute | undefined
+    const { page, folder, file, close } = await openWithVia((ws) => {
+      const server = ws.connectToServer()
+      server.onMessage((m) => (holding ? held.push(m) : ws.send(m)))
+      toPage = ws
+    })
+    try {
+      // The agent puts a via point in front of leg 1's, and the studio doesn't hear of it.
+      holding = true
+      await agentInsertsVia(folder, AGENT_VIA)
+      const saved = await readFile(file, 'utf8')
+      expect(sceneOf(await loadProject(folder)).legs[1]!.symbol).toBeUndefined()
+
+      await page.getByTestId('leg-symbol-1').selectOption('ferry')
+      await page.getByRole('alert').filter({ hasText: ROUTE_CHANGED }).waitFor({ timeout: 5000 })
+      await page.waitForTimeout(300)
+      expect(await readFile(file, 'utf8')).toBe(saved)
+      expect(sceneOf(await loadProject(folder)).legs[1]!.via.map((v) => v.at)).toEqual([AGENT_VIA, VIA])
+
+      // Once the messages arrive, the studio shows the agent's version and the picker is back on the default.
+      holding = false
+      for (const m of held.splice(0)) toPage!.send(m)
+      await page.getByTestId('via-marker-1-1').waitFor()
+      await expect.poll(() => page.getByTestId('leg-symbol-1').inputValue()).toBe('')
+      expect(await readFile(file, 'utf8')).toBe(saved)
+    } finally {
+      await close()
+    }
+  })
+
   test('a via drag after an unseen agent write is refused and the handle goes back', async () => {
     const project = wholeRoute(greekIslands())
     sceneOf(project).legs[1]!.via = [{ at: [25.6, 36.95] }]

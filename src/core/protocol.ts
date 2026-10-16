@@ -49,4 +49,6 @@ export interface RenderPageOptions {
   seaPaths?: SeaPaths
   faultAtFrame?: number
   faultAfterRenderFrame?: number
+  /** Test hook: this frame reports `settled: false`, as a terrain frame whose camera height never held would. */
+  forceUnsettledAt?: number
 }

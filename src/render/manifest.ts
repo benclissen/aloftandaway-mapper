@@ -43,6 +43,11 @@ export interface ExportManifest {
   chrome?: { channel: string; webgl: string }
   fcpxml?: string
   fcpxmlValidation?: 'passed' | 'skipped-no-fcp'
+  /**
+   * What may be wrong with the render without failing it, one line each, as the render result words them. Only
+   * written when there are any; manifests from before warnings existed have none.
+   */
+  warnings?: string[]
   error?: string
   // Stage 1 fields, kept for renders of the flattened clip of one scene alone.
   codec?: Codec
@@ -70,6 +75,8 @@ export interface ManifestInput {
   renderedAt: string
   chrome?: { channel: string; webgl: string }
   fcpxml?: { name: string; validation: 'passed' | 'skipped-no-fcp' }
+  /** The render's warnings so far. Left out of the manifest when empty. */
+  warnings?: string[]
   error?: string
 }
 
@@ -115,6 +122,7 @@ export function buildManifest(input: ManifestInput): ExportManifest {
         }
       : {}),
     ...(input.fcpxml && { fcpxml: input.fcpxml.name, fcpxmlValidation: input.fcpxml.validation }),
+    ...(input.warnings && input.warnings.length > 0 && { warnings: input.warnings }),
     ...(input.error !== undefined && { error: input.error }),
   }
 }

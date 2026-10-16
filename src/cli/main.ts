@@ -209,6 +209,7 @@ async function renderCommand(args: string[]): Promise<number> {
   let rendering: Promise<unknown> = Promise.resolve()
   let renderDir: string | undefined
   const finished: CompletedOutput[] = []
+  let warnings: string[] = []
   /** Set once the command is ending by itself, so the shutdown callback knows no signal cancelled it. */
   let ending = false
   const shutdown = installShutdown(async () => {
@@ -218,7 +219,7 @@ async function renderCommand(args: string[]): Promise<number> {
     // The signal handler exits right after this, so what the render left behind is reported here, to stderr.
     // exit() runs this callback too, when the render succeeded or failed; those paths report for themselves.
     if (ending) return
-    console.error(['Cancelled.', ...(await leftover({ outputs: finished, dir: renderDir }))].join('\n'))
+    console.error(['Cancelled.', ...(await leftover({ outputs: finished, dir: renderDir, warnings }))].join('\n'))
   }, SIGNAL_EXIT)
 
   let lastProgress = 0
@@ -239,6 +240,9 @@ async function renderCommand(args: string[]): Promise<number> {
       onOutput: (output) => {
         addOutput(finished, output)
       },
+      onWarnings: (lines) => {
+        warnings = lines
+      },
       onProgress: (p) => {
         const now = Date.now()
         if (now - lastProgress < PROGRESS_INTERVAL_MS) return
@@ -253,7 +257,7 @@ async function renderCommand(args: string[]): Promise<number> {
     // Set before printing: a signal that arrives while the report prints did not cancel this render.
     ending = true
     // What the render left behind goes to stderr, as the MCP render_status reports it. stdout stays empty.
-    console.error([errorText(e, 'render'), ...(await leftover({ outputs: finished, dir: renderDir }))].join('\n'))
+    console.error([errorText(e, 'render'), ...(await leftover({ outputs: finished, dir: renderDir, warnings }))].join('\n'))
     return exit(shutdown, 1)
   }
   // The render has finished, so a signal from here on is not a cancel.

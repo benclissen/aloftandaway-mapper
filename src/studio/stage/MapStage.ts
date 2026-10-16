@@ -283,9 +283,10 @@ export class MapStage {
   /**
    * Shows frame `n`: the route drawn up to the head, the camera (unless `camera: false`) and the overlay. Resolves
    * once the map has every tile loaded and the frame is painted. Rejects if map data failed to load since the last
-   * frame, since the frame would then be missing part of the map.
+   * frame, since the frame would then be missing part of the map. `settled` is false when the camera's height over
+   * terrain was still changing after every placement `settleOnTerrain` allows, so the frame may differ between renders.
    */
-  showFrame(n: number, opts: { camera?: boolean } = {}): Promise<void> {
+  showFrame(n: number, opts: { camera?: boolean } = {}): Promise<{ settled: boolean }> {
     return this.enqueue(async () => {
       const { project, scene, route, timeline } = this.require()
       const state = timeline.stateAt(n)
@@ -302,10 +303,11 @@ export class MapStage {
       // Makes the map render, and so go idle, even when nothing above changed.
       this.map.triggerRepaint()
       await settled
-      if (shot && terrain) await this.settleOnTerrain(shot)
+      const onTerrain = shot && terrain ? await this.settleOnTerrain(shot) : true
       this.drawOverlay(state)
       // Let the compositor take the overlay before anyone captures the page.
       await nextAnimationFrame()
+      return { settled: onTerrain }
     })
   }
 
@@ -362,9 +364,9 @@ export class MapStage {
     return this.loaded
   }
 
-  private enqueue(task: () => Promise<void>): Promise<void> {
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
     const run = this.queue.then(task)
-    this.queue = run.catch(() => undefined)
+    this.queue = run.then(() => undefined, () => undefined)
     return run
   }
 
@@ -381,23 +383,23 @@ export class MapStage {
    * place the camera again on the tiles now loaded, and again after the tiles that view needs, until the centre's
    * elevation holds. Then redraw the terrain from scratch: MapLibre keeps each terrain tile's drawing until that tile
    * changes, so a tile whose edges were filled in from a neighbour that loaded after it still shows its old edges.
+   * Resolves false when the elevation was still changing after `MAX_TERRAIN_SETTLES` placements.
    */
-  private async settleOnTerrain(shot: Shot): Promise<void> {
-    for (let i = 0; i < MAX_TERRAIN_SETTLES; i++) {
+  private async settleOnTerrain(shot: Shot): Promise<boolean> {
+    let held = false
+    for (let i = 0; i < MAX_TERRAIN_SETTLES && !held; i++) {
       const elevation = this.map.getCenterElevation()
       const settled = this.settled()
       this.map.jumpTo(shot)
       this.map.triggerRepaint()
       await settled
-      if (this.map.getCenterElevation() === elevation) break
-      if (i === MAX_TERRAIN_SETTLES - 1) {
-        console.warn(`The camera's height over terrain was still changing after ${MAX_TERRAIN_SETTLES} placements; this frame may differ between renders.`)
-      }
+      held = this.map.getCenterElevation() === elevation
     }
     const redrawn = this.settled()
     redrawTerrain(this.map)
     this.map.triggerRepaint()
     await redrawn
+    return held
   }
 
   /** Resolves when the map next goes idle, or rejects on a map error or after the timeout. */

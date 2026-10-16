@@ -10,7 +10,7 @@ import { type Project } from '../../src/core/index.js'
 import { cancelRender, renderStatus, startRenderJob, type RenderStatus } from '../../src/render/jobs.js'
 import { closePreviews, previewFrame } from '../../src/render/preview.js'
 import { frameRange, RenderCancelled, renderProject, type CompletedOutput } from '../../src/render/render.js'
-import { leftover } from '../../src/mcp/tools.js'
+import { leftover, statusSummary } from '../../src/mcp/tools.js'
 import { getServer } from '../../src/server/server.js'
 import { createProject, loadProject, mutateProject, projectHash, saveProject } from '../../src/server/store.js'
 import { greekIslands, projectWithScenes, sceneOf } from '../fixtures/projects.js'
@@ -172,6 +172,24 @@ test('renders the starting snapshot', async () => {
   expect(diffOriginal, `${diffOriginal} px differ from the original`).toBeLessThan(pixels * 0.0005)
   expect(diffEdited, `${diffEdited} px differ from the edited project`).toBeGreaterThan(pixels * 0.005)
 })
+
+test('a terrain frame that never settles is reported', async () => {
+  const folder = await writeFolder(greekIslands())
+  // Two layers on two pages each report frame 12; the warning names it once.
+  const jobId = startRenderJob({ folder, layers: ['map', 'route'], range: { from: 0, to: 1 }, forceUnsettledAt: 12 })
+  const status = await waitFor(jobId, (s) => s.state === 'done')
+  const line =
+    "Frame 12: the camera height over terrain hadn't settled, so this frame may differ slightly between renders and between layers."
+  expect(status.result!.warnings).toEqual([line])
+  expect(status.warnings).toEqual([line])
+  expect(readManifest(status.result!.manifest).warnings).toEqual([line])
+  expect((await statusSummary(status)).split('\n').slice(-2)).toEqual(['Warnings:', line])
+
+  // A clean render reports none, and its manifest has no warnings key.
+  const clean = await renderProject({ folder, range: { from: 0, to: 0.2 } })
+  expect(clean.warnings).toEqual([])
+  expect(readManifest(clean.manifest)).not.toHaveProperty('warnings')
+}, 120_000)
 
 test('cancel stops the job', async () => {
   const folder = await writeFolder(greekIslands())

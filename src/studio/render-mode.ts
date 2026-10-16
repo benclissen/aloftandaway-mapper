@@ -18,8 +18,12 @@ export interface MapperPage {
   ): Promise<{ frameCount: number }>
   /** 0 until a project is loaded. */
   readonly frameCount: number
-  /** Shows frame `n` and resolves once it is fully painted. */
-  renderFrame(n: number): Promise<void>
+  /**
+   * Shows frame `n` and resolves once it is fully painted. `settled` is false when the camera's height over terrain
+   * never held still, so the frame may differ slightly between renders and between layers. `forceUnsettledAt`, a test
+   * hook given to `load`, makes that frame report false every time it is shown.
+   */
+  renderFrame(n: number): Promise<{ settled: boolean }>
   /** True when the map's WebGL context has been lost, so a frame captured now may be blank. */
   contextLost(): boolean
   /**
@@ -68,13 +72,14 @@ export function startRenderMode(root: HTMLElement): void {
   let stopWatchingContext: (() => void) | undefined
   let faultAtFrame: number | undefined
   let faultAfterRenderFrame: number | undefined
+  let forceUnsettledAt: number | undefined
 
   window.mapper = {
     ready,
     get frameCount() {
       return stage ? stage.frameCount : 0
     },
-    async load(input, { pixelRatio, layer = 'all', scene: sceneId, seaPaths, faultAtFrame: fault, faultAfterRenderFrame: faultAfter }) {
+    async load(input, { pixelRatio, layer = 'all', scene: sceneId, seaPaths, faultAtFrame: fault, faultAfterRenderFrame: faultAfter, forceUnsettledAt: unsettled }) {
       if (!(pixelRatio > 0)) throw new RangeError(`pixelRatio must be positive, got ${pixelRatio}`)
       const project = parseProject(input)
       // Checked before the stage is touched, so a bad id leaves the loaded scene as it was.
@@ -95,6 +100,7 @@ export function startRenderMode(root: HTMLElement): void {
       }
       faultAtFrame = fault
       faultAfterRenderFrame = faultAfter
+      forceUnsettledAt = unsettled
       await stage.load(project, sceneId, seaPaths)
       return { frameCount: stage.frameCount }
     },
@@ -107,13 +113,14 @@ export function startRenderMode(root: HTMLElement): void {
         faultAtFrame = undefined
         loseGlContext(stage.map.getCanvas())
       }
-      await stage.showFrame(n)
+      const { settled } = await stage.showFrame(n)
       if (n === faultAfterRenderFrame) {
         faultAfterRenderFrame = undefined
         // Unreported, as if the loss event were still on its way to Node: only contextLost() can show it.
         stopWatchingContext?.()
         loseGlContext(stage.map.getCanvas())
       }
+      return { settled: settled && n !== forceUnsettledAt }
     },
     project(at) {
       if (!stage) throw new Error('Call mapper.load(project) before project.')

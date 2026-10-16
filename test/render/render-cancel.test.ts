@@ -178,7 +178,7 @@ describe('cancelling a pass', () => {
         await closing
         throw new Error('page.evaluate: Target page, context or browser has been closed')
       },
-      renderFrame: async () => undefined,
+      renderFrame: async () => ({ settled: true }),
       capturePng: async () => Buffer.alloc(0),
       contextLost: async () => false,
       onCrash: () => undefined,

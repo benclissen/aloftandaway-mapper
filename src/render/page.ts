@@ -29,7 +29,7 @@ interface MapperHandle {
     project: Project,
     opts: { pixelRatio: number } & RenderPageOptions,
   ): Promise<{ frameCount: number }>
-  renderFrame(n: number): Promise<void>
+  renderFrame(n: number): Promise<{ settled: boolean }>
   contextLost(): boolean
 }
 
@@ -74,7 +74,8 @@ export class RenderPage {
 
   /**
    * Loads the project into the map. Resolves to the frame count. `faultAtFrame` and `faultAfterRenderFrame` are test hooks
-   * that lose the WebGL context while that frame is rendered, or just after it has been painted.
+   * that lose the WebGL context while that frame is rendered, or just after it has been painted; `forceUnsettledAt`
+   * makes that frame report `settled: false`.
    */
   async load(
     project: Project,
@@ -96,9 +97,13 @@ export class RenderPage {
     return frameCount
   }
 
-  /** Shows frame `n` and resolves once it is fully painted. Rejects with an `EnvironmentError` if map data failed to load. */
-  async renderFrame(n: number): Promise<void> {
-    await this.page
+  /**
+   * Shows frame `n` and resolves once it is fully painted. `settled` is false when the camera's height over terrain
+   * never held still, so the frame may differ slightly between renders. Rejects with an `EnvironmentError` if map data
+   * failed to load.
+   */
+  async renderFrame(n: number): Promise<{ settled: boolean }> {
+    return this.page
       .evaluate((frame) => (globalThis as unknown as { mapper: MapperHandle }).mapper.renderFrame(frame), n)
       .catch(rethrowTyped)
   }

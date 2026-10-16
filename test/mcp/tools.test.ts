@@ -562,6 +562,29 @@ describe('tools', () => {
     })
   })
 
+  test('a preview of an unsettled frame says so', async () => {
+    const folder = path.join(tmp, 'unsettled-preview')
+    const only = { id: 'a', position: 1, name: 'Drive' }
+    const line = "Frame 3: the camera height over terrain hadn't settled, so this frame may differ slightly between renders and between layers."
+    vi.mocked(previewFrame).mockResolvedValue({ png: Buffer.from('png'), path: '/p/frame-3.png', frame: 3, seconds: 0.12, scene: only, warnings: [line] })
+    const frame = await call('preview_frame', { folder, at: { frame: 3 } })
+    expect(text(frame).split('\n').slice(0, 2)).toEqual(['Frame 3 at 0.12 s, 960 px wide. Saved to /p/frame-3.png', line])
+    expect((frame.structuredContent as { warnings: unknown }).warnings).toEqual([line])
+
+    const sheetLine = line.replace('Frame 3', 'Frames 0 and 3').replace('this frame', 'these frames')
+    vi.mocked(contactSheet).mockResolvedValue({
+      png: Buffer.from('png'), path: '/p/contact.png', frames: [{ frame: 0, seconds: 0 }, { frame: 3, seconds: 0.12 }], scene: only, warnings: [sheetLine],
+    })
+    const sheet = await call('preview_contact_sheet', { folder, count: 2 })
+    expect(text(sheet).split('\n').slice(0, 2)).toEqual(['Contact sheet of 2 frames, 1920 px wide. Saved to /p/contact.png', sheetLine])
+
+    // A settled preview adds nothing.
+    vi.mocked(previewFrame).mockResolvedValue({ png: Buffer.from('png'), path: '/p/frame-3.png', frame: 3, seconds: 0.12, scene: only })
+    const settled = await call('preview_frame', { folder, at: { frame: 3 } })
+    expect(text(settled)).not.toContain('settled')
+    expect(settled.structuredContent).not.toHaveProperty('warnings')
+  })
+
   test('render rejects a project with errors and lists the fixes', async () => {
     const folder = path.join(tmp, 'p')
     await call('create_project', { folder, name: 'P' })
@@ -669,6 +692,39 @@ describe('render summaries', () => {
   test('the done summary names the default MP4 as the video', async () => {
     const summary = await doneSummary({ video: '/r/all.mp4', outputs: [], sceneStarts: [], frames: 25, renderFps: 10, manifest: '/nonexistent/manifest.json', dir: '/r' } as never)
     expect(summary).toContain('Video: /r/all.mp4')
+  })
+
+  test('a clean render has no warnings line', async () => {
+    const result = { dir: '/r', manifest: '/nonexistent/manifest.json', video: '/r/all.mp4', frames: 25, renderFps: 10, fps: { num: 25, den: 1 }, outputs: [], sceneStarts: [], warnings: [] }
+    const done = await doneSummary(result as never)
+    expect(done).not.toContain('Warning')
+    expect(done.split('\n').at(-1)).toMatch(/^Credit required: /)
+    expect(await statusSummary({ jobId: 'j', state: 'done', result } as never)).toBe(done)
+    const running: RenderStatus = { jobId: 'j', state: 'running', progress: { frame: 1, totalFrames: 25, fps: 10, etaSeconds: 2 } }
+    expect(await statusSummary(running)).toBe('Frame 1 of 25 · 10.0 fps · under a minute left')
+    const failed = await statusSummary({ jobId: 'j', state: 'failed', error: 'Boom.', dir: '/nonexistent/render', outputs: [] })
+    expect(failed).not.toContain('Warning')
+    expect(failed.split('\n').at(-1)).toMatch(/^Credit required: /)
+  })
+
+  test('a render with unsettled frames lists them', async () => {
+    const warnings = [
+      "Scene 1 of 2 · Drive: frames 12, 13 and 40: the camera height over terrain hadn't settled, so these frames may differ slightly between renders and between layers.",
+      "Scene 2 of 2 · Sail: frame 3: the camera height over terrain hadn't settled, so this frame may differ slightly between renders and between layers.",
+    ]
+    const block = ['Warnings:', ...warnings]
+    const result = { dir: '/r', manifest: '/nonexistent/manifest.json', video: '/r/all.mp4', frames: 25, renderFps: 10, fps: { num: 25, den: 1 }, outputs: [], sceneStarts: [], warnings }
+    const done = await doneSummary(result as never)
+    expect(done.split('\n').slice(-3)).toEqual(block)
+    expect(await statusSummary({ jobId: 'j', state: 'done', result, warnings } as never)).toBe(done)
+    const running = await statusSummary({ jobId: 'j', state: 'running', progress: { frame: 1, totalFrames: 25, fps: 10, etaSeconds: 2 }, warnings })
+    expect(running.split('\n')).toEqual(['Frame 1 of 25 · 10.0 fps · under a minute left', ...block])
+    for (const state of ['failed', 'cancelled'] as const) {
+      const summary = await statusSummary({ jobId: 'j', state, error: 'Boom.', dir: '/nonexistent/render', outputs: [], warnings })
+      expect(summary.split('\n').slice(-3), state).toEqual(block)
+    }
+    // The CLI reports a failed or cancelled render with leftover, so it gets the same lines.
+    expect((await leftover({ dir: '/nonexistent/render', outputs: [], warnings })).slice(-3)).toEqual(block)
   })
 
   test('leftover labels outputs by what was requested', async () => {

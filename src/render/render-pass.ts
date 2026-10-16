@@ -29,7 +29,7 @@ export const MEDIA: Record<MediaKind, { codec: Codec; proresProfile?: ProresProf
 /** The parts of `RenderPage` a pass uses. */
 export interface PassPage {
   load(project: Project, pixelRatio: number, opts?: RenderPageOptions): Promise<number>
-  renderFrame(n: number): Promise<void>
+  renderFrame(n: number): Promise<{ settled: boolean }>
   capturePng(): Promise<Buffer>
   contextLost(): Promise<boolean>
   onCrash(cb: () => void): void
@@ -68,10 +68,17 @@ export interface RenderPassArgs {
   signal?: AbortSignal
   /** Called with the frames of this pass handed to the encoder so far, and with the pass's frame count at the end. */
   onFrame?: (completed: number) => void
+  /**
+   * Called with each frame handed to the encoder whose camera height over terrain never held still, so it may differ
+   * slightly between renders and between layers.
+   */
+  onUnsettled?: (frame: number) => void
   /** Test hook: loses the page's WebGL context the first time this frame is rendered. First page of the pass only. */
   faultAtFrame?: number
   /** Test hook: loses the context just after this frame is painted, before it is captured. First page only. */
   faultAfterRenderFrame?: number
+  /** Test hook: every page of the pass reports this frame as unsettled. */
+  forceUnsettledAt?: number
   /** The H.264 encoder for an `h264` pass. Picked here when left out. */
   h264Encoder?: H264Encoder
 }
@@ -125,7 +132,8 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
     loading = opened
     try {
       throwIfAborted(signal)
-      const frameCount = await opened.load(project, outputScale(output), { layer: pass.layer, scene: scene.id, seaPaths, ...faults })
+      const unsettled = args.forceUnsettledAt === undefined ? {} : { forceUnsettledAt: args.forceUnsettledAt }
+      const frameCount = await opened.load(project, outputScale(output), { layer: pass.layer, scene: scene.id, seaPaths, ...faults, ...unsettled })
       if (frameCount !== scene.totalFrames) {
         throw new Error(`The render page counted ${frameCount} frames, but the timeline has ${scene.totalFrames}.`)
       }
@@ -182,8 +190,9 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
     let n = fromFrame
     while (n < toFrame) {
       let png: Buffer
+      let settled: boolean
       try {
-        await step(page!.renderFrame(n), `render frame ${n}`, pageFailed)
+        settled = (await step(page!.renderFrame(n), `render frame ${n}`, pageFailed)).settled
         png = await step(page!.capturePng(), `capture frame ${n}`, pageFailed)
         // The context can go after the frame was painted. The capture may then be a correctly sized blank map, and the
         // loss event may not have reached Node yet, so ask the page before trusting the PNG.
@@ -204,6 +213,8 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
         encoder = deps.startEncoder(ffmpegArgs({ ...media, ...size, fps: output.fps, out: part, h264Encoder }))
       }
       if (n > fromFrame) args.onFrame?.(n - fromFrame)
+      // Reported only for the render of the frame that is written, not for one a recovery threw away.
+      if (!settled) args.onUnsettled?.(n)
       writing = encoder.write(png)
       // Rejections are awaited on the next frame; this stops them counting as unhandled until then.
       writing.catch(() => undefined)

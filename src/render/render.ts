@@ -5,6 +5,7 @@ import { performance } from 'node:perf_hooks'
 import {
   fpsValue,
   frameSize,
+  sceneLabel,
   validateProject,
   type Fps,
   type Project,
@@ -24,6 +25,7 @@ import type { CompletedPass, LayerRequest, MediaKind, PlannedJoin, PlannedScene,
 import { buildManifest, renderedFrames, writeManifest, type ExportManifest } from './manifest.js'
 import { publishFcpxml, type PublishedFcpxml } from './publish.js'
 import { errorMessage, joinParts, MEDIA, renderPass, throwIfAborted } from './render-pass.js'
+import { describeWarnings, mergeWarnings, NO_WARNINGS, type RenderWarnings } from './warnings.js'
 
 /** Progress fps is averaged over this many frames. */
 const FPS_WINDOW = 25
@@ -88,6 +90,8 @@ export interface RenderResult {
    * project. Empty when the scenes were not joined.
    */
   sceneStarts: { id: string; name: string; position: number; seconds: number }[]
+  /** What may be wrong with the render without failing it, one line each. Empty for a clean render. */
+  warnings: string[]
 }
 
 export interface RenderArgs {
@@ -113,6 +117,8 @@ export interface RenderArgs {
    * last and replaces them; `addOutput` keeps a list in step.
    */
   onOutput?: (output: CompletedOutput) => void
+  /** Called with every warning so far, as `RenderResult.warnings` words them, each time one is added. */
+  onWarnings?: (warnings: string[]) => void
   signal?: AbortSignal
   /** Test hook: loses the page's WebGL context the first time this frame is rendered. Only the first page gets it. */
   faultAtFrame?: number
@@ -120,6 +126,8 @@ export interface RenderArgs {
   faultAfterRenderFrame?: number
   /** Test hook: the layer whose first page gets the faults above. Defaults to the first layer rendered. */
   faultLayer?: RenderLayer
+  /** Test hook: every page of every pass reports this frame of its scene as unsettled. */
+  forceUnsettledAt?: number
   /** Test hook: validates the FCPXML against this DTD instead of the installed Final Cut Pro one. */
   fcpxmlDtdPath?: string
   /** Test hook: the H.264 encoder to use instead of the one `pickH264Encoder` picks. */
@@ -192,6 +200,20 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     completedWork = done
     progress?.(done, active && { sceneId: active.sceneId, layer: active.layer })
   }
+  /** Warnings by scene id, since frame numbers are per scene. Those of no scene are under `undefined`. */
+  const warnings = new Map<string | undefined, RenderWarnings>()
+  /** On a project of several scenes, each scene's line starts with its label. */
+  const label = (scene: PlannedScene) => (snapshot.scenes.length > 1 ? sceneLabel(snapshot, scene.position - 1) : undefined)
+  const warningLines = () => [
+    ...plan.scenes.flatMap((scene) => describeWarnings(warnings.get(scene.id) ?? NO_WARNINGS, label(scene))),
+    ...describeWarnings(warnings.get(undefined) ?? NO_WARNINGS),
+  ]
+  /** Adds `found` to the render's warnings, under `sceneId` when its frames are a scene's. */
+  const warn = (found: RenderWarnings, sceneId?: string) => {
+    if (found.unsettled.length === 0 && found.other.length === 0) return
+    warnings.set(sceneId, mergeWarnings(warnings.get(sceneId) ?? NO_WARNINGS, found))
+    args.onWarnings?.(warningLines())
+  }
   const makeManifest = (status: ExportManifest['status'], extra: { renderFps?: number; error?: string } = {}): ExportManifest =>
     buildManifest({
       project: snapshot,
@@ -207,6 +229,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
       renderedAt: new Date().toISOString(),
       chrome: launched && { channel: launched.channel, webgl: launched.webgl },
       fcpxml: published,
+      warnings: warningLines(),
       error: extra.error,
     })
   const absolute = (pass: CompletedPass): CompletedOutput => ({ ...pass, path: path.join(dir, pass.path) })
@@ -229,7 +252,15 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
       active = pass
       const base = completedWork
       const faults = pass === faultPass ? { faultAtFrame: args.faultAtFrame, faultAfterRenderFrame: args.faultAfterRenderFrame } : {}
-      const done = await renderPass({ browser, project: snapshot, seaPaths, scene, pass, dir, signal, h264Encoder, ...faults, onFrame: (n) => report(base + n) })
+      const unsettled: number[] = []
+      const done = await renderPass({
+        browser, project: snapshot, seaPaths, scene, pass, dir, signal, h264Encoder, ...faults,
+        forceUnsettledAt: args.forceUnsettledAt,
+        onFrame: (n) => report(base + n),
+        onUnsettled: (n) => unsettled.push(n),
+      })
+      // Only a finished pass's frames count: a failed pass leaves no output for them to be in.
+      warn({ unsettled, other: [] }, scene.id)
       completed.push(done)
       completedWork = base + done.frames
       await writeManifest(manifestFile, makeManifest('running'))
@@ -274,6 +305,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
       sceneStarts: plan.join
         ? plan.scenes.map((scene) => ({ id: scene.id, name: scene.name, position: scene.position, seconds: scene.offsetFrame / fps }))
         : [],
+      warnings: warningLines(),
     }
   } catch (e) {
     if (signal?.aborted) {

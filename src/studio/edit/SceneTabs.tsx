@@ -25,6 +25,8 @@ interface SceneTabsProps {
 const EDGE = 8
 
 interface MenuProps {
+  /** The scene the menu is for. A press on its own ⋯ is left to that button, which closes the menu. */
+  sceneId: string
   at: { x: number; y: number }
   canMoveLeft: boolean
   canMoveRight: boolean
@@ -37,8 +39,8 @@ interface MenuProps {
   onClose(): void
 }
 
-/** The menu for one scene tab. Closes on Escape, a click outside it, or a choice. */
-function SceneMenu({ at, canMoveLeft, canMoveRight, canDelete, onRename, onDuplicate, onMoveLeft, onMoveRight, onDelete, onClose }: MenuProps) {
+/** The menu for one scene tab. Closes on Escape, a click outside it, its own ⋯ again, or a choice. */
+function SceneMenu({ sceneId, at, canMoveLeft, canMoveRight, canDelete, onRename, onDuplicate, onMoveLeft, onMoveRight, onDelete, onClose }: MenuProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState(at)
 
@@ -61,6 +63,7 @@ function SceneMenu({ at, canMoveLeft, canMoveRight, canDelete, onRename, onDupli
     }
     const onDown = (e: MouseEvent) => {
       if (ref.current?.contains(e.target as Node)) return
+      if (e.target instanceof Element && e.target.closest('.scene-more')?.getAttribute('data-scene') === sceneId) return
       onClose()
       // A press on the map must not also edit the route. Anywhere else (another tab, its menu button) it does its job.
       if (e.target instanceof Element && e.target.closest('.stage')) swallowNextClick()
@@ -71,7 +74,7 @@ function SceneMenu({ at, canMoveLeft, canMoveRight, canDelete, onRename, onDupli
       window.removeEventListener('keydown', onKey, true)
       window.removeEventListener('mousedown', onDown, true)
     }
-  }, [onClose])
+  }, [onClose, sceneId])
 
   const choose = (action: () => void) => () => {
     onClose()
@@ -206,9 +209,11 @@ export function SceneTabs({ scenes, activeId, onSelect, onAdd, onRename, onDupli
                 className="scene-more"
                 aria-label="Scene menu"
                 aria-haspopup="menu"
+                aria-expanded={menu?.id === scene.id}
+                data-scene={scene.id}
                 onClick={(e) => {
                   const box = e.currentTarget.getBoundingClientRect()
-                  setMenu({ id: scene.id, at: { x: box.left, y: box.bottom + 4 } })
+                  setMenu((open) => (open?.id === scene.id ? undefined : { id: scene.id, at: { x: box.left, y: box.bottom + 4 } }))
                 }}
               >
                 ⋯
@@ -222,6 +227,7 @@ export function SceneTabs({ scenes, activeId, onSelect, onAdd, onRename, onDupli
       </button>
       {menu && menuScene && (
         <SceneMenu
+          sceneId={menuScene.id}
           at={menu.at}
           canMoveLeft={menuIndex > 0}
           canMoveRight={menuIndex < scenes.length - 1}

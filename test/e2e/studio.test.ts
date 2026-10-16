@@ -912,6 +912,15 @@ describe('scene tabs', () => {
       await menuButton(1).click()
       await page.getByTestId('scene-menu').waitFor()
       expect(await page.getByRole('menuitem', { name: 'Move right' }).isDisabled()).toBe(true)
+
+      // Its own ⋯ closes it, and it stays closed.
+      await menuButton(1).click()
+      await page.getByTestId('scene-menu').waitFor({ state: 'detached' })
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      expect(await page.getByTestId('scene-menu').count()).toBe(0)
+      // A press after that opens it again.
+      await menuButton(1).click()
+      await page.getByTestId('scene-menu').waitFor()
     } finally {
       await close()
     }

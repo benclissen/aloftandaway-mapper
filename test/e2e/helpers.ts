@@ -54,14 +54,27 @@ export function flatTerrainTile(): Buffer {
   return flatTile
 }
 
+let greenTile: Buffer | undefined
+
+/** A 256 px tile of one colour, #5a6b4f: stands in for satellite imagery. */
+function solidTile(): Buffer {
+  if (!greenTile) {
+    const tile = new PNG({ width: 256, height: 256 })
+    for (let i = 0; i < tile.data.length; i += 4) tile.data.set([0x5a, 0x6b, 0x4f, 255], i)
+    greenTile = PNG.sync.write(tile)
+  }
+  return greenTile
+}
+
 /**
  * Opens render mode at the layout size and loads the project into it. With `tileUpstream`, the page gets its own
- * server whose tile proxy fetches from there.
+ * server whose tile proxy fetches from there. With `stubTiles`, satellite, terrain and vector tiles are answered
+ * in the browser (solid green, sea level, empty), so the page needs no network.
  */
 export async function openRenderPage(
   project: Project,
   pixelRatio: number,
-  opts: { tileUpstream?: string; layer?: RenderLayer; seaPaths?: SeaPaths; flatTerrain?: boolean } = {},
+  opts: { tileUpstream?: string; layer?: RenderLayer; seaPaths?: SeaPaths; flatTerrain?: boolean; stubTiles?: boolean } = {},
 ): Promise<{ page: Page; close(): Promise<void> }> {
   const { server: sharedServer, browser, tempDir } = await setup()
   const server = opts.tileUpstream
@@ -76,6 +89,13 @@ export async function openRenderPage(
   // Terrain on the blank theme is the one offline scene that has a credit. Its elevation tiles come from the network
   // (or the server's proxy), so a test that only needs the credit can answer them with sea level instead.
   if (opts.flatTerrain) await context.route('**/tiles/terrain/**', (route) => route.fulfill({ contentType: 'image/png', body: flatTerrainTile() }))
+  // Every tile answered locally, so two pages draw the same map and a test can tell the overlay's pixels from the map's.
+  // Live tiles can differ by a colour level at a seam between two loads. Glyphs and fonts are not tiles and still load.
+  if (opts.stubTiles) {
+    await context.route('**/tiles/satellite/**', (route) => route.fulfill({ contentType: 'image/png', body: solidTile() }))
+    await context.route('**/tiles/terrain/**', (route) => route.fulfill({ contentType: 'image/png', body: flatTerrainTile() }))
+    await context.route('**/tiles/planet/**', (route) => route.fulfill({ status: 204 }))
+  }
   const page = await context.newPage()
   page.on('pageerror', (error) => process.stderr.write(`page error: ${error.message}\n`))
   await page.goto(`${server.base}studio/?mode=render`)

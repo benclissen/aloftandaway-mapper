@@ -17,14 +17,20 @@ function sceneWith(look: { theme?: string; terrain?: boolean }) {
   return scene
 }
 
+const LICENSED = 'Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016), CC BY 4.0'
+
 describe('map credit per scene', () => {
+  test('the burned satellite line carries the licence', () => {
+    expect(SATELLITE_CREDIT).toBe(LICENSED)
+  })
+
   test('credit for paper', () => {
     expect(sceneCredit(sceneWith({ theme: 'paper', terrain: false }))).toEqual([MAP_CREDIT])
   })
 
   test('credit for satellite with terrain', () => {
     expect(sceneCredit(sceneWith({ theme: 'satellite', terrain: true }))).toEqual([MAP_CREDIT, SATELLITE_CREDIT, TERRAIN_CREDIT])
-    expect(SATELLITE_CREDIT).toBe('Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016)')
+    expect(SATELLITE_CREDIT).toBe(LICENSED)
   })
 
   test('blank has no credit', () => {

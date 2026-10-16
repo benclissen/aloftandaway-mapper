@@ -7,8 +7,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { PNG } from 'pngjs'
 import { afterAll, describe, expect, test } from 'vitest'
-import { buildRoute, buildTimeline, cameraAt, layoutSize, TILE_SIZE, toXY, type LngLat, type Project } from '../../src/core/index.js'
-import { CREDIT } from '../../src/studio/stage/overlay.js'
+import { buildRoute, buildTimeline, cameraAt, layoutSize, sceneCredit, TILE_SIZE, toXY, type LngLat, type Project } from '../../src/core/index.js'
+import { CREDIT, CREDIT_FONT } from '../../src/studio/stage/overlay.js'
 import { alpine, greekIslands, sceneOf } from '../fixtures/projects.js'
 import { closeAll, openRenderPage, snapshot } from './helpers.js'
 
@@ -36,57 +36,89 @@ const rgb = (png: PNG, x: number, y: number): [number, number, number] => {
 
 const near = (a: number[], b: number[], tolerance: number) => a.every((v, i) => Math.abs(v - b[i]!) <= tolerance)
 
-describe.skipIf(process.env.MAPPER_NET !== '1')('look (MAPPER_NET only)', () => {
-  test('burned credit fits at 1080p', async () => {
-    // Satellite with terrain is the three-line credit. The same frame without the burned credit shows where its ink is.
-    const withCredit = alpine()
-    const scene = sceneOf(withCredit)
-    scene.look = { ...scene.look, theme: 'satellite' }
-    withCredit.credit = 'burned'
-    const without: Project = { ...withCredit, credit: 'description' }
+/**
+ * Renders satellite with terrain twice on stubbed tiles, with the credit burned in and left to the description, so the
+ * two frames differ only by the credit's ink. Checks that ink sits in the credit box at the frame's right and bottom.
+ */
+async function expectBurnedCreditFits(aspect: '16:9' | '9:16'): Promise<void> {
+  // Satellite with terrain is the three-line credit.
+  const withCredit = alpine()
+  withCredit.output = { ...withCredit.output, aspect }
+  const scene = sceneOf(withCredit)
+  scene.look = { ...scene.look, theme: 'satellite' }
+  withCredit.credit = 'burned'
+  const without: Project = { ...withCredit, credit: 'description' }
+  const lines = sceneCredit(scene, 'burned')
+  expect(lines).toHaveLength(3)
 
-    const burned = await openRenderPage(withCredit, 1)
-    const plain = await openRenderPage(without, 1)
-    try {
-      const a = PNG.sync.read(await snapshot(burned.page, 0))
-      const b = PNG.sync.read(await snapshot(plain.page, 0))
-      expect([a.width, a.height]).toEqual([1920, 1080])
+  const burned = await openRenderPage(withCredit, 1, { stubTiles: true })
+  const plain = await openRenderPage(without, 1, { stubTiles: true })
+  try {
+    const a = PNG.sync.read(await snapshot(burned.page, 0))
+    const b = PNG.sync.read(await snapshot(plain.page, 0))
+    expect([a.width, a.height]).toEqual(aspect === '16:9' ? [1920, 1080] : [1080, 1920])
 
-      // Every pixel the credit changed, as the rows and columns it covers.
-      const rows = new Set<number>()
-      let minX = a.width
-      let maxX = -1
-      for (let y = 0; y < a.height; y++) {
-        for (let x = 0; x < a.width; x++) {
-          const i = (y * a.width + x) * 4
-          if (a.data[i] === b.data[i] && a.data[i + 1] === b.data[i + 1] && a.data[i + 2] === b.data[i + 2]) continue
-          rows.add(y)
-          minX = Math.min(minX, x)
-          maxX = Math.max(maxX, x)
-        }
+    // The widest line, measured in the page with the credit font, bounds the box from the left. The halo and rounding
+    // get 4 px.
+    const widest = await burned.page.evaluate(
+      async ([font, texts]) => {
+        await document.fonts.load(font)
+        const ctx = document.createElement('canvas').getContext('2d')!
+        ctx.font = font
+        return Math.max(...texts.map((text) => ctx.measureText(text).width))
+      },
+      [CREDIT_FONT, lines] as const,
+    )
+    const boxLeft = a.width - CREDIT.margin - widest - 4
+    const boxTop = a.height - CREDIT.margin - 2 * CREDIT.lineHeight - 20
+
+    // Every pixel the credit changed, as the rows and columns it covers. Any change outside the box is not the credit.
+    const rows = new Set<number>()
+    let minX = a.width
+    let maxX = -1
+    for (let y = 0; y < a.height; y++) {
+      for (let x = 0; x < a.width; x++) {
+        const i = (y * a.width + x) * 4
+        if (a.data[i] === b.data[i] && a.data[i + 1] === b.data[i + 1] && a.data[i + 2] === b.data[i + 2]) continue
+        expect(
+          x >= boxLeft && y >= boxTop,
+          `pixel (${x}, ${y}) changed outside the credit box (x >= ${boxLeft.toFixed(1)}, y >= ${boxTop})`,
+        ).toBe(true)
+        rows.add(y)
+        minX = Math.min(minX, x)
+        maxX = Math.max(maxX, x)
       }
-      expect(rows.size, 'the credit is not on the picture').toBeGreaterThan(0)
-      const top = Math.min(...rows)
-      const bottom = Math.max(...rows)
-      // Right-aligned: the ink ends at the margin (the halo adds about a pixel and a half), and the longest line still
-      // starts inside the frame. The last baseline is a margin above the bottom edge; descenders drop a few px below.
-      expect(maxX).toBeLessThanOrEqual(a.width - CREDIT.margin + 2)
-      expect(minX).toBeGreaterThanOrEqual(CREDIT.margin)
-      expect(bottom).toBeLessThan(a.height - CREDIT.margin + 8)
-      expect(bottom).toBeGreaterThan(a.height - CREDIT.margin - 8)
-      // Three lines, one per baseline: each has ink in the band that holds its letters.
-      for (const line of [0, 1, 2]) {
-        const baseline = a.height - CREDIT.margin - (2 - line) * CREDIT.lineHeight
-        const band = [...rows].filter((y) => y >= baseline - 12 && y <= baseline + 2)
-        expect(band.length, `credit line ${line + 1} has no ink`).toBeGreaterThan(4)
-      }
-      expect(top).toBeGreaterThanOrEqual(a.height - CREDIT.margin - 2 * CREDIT.lineHeight - 20)
-    } finally {
-      await burned.close()
-      await plain.close()
     }
-  })
+    expect(rows.size, 'the credit is not on the picture').toBeGreaterThan(0)
+    const top = Math.min(...rows)
+    const bottom = Math.max(...rows)
+    // Right-aligned: the ink ends at the margin (the halo adds about a pixel and a half), and the longest line still
+    // starts inside the frame. The last baseline is a margin above the bottom edge; descenders drop a few px below.
+    expect(maxX).toBeLessThanOrEqual(a.width - CREDIT.margin + 2)
+    expect(minX).toBeGreaterThanOrEqual(CREDIT.margin)
+    expect(bottom).toBeLessThan(a.height - CREDIT.margin + 8)
+    expect(bottom).toBeGreaterThan(a.height - CREDIT.margin - 8)
+    // Three lines, one per baseline: each has ink in the band that holds its letters.
+    for (const line of [0, 1, 2]) {
+      const baseline = a.height - CREDIT.margin - (2 - line) * CREDIT.lineHeight
+      const band = [...rows].filter((y) => y >= baseline - 12 && y <= baseline + 2)
+      expect(band.length, `credit line ${line + 1} has no ink`).toBeGreaterThan(4)
+    }
+    expect(top).toBeGreaterThanOrEqual(boxTop)
+  } finally {
+    await burned.close()
+    await plain.close()
+  }
+}
 
+describe('look', () => {
+  test('burned credit fits a 16:9 frame', () => expectBurnedCreditFits('16:9'))
+
+  // The narrowest frame (1080 wide): the longest line still fits.
+  test('burned credit fits a 9:16 frame', () => expectBurnedCreditFits('9:16'))
+})
+
+describe.skipIf(process.env.MAPPER_NET !== '1')('look (MAPPER_NET only)', () => {
   test('aloftandaway preview renders', async () => {
     // Framed on the whole route and still, so the Cretan Sea and the Greek mainland are both in view.
     const project = greekIslands({

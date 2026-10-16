@@ -1,9 +1,11 @@
+import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import pixelmatch from 'pixelmatch'
 import type { Browser, Page } from 'playwright'
 import { PNG } from 'pngjs'
@@ -165,4 +167,17 @@ export async function closeAll(): Promise<void> {
   await browser.close()
   await server.close()
   await rm(tempDir, { recursive: true, force: true })
+}
+
+/**
+ * The decode timestamp, in seconds, of each video frame's packet, in decode order. Read from the packets because
+ * ffprobe reports no `pkt_dts_time` for the frames it flushes at the end of the stream.
+ */
+export async function frameTimestamps(file: string): Promise<number[]> {
+  const { stdout } = await promisify(execFile)(
+    'ffprobe',
+    ['-v', 'error', '-select_streams', 'v', '-show_packets', '-show_entries', 'packet=dts_time', '-of', 'csv=p=0', file],
+    { maxBuffer: 16 * 1024 * 1024 },
+  )
+  return stdout.split('\n').filter((line) => line.trim() !== '').map(Number)
 }

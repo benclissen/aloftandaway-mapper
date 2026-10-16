@@ -38,7 +38,7 @@ export interface ExportManifest {
   totalWorkFrames: number
   durationSeconds: number
   renderedAt: string
-  /** Clip frames per second: completed work frames ÷ number of passes ÷ elapsed seconds. */
+  /** Clip frames per second, over every scene: completed work frames ÷ number of layers ÷ elapsed seconds. */
   renderFps: number
   chrome?: { channel: string; webgl: string }
   fcpxml?: string

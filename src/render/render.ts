@@ -71,7 +71,7 @@ export interface RenderResult {
   frames: number
   /** The project's frame rate. */
   fps: Fps
-  /** Clip frames per second: completed work frames ÷ number of passes ÷ elapsed seconds. */
+  /** Clip frames per second, over every scene: completed work frames ÷ number of layers ÷ elapsed seconds. */
   renderFps: number
   projectHash: string
   /** Every finished layer, in render order. */
@@ -181,11 +181,12 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   let active: RenderPass | undefined
   let published: PublishedFcpxml | undefined
   let loopStart = performance.now()
-  /** Clip frames per second: work frames over every pass, divided by the number of passes, per elapsed second. */
-  const elapsedFps = () => completedWork / plan.passes.length / Math.max((performance.now() - loopStart) / 1000, 1e-9)
+  /** Every picked scene renders the same layers, so the passes are scenes × layers. */
+  const layerCount = new Set(plan.passes.map((pass) => pass.layer)).size
+  /** Clip frames per second over every scene: work frames divided by the number of layers, per elapsed second. */
+  const elapsedFps = () => completedWork / layerCount / Math.max((performance.now() - loopStart) / 1000, 1e-9)
   /** Started with the first pass, so Chrome's launch doesn't count against the fps. */
   let progress: ReturnType<typeof rollingProgress> | undefined
-  const layerCount = new Set(plan.passes.map((pass) => pass.layer)).size
   /** Reports `done` frames of work across the export, naming the active scene and layer. */
   const report = (done: number) => {
     completedWork = done

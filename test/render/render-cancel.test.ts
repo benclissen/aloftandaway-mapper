@@ -10,7 +10,7 @@ import { planExport } from '../../src/render/export-plan.js'
 import { RenderPage } from '../../src/render/page.js'
 import { renderPass, type PassPage } from '../../src/render/render-pass.js'
 import { saveProject } from '../../src/server/store.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, twoScenes } from '../fixtures/projects.js'
 
 /** What happened to the fake Chrome, in order. */
 const events: string[] = []
@@ -88,6 +88,30 @@ describe('render speed', () => {
     try {
       const result = await renderProject({ folder, layers: ['map', 'route', 'all'], codec: 'prores', range: { from: 0, to: 0.4 } })
       expect(result.outputs.map((o) => o.frames)).toEqual([10, 10, 10])
+      expect(result.renderFps).toBe(10)
+      expect(JSON.parse(await readFile(result.manifest, 'utf8')).renderFps).toBe(10)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  // Four passes, two scenes × two layers: each renders its frames at 20 fps, so the clip comes out at 10 fps whatever
+  // the scenes' lengths.
+  test.each([true, false])('renderFps counts clip frames over every scene (join: %s)', async (join) => {
+    const folder = path.join(tmp, `fps-scenes-${join}`)
+    await mkdir(folder)
+    await saveProject(folder, twoScenes())
+    let clock = 0
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    vi.mocked(renderPass).mockImplementation(async ({ pass, onFrame }) => {
+      const frames = pass.toFrame - pass.fromFrame
+      clock += frames * 50
+      onFrame?.(frames)
+      return { ...pass, frames, segments: 1, recoveries: 0 }
+    })
+    try {
+      const result = await renderProject({ folder, layers: ['map', 'route'], join })
+      expect(result.outputs).toHaveLength(4)
       expect(result.renderFps).toBe(10)
       expect(JSON.parse(await readFile(result.manifest, 'utf8')).renderFps).toBe(10)
     } finally {

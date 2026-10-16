@@ -31,6 +31,11 @@ export interface MapperPage {
    * draws stop dots, signs and the vehicle. For checking placement.
    */
   project(at: LngLat): [number, number]
+  /**
+   * The on-screen angle of the line the last overlay draw turned symbols to, in degrees clockwise from screen-up, or
+   * undefined when it fell back to the heading. A test aid.
+   */
+  lastScreenAngle(): number | undefined
 }
 
 declare global {
@@ -125,6 +130,10 @@ export function startRenderMode(root: HTMLElement): void {
     project(at) {
       if (!stage) throw new Error('Call mapper.load(project) before project.')
       return stage.project(at)
+    },
+    lastScreenAngle() {
+      if (!stage) throw new Error('Call mapper.load(project) before lastScreenAngle.')
+      return stage.lastScreenAngle
     },
     contextLost() {
       if (!stage) throw new Error('Call mapper.load(project) before contextLost.')

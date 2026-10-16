@@ -73,6 +73,46 @@ export function legFlipped(route: Route, legIndex: number): boolean {
   return last[0] < first[0] - FLIP_EPSILON
 }
 
+/** Degrees to add to a turning drawing's rotation so it points along the line, by the way the drawing faces. */
+export const TURN_OFFSET = { right: -90, 'north-east': -45, up: 0, front: 0 } as const
+
+/** Two screen points closer than this, in layout px, have no direction between them. */
+const MIN_SCREEN_STEP = 0.01
+
+/**
+ * The direction of the step from `from` to `to` on screen, in degrees clockwise from screen-up, in [0, 360). Points
+ * are layout px with y growing downwards, so a step east is 90 and a step west 270. Undefined when the two points are
+ * under 0.01 px apart.
+ */
+export function screenAngle(from: [number, number], to: [number, number]): number | undefined {
+  const dx = to[0] - from[0]
+  const dy = to[1] - from[1]
+  if (Math.hypot(dx, dy) < MIN_SCREEN_STEP) return undefined
+  const deg = (Math.atan2(dx, -dy) * 180) / Math.PI
+  return (deg + 360) % 360
+}
+
+/** A line within this many degrees of straight up or down on screen takes its leg's east-west facing. */
+const UPRIGHT_BAND_DEG = 15
+const UPRIGHT_BAND = Math.sin((UPRIGHT_BAND_DEG * Math.PI) / 180)
+
+/**
+ * How to draw a turning symbol whose line runs at `angle` on screen (see `screenAngle`): the canvas rotation in
+ * degrees, then whether to mirror the drawing top to bottom. Only a side view (`right`) is ever mirrored, when the
+ * line points west on screen, so it stays the right way up. Within 15 degrees of vertical the leg's own facing
+ * (`legFlipped`) decides, so a north-south leg doesn't flicker.
+ */
+export function turnPose(
+  angle: number,
+  facing: keyof typeof TURN_OFFSET,
+  legFlipped: boolean,
+): { rotate: number; mirrorY: boolean } {
+  const rotate = angle + TURN_OFFSET[facing]
+  if (facing !== 'right') return { rotate, mirrorY: false }
+  const east = Math.sin((angle * Math.PI) / 180)
+  return { rotate, mirrorY: Math.abs(east) <= UPRIGHT_BAND ? legFlipped : east < 0 }
+}
+
 export function symbolStyleOf(look: Look): SymbolStyle {
   return look.symbolStyle ?? 'badge'
 }

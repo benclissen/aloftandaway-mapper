@@ -11,10 +11,12 @@ import {
   layoutSize,
   pointAt,
   sceneCredit,
+  screenAngle,
   joinCredit,
   MAP_DATA_ERROR,
   MAX_TERRAIN_SETTLES,
   slicePath,
+  TILE_SIZE,
   unwrapLng,
   type FrameState,
   type LngLat,
@@ -59,6 +61,8 @@ const EDIT_SELECTED_LAYER = 'mapper-edit-selected'
 const IDLE_TIMEOUT_MS = 60_000
 /** How long a new style may take to load before the stage gives up on it. */
 const STYLE_TIMEOUT_MS = 60_000
+/** Turning symbols take their angle from the line this many layout px ahead of the head. */
+const LOOK_AHEAD_PX = 4
 
 interface Loaded {
   project: Project
@@ -175,6 +179,7 @@ export class MapStage {
   private queue: Promise<void> = Promise.resolve()
   /** The state the overlay was last drawn with. */
   private overlayState: FrameState | undefined
+  private drawnScreenAngle: number | undefined
 
   constructor(container: HTMLElement, opts: MapStageOptions) {
     this.container = container
@@ -315,6 +320,11 @@ export class MapStage {
     })
   }
 
+  /** The screen angle the overlay was last drawn with, for tests: undefined when it fell back to the heading. */
+  get lastScreenAngle(): number | undefined {
+    return this.drawnScreenAngle
+  }
+
   /**
    * Redraws the overlay for the last frame shown, at the map's current view. For interactive stages, where the user
    * can move the map between frames.
@@ -452,18 +462,34 @@ export class MapStage {
     const { project, scene, route } = this.require()
     this.overlayState = state
     const center = this.map.getCenter().lng
+    const project2px = (at: LngLat) => this.project(at, center)
     const legIndex = route.legs.length > 0 ? pointAt(route, state.distance).legIndex : 0
+    this.drawnScreenAngle = route.legs.length > 0 ? this.lineAngle(route, state, project2px) : undefined
     drawOverlay(this.ctx, {
       scene,
       credit: project.credit,
       state,
       legIndex,
       flipped: legFlipped(route, legIndex),
+      screenAngle: this.drawnScreenAngle,
       bearing: this.map.getBearing(),
-      project2px: (at) => this.project(at, center),
+      project2px,
       pixelRatio: this.opts.pixelRatio,
       layer: this.opts.layer,
     })
+  }
+
+  /**
+   * The direction of the route at the head as drawn on screen, so it takes in pitch and terrain: towards the point
+   * `LOOK_AHEAD_PX` further along, or from the point that far behind at the end of the route. The px become route
+   * distance (Mercator units) at the current zoom, as an untilted map would draw them. Undefined when the two points
+   * project within 0.01 px of each other.
+   */
+  private lineAngle(route: Route, state: FrameState, project2px: (at: LngLat) => [number, number]): number | undefined {
+    const step = LOOK_AHEAD_PX / (TILE_SIZE * 2 ** this.map.getZoom())
+    const head = project2px(state.head.at)
+    if (state.distance + step <= route.length) return screenAngle(head, project2px(pointAt(route, state.distance + step).at))
+    return screenAngle(project2px(pointAt(route, state.distance - step).at), head)
   }
 
   /** Loads exactly the Plus Jakarta Sans subsets this scene's text needs, so nothing falls back while drawing. */

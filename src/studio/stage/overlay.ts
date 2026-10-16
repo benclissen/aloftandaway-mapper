@@ -6,6 +6,7 @@ import {
   SYMBOL_FACING,
   SYMBOL_ICON,
   symbolStyleOf,
+  turnPose,
   type FrameState,
   type LngLat,
   type Project,
@@ -32,8 +33,6 @@ const ICON_GRID = 24
 /** Stroke widths: the icon's own, in icon units, and the white halo behind a bare icon, in layout px. */
 const ICON_STROKE = 2.2
 const ICON_HALO = 6
-/** Degrees to add to a turning icon's rotation so its drawing points along the heading. */
-const TURN_OFFSET = { right: -90, 'north-east': -45, up: 0, front: 0 } as const
 const TAG_STYLE = { fill: 'rgba(255, 255, 255, 0.92)', text: '#1d2430' }
 export const CREDIT = { margin: 16, fill: 'rgba(255, 255, 255, 0.92)', halo: 'rgba(20, 24, 32, 0.7)', haloWidth: 3, lineHeight: 20 }
 
@@ -48,7 +47,12 @@ export interface OverlayArgs {
   legIndex?: number
   /** Whether side-view symbols face west on that leg. */
   flipped?: boolean
-  /** The map's bearing in degrees clockwise from north, which turning symbols subtract from the heading. */
+  /**
+   * The direction of the line at the head as drawn, in degrees clockwise from screen-up (see `screenAngle`). Turning
+   * symbols point along it. When it is missing, they fall back to the heading minus `bearing`, which ignores pitch.
+   */
+  screenAngle?: number
+  /** The map's bearing in degrees clockwise from north, for the fallback above. */
   bearing?: number
   /** Device px per layout px: the canvas backing store is the layout size times this. */
   pixelRatio: number
@@ -104,7 +108,10 @@ function drawDot(ctx: CanvasRenderingContext2D, [x, y]: [number, number], radius
   ctx.stroke()
 }
 
-/** The scene's symbol for the head's leg: the old dot, a badge, or a bare icon. Side views mirror, turning icons rotate. */
+/**
+ * The scene's symbol for the head's leg: the old dot, a badge, or a bare icon. Side views mirror, turning icons rotate
+ * with the line on screen, and a turning side view (the helicopter) mirrors top to bottom heading west.
+ */
 function drawVehicle(ctx: CanvasRenderingContext2D, [x, y]: [number, number], args: OverlayArgs): void {
   const { scene, state } = args
   const symbol = effectiveSymbol(scene, args.legIndex ?? 0)
@@ -130,9 +137,13 @@ function drawVehicle(ctx: CanvasRenderingContext2D, [x, y]: [number, number], ar
     ctx.fillStyle = style === 'badge-line' ? color : NAVY
     ctx.fill()
   }
-  // Heading is degrees clockwise from north, as is canvas rotation, so heading minus bearing is the on-screen angle.
-  if (facing === 'turn') ctx.rotate(((state.head.heading - (args.bearing ?? 0) + TURN_OFFSET[icon.facing]) * Math.PI) / 180)
-  else if (facing === 'side' && args.flipped) ctx.scale(-1, 1)
+  if (facing === 'turn') {
+    // Canvas rotation is clockwise, like the screen angle. Heading minus bearing is the angle on an untilted map.
+    const angle = args.screenAngle ?? state.head.heading - (args.bearing ?? 0)
+    const pose = turnPose(((angle % 360) + 360) % 360, icon.facing, args.flipped ?? false)
+    ctx.rotate((pose.rotate * Math.PI) / 180)
+    if (pose.mirrorY) ctx.scale(1, -1)
+  } else if (facing === 'side' && args.flipped) ctx.scale(-1, 1)
   const scale = ICON_SIZE / ICON_GRID
   ctx.scale(scale, scale)
   ctx.translate(-ICON_GRID / 2, -ICON_GRID / 2)

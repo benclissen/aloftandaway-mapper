@@ -7,9 +7,22 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { PNG } from 'pngjs'
 import { afterAll, describe, expect, test } from 'vitest'
-import { buildRoute, buildTimeline, cameraAt, layoutSize, sceneCredit, TILE_SIZE, toXY, type LngLat, type Project } from '../../src/core/index.js'
+import {
+  buildRoute,
+  buildTimeline,
+  cameraAt,
+  layoutSize,
+  pointAt,
+  sceneCredit,
+  screenAngle,
+  TILE_SIZE,
+  toXY,
+  type LngLat,
+  type Project,
+} from '../../src/core/index.js'
+import type { MapperPage } from '../../src/studio/render-mode.js'
 import { CREDIT, CREDIT_FONT } from '../../src/studio/stage/overlay.js'
-import { alpine, greekIslands, sceneOf } from '../fixtures/projects.js'
+import { alpine, greekIslands, sceneOf, stopsAt } from '../fixtures/projects.js'
 import { closeAll, openRenderPage, snapshot } from './helpers.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -119,6 +132,46 @@ describe('look', () => {
 
   // The narrowest frame (1080 wide): the longest line still fits.
   test('burned credit fits a 9:16 frame', () => expectBurnedCreditFits('9:16'))
+
+  test('a plane on a tilted shot points along its line', async () => {
+    // A flight bowed across the Alps, seen from its middle at pitch 60 and bearing 30. The line runs about 45 degrees
+    // off the bearing, where tilt bends its on-screen angle most.
+    const project = stopsAt([[7.0, 45.0], [7.6, 45.114]])
+    const scene = sceneOf(project)
+    scene.legs = [{ mode: 'air', via: [], symbol: 'plane' }]
+    const route = buildRoute(scene)
+    const timeline = buildTimeline(scene, project.output.fps, route)
+    const leg = timeline.legFrames[0]!
+    const frame = Math.round((leg.start + leg.end) / 2)
+    const { head, distance } = timeline.stateAt(frame)
+    scene.camera = { mode: 'fixed', easing: 'smooth', start: { center: head.at, zoom: 10, bearing: 30, pitch: 60 } }
+
+    // Two route points 1 km either side of the head. Route distance is in Mercator world units.
+    const km = 1 / (2 * Math.PI * 6371 * Math.cos((head.at[1] * Math.PI) / 180))
+    const behind = pointAt(route, distance - km).at
+    const ahead = pointAt(route, distance + km).at
+
+    const { page, leaks, close } = await openRenderPage(project, 0.5, { stubTiles: true })
+    try {
+      await snapshot(page, frame)
+      const { used, from, to } = await page.evaluate(
+        ([a, b]) => {
+          const mapper = (window as unknown as { mapper: MapperPage }).mapper
+          return { used: mapper.lastScreenAngle(), from: mapper.project(a), to: mapper.project(b) }
+        },
+        [behind, ahead] as const,
+      )
+      const line = screenAngle(from, to)!
+      const off = (a: number, b: number) => Math.abs(((a - b + 540) % 360) - 180)
+      // The old rule, heading minus bearing, is well off here, so this shot tells the two apart.
+      expect(off(head.heading - 30, line)).toBeGreaterThan(10)
+      expect(used, 'the overlay drew without a screen angle').toBeDefined()
+      expect(off(used!, line), `drawn at ${used}, line at ${line}`).toBeLessThanOrEqual(2)
+      expect(leaks, 'the page made requests the stubs do not answer').toEqual([])
+    } finally {
+      await close()
+    }
+  })
 })
 
 describe.skipIf(process.env.MAPPER_NET !== '1')('look (MAPPER_NET only)', () => {

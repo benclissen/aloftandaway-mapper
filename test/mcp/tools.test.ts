@@ -525,12 +525,17 @@ describe('tools', () => {
 
     test('preview_frame and preview_contact_sheet take a scene', async () => {
       const folder = await twoScenes('scene-preview')
-      vi.mocked(previewFrame).mockResolvedValue({ png: Buffer.from('png'), path: '/p/scene2-frame-3.png', frame: 3, seconds: 0.12 })
-      vi.mocked(contactSheet).mockResolvedValue({ png: Buffer.from('png'), path: '/p/scene2-contact.png', frames: [{ frame: 0, seconds: 0 }] })
+      const sail = { id: 'b', position: 2, name: 'Sail' }
+      const label = 'Scene 2 of 2 · Sail'
+      vi.mocked(previewFrame).mockResolvedValue({ png: Buffer.from('png'), path: '/p/scene2-frame-3.png', frame: 3, seconds: 0.12, scene: sail, sceneLabel: label })
+      vi.mocked(contactSheet).mockResolvedValue({ png: Buffer.from('png'), path: '/p/scene2-contact.png', frames: [{ frame: 0, seconds: 0 }], scene: sail, sceneLabel: label })
 
       const frame = await call('preview_frame', { folder, scene: 2, at: { frame: 3 } })
       expect(frame.isError, text(frame)).toBeFalsy()
       expect(previewFrame).toHaveBeenLastCalledWith({ folder, at: { frame: 3 }, width: 960, scene: 2 })
+      // The scene comes from the preview, which read it from the project it rendered.
+      expect(text(frame).split('\n')[0]).toBe('Scene 2 of 2 · Sail: frame 3 at 0.12 s, 960 px wide. Saved to /p/scene2-frame-3.png')
+      expect((frame.structuredContent as { scene: unknown }).scene).toEqual(sail)
 
       await call('preview_frame', { folder, at: { frame: 3 } })
       expect(previewFrame).toHaveBeenLastCalledWith({ folder, at: { frame: 3 }, width: 960, scene: undefined })
@@ -538,6 +543,22 @@ describe('tools', () => {
       const sheet = await call('preview_contact_sheet', { folder, scene: 'abc', count: 4 })
       expect(sheet.isError, text(sheet)).toBeFalsy()
       expect(contactSheet).toHaveBeenLastCalledWith({ folder, count: 4, width: 1920, scene: 'abc' })
+      expect(text(sheet).split('\n')[0]).toBe('Scene 2 of 2 · Sail: contact sheet of 1 frames, 1920 px wide. Saved to /p/scene2-contact.png')
+      expect((sheet.structuredContent as { scene: unknown }).scene).toEqual(sail)
+    })
+
+    test('a one-scene preview keeps its wording and still names the scene in data', async () => {
+      const folder = path.join(tmp, 'one-scene-preview')
+      const only = { id: 'a', position: 1, name: 'Drive' }
+      vi.mocked(previewFrame).mockResolvedValue({ png: Buffer.from('png'), path: '/p/frame-3.png', frame: 3, seconds: 0.12, scene: only })
+      vi.mocked(contactSheet).mockResolvedValue({ png: Buffer.from('png'), path: '/p/contact.png', frames: [{ frame: 0, seconds: 0 }], scene: only })
+
+      const frame = await call('preview_frame', { folder, at: { frame: 3 } })
+      expect(text(frame).split('\n')[0]).toBe('Frame 3 at 0.12 s, 960 px wide. Saved to /p/frame-3.png')
+      expect((frame.structuredContent as { scene: unknown }).scene).toEqual(only)
+      const sheet = await call('preview_contact_sheet', { folder })
+      expect(text(sheet).split('\n')[0]).toBe('Contact sheet of 1 frames, 1920 px wide. Saved to /p/contact.png')
+      expect((sheet.structuredContent as { scene: unknown }).scene).toEqual(only)
     })
   })
 

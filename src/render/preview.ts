@@ -9,6 +9,7 @@ import {
   fpsValue,
   layoutSize,
   resolveScene,
+  sceneLabel,
   type Aspect,
   type Project,
   type Scene,
@@ -37,7 +38,21 @@ export const PreviewAtSchema = z.union([
 ])
 export type PreviewAt = z.infer<typeof PreviewAtSchema>
 
-export interface PreviewResult {
+/** The scene a preview shows, as the project it rendered had it. `position` is 1-based. */
+export interface PreviewScene {
+  id: string
+  position: number
+  name: string
+}
+
+/** What every preview says about its scene. */
+interface ScenePreview {
+  scene: PreviewScene
+  /** `Scene 2 of 2 · Sail`, when the project has more than one scene. */
+  sceneLabel?: string
+}
+
+export interface PreviewResult extends ScenePreview {
   png: Buffer
   /** Where the PNG was saved. */
   path: string
@@ -45,10 +60,18 @@ export interface PreviewResult {
   seconds: number
 }
 
-export interface ContactSheetResult {
+export interface ContactSheetResult extends ScenePreview {
   png: Buffer
   path: string
   frames: { frame: number; seconds: number }[]
+}
+
+function scenePreview(project: Project, index: number): ScenePreview {
+  const scene = project.scenes[index]!
+  return {
+    scene: { id: scene.id, position: index + 1, name: scene.name },
+    ...(project.scenes.length > 1 && { sceneLabel: sceneLabel(project, index) }),
+  }
 }
 
 // A warm browser, and one render page per aspect, shared by every call.
@@ -206,14 +229,15 @@ export async function previewFrame(args: { folder: string; at: PreviewAt; width?
   const at = PreviewAtSchema.parse(args.at)
   assertWholeNumber('width', width)
   return exclusive(async () => {
-    const { frame, png, fps, name } = await withProject(args.folder, args.scene, () => width, async ({ project, index, timeline, page }) => {
+    const { frame, png, fps, name, shown } = await withProject(args.folder, args.scene, () => width, async ({ project, index, timeline, page }) => {
       const frame = resolveFrame(at, timeline)
       await page.renderFrame(frame)
-      return { frame, png: await page.capturePng(), fps: fpsValue(timeline.fps), name: frameFile(project, index, frame) }
+      const png = await page.capturePng()
+      return { frame, png, fps: fpsValue(timeline.fps), name: frameFile(project, index, frame), shown: scenePreview(project, index) }
     })
     const file = path.join(await previewsDir(args.folder), name)
     await writeFile(file, png)
-    return { png, path: file, frame, seconds: frame / fps }
+    return { png, path: file, frame, seconds: frame / fps, ...shown }
   })
 }
 
@@ -271,7 +295,7 @@ export async function contactSheet(args: { folder: string; count?: number; width
   const cellWidth = Math.floor((width - SHEET_GAP * (columns + 1)) / columns)
   if (cellWidth < 1) throw new RangeError(`width ${width} is too small for ${count} frames in ${columns} columns.`)
   return exclusive(async () => {
-    const { frames, cells, fps, prefix } = await withProject(args.folder, args.scene, () => cellWidth, async ({ project, scene, index, timeline, page }) => {
+    const { frames, cells, fps, prefix, shown } = await withProject(args.folder, args.scene, () => cellWidth, async ({ project, scene, index, timeline, page }) => {
       const last = timeline.totalFrames - 1
       const frames = Array.from({ length: count }, (_, i) => (count === 1 ? 0 : Math.round((i * last) / (count - 1))))
       const cells: { dataUrl: string; caption: string }[] = []
@@ -280,7 +304,8 @@ export async function contactSheet(args: { folder: string; count?: number; width
         const png = await page.capturePng()
         cells.push({ dataUrl: `data:image/png;base64,${png.toString('base64')}`, caption: frameCaption(project, scene, timeline, frame) })
       }
-      return { frames, cells, fps: fpsValue(timeline.fps), prefix: project.scenes.length > 1 ? `scene${index + 1}-` : '' }
+      const prefix = project.scenes.length > 1 ? `scene${index + 1}-` : ''
+      return { frames, cells, fps: fpsValue(timeline.fps), prefix, shown: scenePreview(project, index) }
     })
 
     const browser = await warmBrowser()
@@ -296,6 +321,6 @@ export async function contactSheet(args: { folder: string; count?: number; width
     }
     const file = path.join(await previewsDir(args.folder), `${prefix}contact-${timestamp(new Date())}.png`)
     await writeFile(file, png)
-    return { png, path: file, frames: frames.map((frame) => ({ frame, seconds: frame / fps })) }
+    return { png, path: file, frames: frames.map((frame) => ({ frame, seconds: frame / fps })), ...shown }
   })
 }

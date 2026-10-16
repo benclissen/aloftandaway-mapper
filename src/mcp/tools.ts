@@ -189,6 +189,11 @@ async function withChange(folder: string, project: Project, sceneId: string, opt
   }
 }
 
+/** `sentence`, led by the scene's label when there is one: `Scene 2 of 2 · Sail: frame 3 …`. */
+function sceneSentence(label: string | undefined, sentence: string): string {
+  return label ? `${label}: ${sentence[0]!.toLowerCase()}${sentence.slice(1)}` : sentence
+}
+
 /** `Scenes: 1 Drive, 2 Sail.` */
 function scenesLine(project: Project): string {
   return `Scenes: ${project.scenes.map((s, i) => `${i + 1} ${s.name || 'Untitled'}`).join(', ')}.`
@@ -558,8 +563,8 @@ export const TOOLS: ToolDef<any>[] = [
     async run({ folder, scene: ref, at, width }) {
       const r = await previewFrame({ folder, at, width, scene: ref })
       return {
-        summary: `Frame ${r.frame} at ${r.seconds.toFixed(2)} s, ${width} px wide. Saved to ${r.path}`,
-        data: { path: r.path, frame: r.frame, seconds: r.seconds },
+        summary: sceneSentence(r.sceneLabel, `Frame ${r.frame} at ${r.seconds.toFixed(2)} s, ${width} px wide. Saved to ${r.path}`),
+        data: { path: r.path, frame: r.frame, seconds: r.seconds, scene: r.scene },
         image: r.png,
       }
     },
@@ -578,8 +583,8 @@ export const TOOLS: ToolDef<any>[] = [
     async run({ folder, scene: ref, count, width }) {
       const r = await contactSheet({ folder, count, width, scene: ref })
       return {
-        summary: `Contact sheet of ${r.frames.length} frames, ${width} px wide. Saved to ${r.path}`,
-        data: { path: r.path, frames: r.frames },
+        summary: sceneSentence(r.sceneLabel, `Contact sheet of ${r.frames.length} frames, ${width} px wide. Saved to ${r.path}`),
+        data: { path: r.path, frames: r.frames, scene: r.scene },
         image: r.png,
       }
     },

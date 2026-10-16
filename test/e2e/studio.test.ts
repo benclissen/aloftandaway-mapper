@@ -1072,6 +1072,128 @@ describe('scene tabs', () => {
 
 describe('index edits', () => {
   const selectedLeg = (page: Page) => page.getByTestId('stage').getAttribute('data-selected-leg')
+  /** Leg 1's via point as the studio opens, and the one the agent puts in front of it. */
+  const VIA: LngLat = [25.6, 36.95]
+  const AGENT_VIA: LngLat = [25.7, 37.05]
+  const ROUTE_CHANGED = 'The route changed while you were editing. Try again.'
+
+  /**
+   * Opens the studio with one via point on leg 1 and that leg selected. With `socket`, the studio's WebSocket runs
+   * through it first, so a test can hold the server's messages back.
+   */
+  async function openWithVia(socket?: (ws: WebSocketRoute) => void) {
+    const project = wholeRoute(greekIslands())
+    sceneOf(project).legs[1]!.via = [{ at: VIA }]
+    const studio = await openStudioPage(project, VIEWPORT)
+    if (socket) {
+      await studio.page.routeWebSocket(/\/ws\//, socket)
+      await studio.page.reload()
+    }
+    await studio.page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
+    await studio.page.getByTestId('leg-row-1').click()
+    await studio.page.getByTestId('via-marker-1-0').waitFor()
+    return { ...studio, file: path.join(studio.folder, 'mapper.json') }
+  }
+
+  /** The agent puts a via point at `at` in front of leg 1's others. */
+  const agentInsertsVia = (folder: string, at: LngLat) =>
+    mutateProject(folder, (p) => {
+      const scene = sceneOf(p)
+      return { ...p, scenes: [{ ...scene, legs: scene.legs.map((l, i) => (i === 1 ? { ...l, via: [{ at }, ...l.via] } : l)) }] }
+    })
+
+  /** How far handle `testId` is from where the map puts `at` now, in screen px. */
+  async function offBy(page: Page, testId: string, at: LngLat): Promise<number> {
+    const target = await page.evaluate((at) => {
+      const map = (window as unknown as StudioWindow).mapperStudio.map
+      const container = map.getContainer()
+      const box = container.getBoundingClientRect()
+      const fit = box.width / container.offsetWidth
+      const p = map.project(at)
+      return [box.left + p.x * fit, box.top + p.y * fit] as [number, number]
+    }, at)
+    const [hx, hy] = await center(page, testId)
+    return Math.hypot(hx - target[0], hy - target[1])
+  }
+
+  test('a via drag is refused when the agent changes the route mid-drag', async () => {
+    const { page, folder, file, close } = await openWithVia()
+    try {
+      const [x, y] = (await center(page, 'via-marker-1-0')).map(Math.round) as [number, number]
+      await page.mouse.move(x, y)
+      await page.mouse.down()
+      await page.mouse.move(x + 20, y + 15, { steps: 4 })
+      // The agent puts a point in front of the one held, and the studio hears of it before the drop. The held handle
+      // is now the first of two, so its index points at the agent's point.
+      await agentInsertsVia(folder, AGENT_VIA)
+      await page.getByTestId('via-marker-1-1').waitFor()
+      const saved = await readFile(file, 'utf8')
+      await page.mouse.move(x + 40, y + 30, { steps: 4 })
+      await page.mouse.up()
+      await page.getByRole('alert').filter({ hasText: ROUTE_CHANGED }).waitFor({ timeout: 5000 })
+      await page.waitForTimeout(300)
+      expect(await readFile(file, 'utf8')).toBe(saved)
+      // Each handle sits over its point as saved.
+      await expect.poll(() => offBy(page, 'via-marker-1-0', AGENT_VIA)).toBeLessThan(2)
+      expect(await offBy(page, 'via-marker-1-1', VIA)).toBeLessThan(2)
+    } finally {
+      await close()
+    }
+  })
+
+  // The removal is pressed while a camera change is still saving, and the agent writes before the camera change
+  // reaches the server. The studio learns of the write from the WebSocket, or only from the camera change's response.
+  test.each([
+    ['hears of the write', false],
+    ['has not heard of the write', true],
+  ])('a via removal queued behind a saving edit is refused after an agent write (the studio %s)', async (_, hold) => {
+    const { page, folder, close } = await openWithVia((ws) => {
+      const server = ws.connectToServer()
+      server.onMessage((m) => {
+        if (!hold) ws.send(m)
+      })
+    })
+    try {
+      let release!: () => void
+      const released = new Promise<void>((resolve) => (release = resolve))
+      let patches = 0
+      await page.route('**/patch', async (route) => {
+        if (patches++ === 0) await released
+        await route.continue()
+      })
+      await page.getByRole('button', { name: 'Glide' }).click()
+      await expect.poll(() => patches).toBe(1)
+      await page.getByTestId('via-marker-1-0').focus()
+      await page.keyboard.press('Delete')
+
+      await agentInsertsVia(folder, AGENT_VIA)
+      if (!hold) await page.getByTestId('via-marker-1-1').waitFor()
+      release()
+
+      await page.getByRole('alert').filter({ hasText: ROUTE_CHANGED }).waitFor({ timeout: 5000 })
+      await page.waitForTimeout(300)
+      const saved = sceneOf(await loadProject(folder))
+      expect(saved.camera.mode).toBe('glide')
+      expect(saved.legs[1]!.via.map((v) => v.at)).toEqual([AGENT_VIA, VIA])
+    } finally {
+      await close()
+    }
+  })
+
+  test('the point menu closes when the agent changes the project', async () => {
+    const { page, folder, close } = await openWithVia()
+    try {
+      await page.getByTestId('via-marker-1-0').click({ button: 'right' })
+      const menu = page.getByTestId('point-menu')
+      await menu.waitFor()
+      await agentInsertsVia(folder, AGENT_VIA)
+      await menu.waitFor({ state: 'detached', timeout: 5000 })
+      await page.waitForTimeout(300)
+      expect(sceneOf(await loadProject(folder)).legs[1]!.via.map((v) => v.at)).toEqual([AGENT_VIA, VIA])
+    } finally {
+      await close()
+    }
+  })
 
   test('the selected leg follows its stops when the agent inserts a stop before it', async () => {
     const { page, folder, close } = await openStudio()

@@ -16,10 +16,13 @@ export type PointTarget = { kind: 'stop'; id: string } | { kind: 'via'; leg: num
 
 export interface RouteEditorCallbacks {
   onSelectLeg(leg: number | undefined): void
-  /** Applies an edit. Resolves to whether it was saved. `label` names the edit for undo. */
-  onEdit(patch: ProjectPatch, label: string): Promise<boolean>
-  /** The user asked for a point's menu at this position in the window. */
-  onPointMenu(target: PointTarget, client: { x: number; y: number }): void
+  /**
+   * Applies an edit. Resolves to whether it was saved. `label` names the edit for undo. `seen` is the `updatedAt` of
+   * the project on screen when the gesture began, which an edit that finds a point by index is checked against.
+   */
+  onEdit(patch: ProjectPatch, label: string, seen?: string): Promise<boolean>
+  /** The user asked for a point's menu at this position in the window, on the project version `seen`. */
+  onPointMenu(target: PointTarget, client: { x: number; y: number }, seen?: string): void
 }
 
 export interface Edit {
@@ -89,6 +92,8 @@ export class RouteEditor {
   private dragging = new Set<Marker>()
   /** A drag ends with a click on the handle; that click is not an Alt-click. */
   private justDragged = new Set<Marker>()
+  /** The project version each handle being dragged was picked up on. */
+  private dragSeen = new Map<Marker, string | undefined>()
 
   constructor(
     private readonly stage: MapStage,
@@ -118,6 +123,7 @@ export class RouteEditor {
     this.stopMarkers.clear()
     this.viaMarkers = []
     this.dragging.clear()
+    this.dragSeen.clear()
   }
 
   private get scene(): Scene | undefined {
@@ -126,10 +132,18 @@ export class RouteEditor {
 
   /**
    * Sends an edit to the scene whose handles are on screen, which during a tab switch is still the old one until the
-   * new scene has loaded.
+   * new scene has loaded. `seen` is the project version the gesture began on: by default the one on screen now.
    */
-  private edit(patch: ProjectPatch, label: string): Promise<boolean> {
-    return this.cb.onEdit(this.sceneId === undefined ? patch : { ...patch, scene: this.sceneId }, label)
+  private edit(patch: ProjectPatch, label: string, seen = this.project?.updatedAt): Promise<boolean> {
+    return this.cb.onEdit(this.sceneId === undefined ? patch : { ...patch, scene: this.sceneId }, label, seen)
+  }
+
+  /** Ends a drag of `marker`, returning the project version it was picked up on. */
+  private endDrag(marker: Marker): string | undefined {
+    const seen = this.dragSeen.get(marker)
+    this.dragging.delete(marker)
+    this.dragSeen.delete(marker)
+    return seen
   }
 
   private readonly onMapClick = (e: MapMouseEvent): void => {
@@ -246,10 +260,11 @@ export class RouteEditor {
       e.preventDefault()
       e.stopPropagation()
       const t = target()
-      if (t) this.cb.onPointMenu(t, { x: e.clientX, y: e.clientY })
+      if (t) this.cb.onPointMenu(t, { x: e.clientX, y: e.clientY }, this.project?.updatedAt)
     })
     marker.on('dragstart', () => {
       this.dragging.add(marker)
+      this.dragSeen.set(marker, this.project?.updatedAt)
       this.justDragged.add(marker)
     })
     // The click that ends a drag comes straight after the mouseup; anything later is a new click.
@@ -261,11 +276,11 @@ export class RouteEditor {
     const marker = this.createHandle('stop-handle', () => ({ kind: 'stop', id }))
     marker.getElement().dataset.testid = `stop-marker-${id}`
     marker.on('dragend', () => {
-      this.dragging.delete(marker)
+      const seen = this.endDrag(marker)
       const name = this.scene?.stops.find((s) => s.id === id)?.name ?? id
       const { lng, lat } = marker.getLngLat()
       const patch: ProjectPatch = { ops: [{ op: 'update_stop', id, changes: { at: savedAt([lng, lat]) } }] }
-      void this.edit(patch, `Move ${name}`).then((saved) => {
+      void this.edit(patch, `Move ${name}`, seen).then((saved) => {
         // Nothing was saved, so no new project will move the marker: put it back over the stop.
         const stop = this.scene?.stops.find((s) => s.id === id)
         if (!saved && stop && this.stopMarkers.get(id) === marker && !this.dragging.has(marker)) marker.setLngLat(stop.at)
@@ -296,12 +311,13 @@ export class RouteEditor {
       void this.edit(edit.patch, edit.label)
     })
     marker.on('dragend', () => {
-      this.dragging.delete(marker)
+      // An agent write during the drag can make this handle's index point at another via point; `seen` catches that.
+      const seen = this.endDrag(marker)
       const w = where()
       if (!w) return
       const { lng, lat } = marker.getLngLat()
       const patch: ProjectPatch = { ops: [{ op: 'update_via', leg: w.leg, index: w.index, changes: { at: savedAt([lng, lat]) } }] }
-      void this.edit(patch, 'Move a via point').then((saved) => {
+      void this.edit(patch, 'Move a via point', seen).then((saved) => {
         const route = this.stage.route
         const at = route && this.viaMarkers[w.index] === marker && this.viaLeg === w.leg && this.viaPosition(route, w.leg, w.index)
         if (!saved && at && !this.dragging.has(marker)) marker.setLngLat(at)

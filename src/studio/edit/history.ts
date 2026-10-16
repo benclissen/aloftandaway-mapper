@@ -105,6 +105,25 @@ export class EditHistory {
 const newer = (a: Project, b: Project) => Date.parse(a.updatedAt) > Date.parse(b.updatedAt)
 
 /**
+ * The newest version written from outside the studio (by the agent or the CLI) that the studio knows of. An edit that
+ * finds a leg or via point by index is refused when the view it was made on is older than that write, since the
+ * write may have moved what the index points at.
+ */
+export class OutsideWrites {
+  private last: string | undefined
+
+  /** Notes that version `updatedAt` was written from outside the studio. */
+  saw(updatedAt: string): void {
+    if (this.last === undefined || Date.parse(updatedAt) > Date.parse(this.last)) this.last = updatedAt
+  }
+
+  /** Whether something outside the studio wrote after version `seen`. */
+  since(seen: string): boolean {
+    return this.last !== undefined && Date.parse(this.last) > Date.parse(seen)
+  }
+}
+
+/**
  * Sends patches one at a time. Each `make` runs only once the previous send has settled, and gets the newest project
  * it knows of: the caller's `current()` or the last saved response, whichever is newer. So a patch and its inverse are
  * always computed against the project the server will apply them to, unless something outside the studio writes too.

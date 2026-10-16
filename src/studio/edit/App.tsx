@@ -13,7 +13,7 @@ import {
   type Scene,
 } from '../../core/index.js'
 import { CLIENT_ID, getProject, patch, RequestError, sceneParam, setSceneParam, subscribe } from './api.js'
-import { EditHistory, EditQueue, redoPatch, SCENE_OPS, scenesAround, type Entry } from './history.js'
+import { EditHistory, EditQueue, OutsideWrites, redoPatch, SCENE_OPS, scenesAround, type Entry } from './history.js'
 import { LegsPanel } from './LegsPanel.js'
 import { PointMenu } from './PointMenu.js'
 import { isSharp, removeViaEdit, sharpEdit, type PointTarget } from './RouteEditor.js'
@@ -68,7 +68,8 @@ export function App() {
   const [freeView, setFreeView] = useState(false)
   const [notice, setNotice] = useState<Notice>()
   const [selectedLeg, setSelectedLeg] = useState<LegPair>()
-  const [pointMenu, setPointMenu] = useState<{ target: PointTarget; at: { x: number; y: number } }>()
+  /** The open point menu, and the project version it was opened on. */
+  const [pointMenu, setPointMenu] = useState<{ target: PointTarget; at: { x: number; y: number }; seen?: string }>()
   /** The scene on screen. It is a scene of `project` whenever `project` is. */
   const [activeSceneId, setActiveSceneId] = useState<string>()
   /** `activeSceneId`, readable outside a render and set at once. */
@@ -80,6 +81,7 @@ export function App() {
   const current = useRef<Project | undefined>(undefined)
   const [history] = useState(() => new EditHistory())
   const [queue] = useState(() => new EditQueue(patch))
+  const [outside] = useState(() => new OutsideWrites())
   // EditHistory isn't React state; this re-renders the undo and redo buttons when it changes.
   const [, historyChanged] = useReducer((n: number) => n + 1, 0)
 
@@ -149,6 +151,19 @@ export function App() {
   )
 
   /**
+   * Something outside the studio wrote version `updatedAt`, and the studio now shows it or a later one. Index edits
+   * begun on an older view will be refused, the point menu (which holds an index) closes, and the history is cleared.
+   */
+  const outsideChange = useCallback(
+    (updatedAt: string) => {
+      outside.saw(updatedAt)
+      setPointMenu(undefined)
+      clearHistory()
+    },
+    [outside, clearHistory],
+  )
+
+  /**
    * Takes a saved response. When the server applied the patch to a version other than the one the studio sent it
    * against, something outside the studio wrote in between and the history no longer lines up, so it's cleared.
    * Returns whether the base matched.
@@ -157,10 +172,11 @@ export function App() {
     (response: PatchResponse, held: string): boolean => {
       accept(response.project, response.seaPaths)
       if (response.previousUpdatedAt === held) return true
-      clearHistory()
+      // Edits go out one at a time, so the version the patch was applied to was written from outside.
+      outsideChange(response.previousUpdatedAt)
       return false
     },
-    [accept, clearHistory],
+    [accept, outsideChange],
   )
 
   useEffect(() => {
@@ -168,7 +184,12 @@ export function App() {
     try {
       // A newer version that this page didn't patch came from outside: the agent or the CLI.
       const onMessage = ({ project: incoming, seaPaths: paths, origin }: { project: Project; seaPaths: SeaPaths; origin?: string }) => {
-        if (accept(incoming, paths) && origin !== CLIENT_ID) clearHistory()
+        if (accept(incoming, paths)) {
+          if (origin !== CLIENT_ID) outsideChange(incoming.updatedAt)
+        } else if (origin !== CLIENT_ID) {
+          // Already seen through a newer response; still, a view older than it is stale.
+          outside.saw(incoming.updatedAt)
+        }
       }
       return subscribe(onMessage, () =>
         setNotice({ kind: 'error', text: "Lost the connection to Mapper. Reload to see your agent's changes." }),
@@ -177,7 +198,7 @@ export function App() {
       setLoadError((e as Error).message)
       return undefined
     }
-  }, [accept, clearHistory])
+  }, [accept, outside, outsideChange])
 
   useEffect(() => {
     if (notice?.kind !== 'info') return
@@ -262,12 +283,15 @@ export function App() {
    * against the project it is sent against, and resolves to whether it was saved. A failure shows the reason. `label`
    * names the edit for undo; `saved`, when given, is shown once it's saved.
    *
-   * An edit that finds a leg or via point by index is sent only if the project is still the version the studio holds,
-   * since an unseen write may have moved what that index points at. Stop and scene edits name what they change by id
-   * and are always applied.
+   * An edit that finds a leg or via point by index may have had that index moved under it by a write from outside, so
+   * it is refused when such a write came after `seen`, the version the user's gesture began on (by default the one on
+   * screen now), even if it is still waiting behind another edit. It is also sent only if the project is still the
+   * version the studio holds, so a write the studio hasn't heard of yet refuses it too. Stop and scene edits name what
+   * they change by id and are always applied.
    */
   const edit = useCallback(
-    (input: ProjectPatch, label: string, saved?: string): Promise<boolean> => {
+    (input: ProjectPatch, label: string, opts: { saved?: string; seen?: string } = {}): Promise<boolean> => {
+      const { saved, seen = current.current?.updatedAt } = opts
       // An edit to a scene's contents names the scene it was made on, even if the tab changes before it is sent.
       const editsStops = input.ops?.some((op) => !SCENE_OPS.has(op.op)) ?? false
       const touchesScene = input.sceneSet !== undefined || editsStops
@@ -281,9 +305,14 @@ export function App() {
       let inverse: ProjectPatch | undefined
       let around: { sceneBefore: string; sceneAfter: string } | undefined
       let problem = ''
+      let stale = false
       const make = (base: Project): ProjectPatch | undefined => {
         held = base.updatedAt
         sentIn = generation.current
+        if (conditional && seen !== undefined && outside.since(seen)) {
+          stale = true
+          return undefined
+        }
         try {
           // Applying it here first turns a patch that doesn't fit the project into a readable error.
           applyPatch(base, body)
@@ -297,6 +326,10 @@ export function App() {
       }
       return queue.run(make, () => current.current!, { conditional }).then(
         (response) => {
+          if (!response && stale) {
+            setNotice({ kind: 'error', text: ROUTE_CHANGED })
+            return false
+          }
           if (!response || !inverse || !around) {
             setNotice({ kind: 'error', text: `Not saved. ${problem}` })
             return false
@@ -310,14 +343,14 @@ export function App() {
           return true
         },
         (e: Error) => {
-          // Only a conditional edit can be refused as stale. The agent's write reaches the studio over the WebSocket.
+          // Only a conditional edit can be refused as stale, here by a write the studio hadn't heard of when it sent it.
           if (e instanceof RequestError && e.status === 409) setNotice({ kind: 'error', text: ROUTE_CHANGED })
           else setNotice({ kind: 'error', text: `Not saved. ${e.message}` })
           return false
         },
       )
     },
-    [queue, history, settle],
+    [queue, history, outside, settle],
   )
 
   /**
@@ -411,8 +444,11 @@ export function App() {
     void edit({ ops: [{ op: 'remove_scene', id }] }, `Delete ${sceneName(id)}`).then(() => deleting.current.delete(id))
   }
 
-  const onEdit = useCallback((body: ProjectPatch, label: string) => edit(body, label), [edit])
-  const onPointMenu = useCallback((target: PointTarget, at: { x: number; y: number }) => setPointMenu({ target, at }), [])
+  const onEdit = useCallback((body: ProjectPatch, label: string, seen?: string) => edit(body, label, { seen }), [edit])
+  const onPointMenu = useCallback(
+    (target: PointTarget, at: { x: number; y: number }, seen?: string) => setPointMenu({ target, at, seen }),
+    [],
+  )
   const closePointMenu = useCallback(() => setPointMenu(undefined), [])
   const onUserMove = useCallback(() => setFreeView(true), [])
   const onStageError = useCallback((message: string) => setNotice({ kind: 'error', text: message }), [])
@@ -423,8 +459,8 @@ export function App() {
   const saveShot = (which: 'start' | 'end') => {
     const shot = stage.current?.shot()
     if (!shot) return
-    if (which === 'start') void edit({ sceneSet: { camera: { start: shot } } }, 'Set the start shot', 'Start shot saved')
-    else void edit({ sceneSet: { camera: { end: shot } } }, 'Set the end shot', 'End shot saved')
+    if (which === 'start') void edit({ sceneSet: { camera: { start: shot } } }, 'Set the start shot', { saved: 'Start shot saved' })
+    else void edit({ sceneSet: { camera: { end: shot } } }, 'Set the end shot', { saved: 'End shot saved' })
   }
 
   return (
@@ -463,13 +499,13 @@ export function App() {
           sharp={isSharp(scene, pointMenu.target)!}
           onToggleSharp={() => {
             const edit = sharpEdit(scene, pointMenu.target)
-            if (edit) void onEdit(edit.patch, edit.label)
+            if (edit) void onEdit(edit.patch, edit.label, pointMenu.seen)
           }}
           onRemove={() => {
             const { target } = pointMenu
             if (target.kind !== 'via') return
             const edit = removeViaEdit(target.leg, target.index)
-            void onEdit(edit.patch, edit.label)
+            void onEdit(edit.patch, edit.label, pointMenu.seen)
           }}
           onClose={closePointMenu}
         />
@@ -523,7 +559,7 @@ export function App() {
             onUseEnd={() => saveShot('end')}
             onFit={() => {
               setFreeView(false)
-              void edit({ sceneSet: { camera: { start: null, end: null } } }, 'Fit to route', 'Camera fits the route')
+              void edit({ sceneSet: { camera: { start: null, end: null } } }, 'Fit to route', { saved: 'Camera fits the route' })
             }}
           />
           <StylePicker theme={scene.look.theme} terrain={scene.look.terrain} onEdit={onEdit} />

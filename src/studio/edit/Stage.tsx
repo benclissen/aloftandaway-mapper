@@ -32,9 +32,12 @@ interface StageProps {
   /** The user panned, zoomed, rotated or tilted the map. */
   onUserMove(): void
   onSelectLeg(leg: number | undefined): void
-  /** Applies an edit made on the map and resolves to whether it was saved; if not, a dragged handle goes back. */
-  onEdit(patch: ProjectPatch, label: string): Promise<boolean>
-  onPointMenu(target: PointTarget, client: { x: number; y: number }): void
+  /**
+   * Applies an edit made on the map and resolves to whether it was saved; if not, a dragged handle goes back. `seen`
+   * is the project version the gesture began on.
+   */
+  onEdit(patch: ProjectPatch, label: string, seen?: string): Promise<boolean>
+  onPointMenu(target: PointTarget, client: { x: number; y: number }, seen?: string): void
   onError(message: string): void
 }
 
@@ -253,8 +256,8 @@ export function Stage(props: StageProps) {
     const controller = new StageController(containerRef.current!, {
       onUserMove: () => callbacks.current.onUserMove(),
       onSelectLeg: (leg) => callbacks.current.onSelectLeg(leg),
-      onEdit: (patch, label) => callbacks.current.onEdit(patch, label),
-      onPointMenu: (target, client) => callbacks.current.onPointMenu(target, client),
+      onEdit: (patch, label, seen) => callbacks.current.onEdit(patch, label, seen),
+      onPointMenu: (target, client, seen) => callbacks.current.onPointMenu(target, client, seen),
       onError: (message) => callbacks.current.onError(message),
       onShown: setShownFrame,
     })

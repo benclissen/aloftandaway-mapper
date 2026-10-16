@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { applyPatch, type PatchResponse, type Project, type ProjectPatch } from '../../src/core/index.js'
-import { EditHistory, EditQueue, redoPatch, scenesAround } from '../../src/studio/edit/history.js'
+import { EditHistory, EditQueue, OutsideWrites, redoPatch, scenesAround } from '../../src/studio/edit/history.js'
 import { greekIslands, twoScenes } from '../fixtures/projects.js'
 
 const SCENE = 'a0000000-0000-4000-8000-000000000001'
@@ -178,5 +178,30 @@ describe('EditQueue', () => {
     })
     expect(await queue.run(() => undefined, () => initial)).toBeUndefined()
     expect(calls).toBe(0)
+  })
+})
+
+describe('OutsideWrites', () => {
+  const T0 = '2026-10-16T10:00:00.000Z'
+  const T1 = '2026-10-16T10:00:01.000Z'
+  const T2 = '2026-10-16T10:00:02.000Z'
+
+  test('nothing is stale before any outside write', () => {
+    expect(new OutsideWrites().since(T0)).toBe(false)
+  })
+
+  test('a view older than the last outside write is stale; the same or a newer one is not', () => {
+    const outside = new OutsideWrites()
+    outside.saw(T1)
+    expect(outside.since(T0)).toBe(true)
+    expect(outside.since(T1)).toBe(false)
+    expect(outside.since(T2)).toBe(false)
+  })
+
+  test('keeps the newest write it was told of, in whatever order they arrive', () => {
+    const outside = new OutsideWrites()
+    outside.saw(T2)
+    outside.saw(T0)
+    expect(outside.since(T1)).toBe(true)
   })
 })

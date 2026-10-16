@@ -796,6 +796,21 @@ describe('scene tabs', () => {
   test("undo of a delete doesn't reopen its menu or rename", async () => {
     const { page, folder, close } = await openTwo()
     try {
+      await choose(page, 0, 'Delete')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Sail'])
+      await page.getByTestId('undo').click()
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Sail'])
+      await expect.poll(() => page.locator('.scene-tab').count()).toBe(2)
+      expect(await page.getByTestId('scene-menu').count()).toBe(0)
+      expect(await page.getByTestId('scene-rename').count()).toBe(0)
+    } finally {
+      await close()
+    }
+  })
+
+  test('a menu or rename field left on a scene that goes away does not come back with it', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
       // A menu left open on a scene that goes away does not come back with it.
       await page.getByTestId('scene-add').click()
       await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Scene 2', 'Sail'])
@@ -814,13 +829,29 @@ describe('scene tabs', () => {
       await choose(page, 1, 'Rename')
       await page.getByTestId('scene-rename').waitFor()
       await mutateProject(folder, (p) => ({ ...p, scenes: p.scenes.filter((s) => s.id !== scenes[1]!.id) }))
-      await expect.poll(() => tabNames(page)).toHaveLength(2)
-      // Let the studio take the first write in before the second lands; two agent writes in the same instant can be seen as one.
-      await page.waitForTimeout(600)
+      // Counts every tab, including one being renamed, so this proves the removal reached the studio.
+      await expect.poll(() => page.locator('.scene-tab').count()).toBe(2)
+      expect(await page.getByTestId('scene-rename').count()).toBe(0)
       await mutateProject(folder, (p) => ({ ...p, scenes }))
       await expect.poll(() => tabNames(page)).toHaveLength(3)
       expect(await page.getByTestId('scene-rename').count()).toBe(0)
       expect(await page.getByTestId('scene-menu').count()).toBe(0)
+    } finally {
+      await close()
+    }
+  })
+
+  test('back-to-back agent writes end on the final state', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      const scenes = (await loadProject(folder)).scenes
+      // No wait between them: the server may send only the last one, which is the state the studio must end on.
+      await mutateProject(folder, (p) => ({ ...p, scenes: p.scenes.filter((s) => s.id !== SAIL) }))
+      await mutateProject(folder, (p) => ({ ...p, scenes: [...scenes, { ...scenes[1]!, id: '00000000-0000-4000-8000-000000000003', name: 'Return' }] }))
+      const final = (await loadProject(folder)).scenes.map((s) => s.name)
+      expect(final).toEqual(['Drive', 'Sail', 'Return'])
+      await expect.poll(async () => (await tabNames(page)).map((t) => t.split(' · ')[0])).toEqual(final)
+      expect(await page.getByTestId('undo').isEnabled()).toBe(false)
     } finally {
       await close()
     }
@@ -879,7 +910,6 @@ describe('scene tabs', () => {
         const hi = luminance(c.slice(0, 3))
         const lo = luminance(c.slice(3))
         const ratio = (Math.max(hi, lo) + 0.05) / (Math.min(hi, lo) + 0.05)
-        console.log(`inactive ${name} contrast ${ratio.toFixed(2)}:1`)
         expect(ratio, name).toBeGreaterThanOrEqual(7)
       }
     } finally {

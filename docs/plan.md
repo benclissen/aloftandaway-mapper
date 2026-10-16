@@ -13,6 +13,8 @@ something that works.
 | 4 | **Routes** (built): sea routing around land, flight arcs, follow camera, GPX import, validation warnings | A cruise route stays at sea |
 | 5 | **Look** (built): about 20 transports (motorcycle, ferry, cruise ship, campervan…), eleven map styles including the Aloft & Away theme, terrain and tilt | Videos look on-brand, with the right vehicle on each leg |
 | 6 | **Scenes** (built): several scenes per project, studio scene tabs, renders per scene or joined, a compound clip per scene in FCPXML | A two-scene project imports into Final Cut as two clips on one timeline |
+| 7 | **Fix pass** (built): every open item from stages 4–6 fixed with a test or parked with a reason. Render warnings, sign lift, turning symbols that follow the line on screen, blank scene names. The rare corrupt capture is parked (0 glitches in 3,000 loads, see [render-speed.md](render-speed.md)) | Every open item from stages 4–6 is fixed with a test or parked with a reason |
+| 8 | **Sea routes against OpenFreeMap water** (planned): vector tiles decoded in Node, land rebuilt from clipped tile polygons, the router given network access. Replaces the Baltic skerries item | A route through the Stockholm archipelago stays off every island the basemap draws |
 
 **Decision, 2026-10-14:** the default render is one flattened H.264 MP4
 (`all.mp4`). Layered ProRes plus FCPXML stays as an option (`layers`), and a

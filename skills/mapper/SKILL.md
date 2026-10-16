@@ -66,8 +66,9 @@ page.
   straight line. If it reports
   `sea-crosses-land`, a via point has pulled the route ashore. Add via points
   over open water to fix either.
-- Air legs draw as great-circle flight arcs. Via points split an air leg into
-  arcs that meet at corners.
+- Air legs follow the great circle, bowed toward the nearer pole so even short
+  flights curve (at least 15% of their length). Via points split an air leg
+  into arcs that meet at corners.
 - Follow camera: set `camera.mode: 'follow'` through `sceneSet`, with
   `camera.follow { zoom, orient, lookAhead, smoothing, pitch }`. Every field is
   optional, and a partial object is fine. `orient` is `'north'` (the default)
@@ -104,7 +105,9 @@ and timing, and the film plays them one after another.
   changed, as `Scene 2 of 2 · Sail`.
 - Scene ops go in `update_project`'s `ops`, with 0-based indexes:
   - `add_scene { index?, name?, copyLookFrom? }` inserts an empty scene, named
-    `Scene N` unless you give a name. It appends unless `index` is given.
+    `Scene N` unless you give a name. A blank name is refused. It appends
+    unless `index` is given. `copyLookFrom` is a scene id or a 1-based position
+    (unlike `index`, which is 0-based).
     Without `copyLookFrom`, it copies the look of the scene before the new one
     (the one after it when it goes first). It copies the look, the timing, and
     the camera's mode, easing and follow settings. It doesn't copy the start or
@@ -113,6 +116,10 @@ and timing, and the film plays them one after another.
     `<name> copy`, with new stop ids.
   - `remove_scene { id }`. The last scene can't be removed.
   - `move_scene { id, index }`.
+- A scene name can't be blank. `add_scene` and `sceneSet` refuse an empty or
+  all-space name, and names are stored without surrounding spaces. A project
+  file that already holds a blank name still loads, and the scene shows as
+  `Scene N`.
 - Scene ids are in `get_project`. In `update_project`, `scene` picks the scene
   that `sceneSet` and the stop, leg and via ops change, even if a scene op in
   the same patch moves it. Don't remove a scene in the same patch that edits
@@ -217,6 +224,20 @@ picker. Pick by what the film needs:
 - "Queued behind another render" or "Starting": no frames yet. Keep polling.
 - Done: the video path, the manifest path, the render folder and the credit
   line. Pass these on to the user.
+- A render can finish with warnings. They follow the result under `Warnings:`,
+  and they're also in `manifest.json`. `preview_frame` and
+  `preview_contact_sheet` report them too. Pass them on to the user. The most
+  likely one reads `Frames 12, 13 and 40: the camera height over terrain hadn't
+  settled, so these frames may differ slightly between renders and between
+  layers.` It only comes up with `look.terrain: true`, and it means the 3D
+  camera height wasn't steady on those frames, so they may sit a hair differently
+  from one render, or one layer, to the next. The clip is still good. To get
+  rid of it, render again, or lower the shot's pitch. The frame numbers count
+  from the start of that scene, as `preview_frame` counts them, not from the
+  start of a ranged output file. On a project with several scenes the line starts
+  with the scene, as `Scene 2 of 2 · Sail: frames 12 and 13 …`. Another warning
+  says Mapper couldn't delete the part files after joining scenes. The joined
+  clip is fine, and the leftover parts can be deleted by hand.
 - Failed: the error text ends with a fix. Apply it, or tell the user.
 - Cancelled: call `render` again if the user still wants the clip.
 
@@ -304,7 +325,7 @@ Every render that shows map data needs this map credit, exactly as written:
 
 Some looks need more lines:
 
-- `satellite` adds `Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016)`.
+- `satellite` adds `Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016), CC BY 4.0`.
 - Elevation data adds `Terrain: USGS, Copernicus EU-DEM, NOAA ETOPO1 and others`. That is
   `look.terrain: true`, and also `outdoor`, which always shades hills.
 - `blank` with terrain off needs no credit. It shows no map data (its sea routing data is

@@ -70,8 +70,9 @@ Sea legs route around land over the water, using Natural Earth 1:10m land
 outlines (public domain) shipped in `data/land-10m.bin`. A stop more than
 30 km from the sea, or a leg with no route found, is drawn as a straight line
 with a `sea-fallback` warning. Via points are forced waypoints: a route pulled
-ashore by one gets a `sea-crosses-land` warning. Air legs are great-circle
-arcs that bow toward the nearer pole. The follow camera keeps the moving
+ashore by one gets a `sea-crosses-land` warning. Air legs follow the
+great circle, bowed toward the nearer pole so even short flights curve (at
+least 15% of their length). The follow camera keeps the moving
 symbol in view, with its zoom, orientation and look-ahead set in the scene's
 camera. `import_gpx` turns a local GPX file into stops and via points. Land
 data credit: [Natural Earth](https://www.naturalearthdata.com/), see
@@ -170,6 +171,6 @@ Details, tool versions and the manual import checklist are in
 Every exported video must carry this credit, or carry it in the end credits
 or description if it's cropped out:
 
-© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap, plus EOxCloudless 2016 by EOX
-(contains modified Copernicus Sentinel data 2016) when satellite is used, and the
+© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap, plus Sentinel-2 cloudless 2016 by EOX IT Services GmbH
+(contains modified Copernicus Sentinel data 2016), CC BY 4.0 when satellite is used, and the
 AWS Terrain Tiles attribution when terrain is on (see [data/README.md](data/README.md)).

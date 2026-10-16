@@ -12,7 +12,7 @@ or copy.
 
 ## Status
 
-Stages 1 to 5 (agent-driven MVP, Final Cut export, route editing, routes, look) built. What works today:
+Stages 1 to 6 (agent-driven MVP, Final Cut export, route editing, routes, look, scenes) built. What works today:
 
 - An MCP server and CLI. The agent creates a project, sets stops, validates,
   previews, opens the studio and renders.
@@ -38,7 +38,8 @@ Stages 1 to 5 (agent-driven MVP, Final Cut export, route editing, routes, look) 
   credit with `set`.
 - The look: eleven map styles including the Aloft & Away series look, terrain
   with tilt, and drawn transport icons in three styles. See [Look](#look).
-- Not yet: several scenes per project.
+- Scenes: a project can hold several, each with its own stops, look, camera
+  and timing. See [Scenes](#scenes).
 
 Docs:
 
@@ -96,6 +97,16 @@ GmbH (CC BY 4.0), and terrain is from AWS Terrain Tiles with the sources listed 
 [data/README.md](data/README.md). Renders carry the credit lines their style
 needs.
 
+## Scenes
+
+A project can hold several scenes: one for each part of a trip that the film
+cuts between. Each scene has its own stops, route, look, camera and timing.
+The agent picks a scene with `scene`. A render joins the scenes into one clip
+with hard cuts, joined without re-encoding, or writes one file per scene with
+`--each`. `--scenes 1,3` picks which ones. The studio shows a tab per scene.
+In Final Cut Pro, each scene is its own compound clip, and the clips sit back
+to back on one timeline.
+
 ## Final Cut Pro export (optional)
 
 A plain `mapper render <folder>` writes `all.mp4`. Ask for layers only when you
@@ -111,18 +122,18 @@ Each render gets a folder under the project:
 
 ```
 <project>/renders/<timestamp>/
-  01-<project>/map.mov      ProRes 422 HQ
-  01-<project>/route.mov    ProRes 4444, alpha
-  01-<project>/signs.mov    ProRes 4444, alpha
+  01-<scene-slug>/map.mov   ProRes 422 HQ
+  01-<scene-slug>/route.mov ProRes 4444, alpha
+  01-<scene-slug>/signs.mov ProRes 4444, alpha
   <project>.fcpxml          FCPXML 1.11, checked against Final Cut's DTD when installed
   preview.mp4               H.264 check clip, with `preview`
   manifest.json
 ```
 
-Import the `.fcpxml` into Final Cut Pro. The `Mapper` event gets a compound
-clip: map on the primary storyline, route on lane 1 and signs on lane 2, with
-roles `Map.Base`, `Map.Route` and `Map.Signs`, and a marker at each stop
-arrival inside the range. The FCPXML points at the media by absolute path, so
+Import the `.fcpxml` into Final Cut Pro. The `Mapper` event gets one compound
+clip per scene: map on the primary storyline, route on lane 1 and signs on
+lane 2, with roles `Map.Base`, `Map.Route` and `Map.Signs`, and a marker at
+each stop arrival inside the range. The FCPXML points at the media by absolute path, so
 if you move the render folder, Final Cut asks you to relink.
 
 - The map credit is still required. If the project's `credit` is
@@ -135,7 +146,6 @@ if you move the render folder, Final Cut asks you to relink.
   per minute at 4K25.
 - Cancelling or a failure keeps the layers that finished, and the manifest
   lists them.
-- One scene per project for now.
 
 Details, tool versions and the manual import checklist are in
 [docs/final-cut-export.md](docs/final-cut-export.md).

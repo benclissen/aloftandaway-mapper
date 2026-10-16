@@ -28,12 +28,14 @@ page.
    (default `'line'`) and `symbol` work as they do in `set_stops`.
 4. `validate_project`. Fix every warning, or explain it to the user.
 5. `preview_contact_sheet` and look at it: framing, labels, stop timing. Use
-   `preview_frame` for a closer look at one moment.
+   `preview_frame` for a closer look at one moment. On a project with several
+   scenes, check each scene (see "Scenes").
 6. Tweak with `update_project`, then check the contact sheet again. `set`
    changes the project's name, output and credit. `sceneSet` changes the
    scene's name, timing, look and camera (for example `look.theme`,
-   `look.terrain` or `look.symbolStyle`). `ops`
-   edits stops, legs and via points. Passing `null` removes a key.
+   `look.terrain` or `look.symbolStyle`). `ops` edits stops, legs and via
+   points, and adds, duplicates, removes or moves scenes. Passing `null`
+   removes a key.
 7. `open_studio` and give the user the link. They can scrub the preview, drag
    stops, set start and end shots, and reshape routes: click a leg to select
    it, click again to add a via point, drag points, and Alt-click or right-click
@@ -43,8 +45,9 @@ page.
 9. `render` returns a `jobId`. Render the default flattened H.264 MP4 unless
    the user asks for Final Cut layers or a ProRes master. For layers, pass
    `layers: ["map","route","signs"]` (see "Final Cut Pro export"); for a
-   flattened ProRes master, pass `codec: "prores"`. Poll `render_status` every
-   few seconds.
+   flattened ProRes master, pass `codec: "prores"`. To render some scenes, or
+   one file per scene, pass `scenes` and `join` (see "Scenes"). Poll
+   `render_status` every few seconds.
 10. Report the output paths and the required credit.
 
 `get_project` reads the current state at any point.
@@ -83,9 +86,64 @@ page.
 - Check the result with `preview_contact_sheet`.
 - The user may have reshaped the route in the studio. Read `get_project`
   before changing legs, so you don't undo their edits.
-- Stops, legs, look, camera and timing live in `project.scenes[0]`. The
-  per-scene timeline and resolved camera shots are in `scenes[0]` of the
-  result, next to `project`.
+- Stops, legs, look, camera and timing live in each scene in `project.scenes`.
+  The result's `scenes` list has each scene's position, its timeline and its
+  resolved camera shots, next to `project`.
+
+## Scenes
+
+A project can hold several scenes. Each has its own stops, legs, look, camera
+and timing, and the film plays them one after another.
+
+- Split a trip into scenes when the film cuts away between parts of it, for
+  example a drive and then a sail. Keep one scene when the route plays as one
+  continuous shot.
+- Every tool that works on one scene takes `scene`: a scene id, or its 1-based
+  position. Without it, the tool uses the first scene.
+- On a project with more than one scene, every result names the scene it
+  changed, as `Scene 2 of 2 · Sail`.
+- Scene ops go in `update_project`'s `ops`, with 0-based indexes:
+  - `add_scene { index?, name?, copyLookFrom? }` inserts an empty scene, named
+    `Scene N` unless you give a name. It appends unless `index` is given.
+    Without `copyLookFrom`, it copies the look of the scene before the new one
+    (the one after it when it goes first). It copies the look, the timing, and
+    the camera's mode, easing and follow settings. It doesn't copy the start or
+    end shots.
+  - `duplicate_scene { id }` puts a deep copy right after the original, named
+    `<name> copy`, with new stop ids.
+  - `remove_scene { id }`. The last scene can't be removed.
+  - `move_scene { id, index }`.
+- Scene ids are in `get_project`. In `update_project`, `scene` picks the scene
+  that `sceneSet` and the stop, leg and via ops change, even if a scene op in
+  the same patch moves it. Don't remove a scene in the same patch that edits
+  it.
+- Call `preview_contact_sheet` once per scene before rendering. On a project
+  with several scenes, the saved previews are named
+  `scene<position>-frame-<n>.png` and `scene<position>-contact-<stamp>.png`.
+- `render` joins the picked scenes by default. The cut between scenes is a hard
+  cut, with no transition. Add transitions in Final Cut if the film needs them.
+  - `scenes` picks scenes by id or position. The default is all of them. They
+    always render in film order, and duplicates are refused.
+  - `join: false` writes one file per scene. Then `range` works only with one
+    scene picked.
+  - `range` is in seconds on the joined timeline (on the picked scenes, back to
+    back).
+  - Errors block a render only in a picked scene. The credit covers only the
+    rendered scenes.
+  - The finished render lists where each scene starts in the joined clip, as
+    MM:SS:FF, for example `Scene 2 · Sail starts at 00:07:00`.
+  - On the CLI, the same options are `--scenes 1,3` and `--each`.
+- The studio shows one tab per scene, so the user can switch between them.
+
+Output folders with several scenes (`<scene-slug>` is the scene's name, and
+`01`, `02` are its film position):
+
+| | `join: true` (default) | `join: false` |
+|---|---|---|
+| Flattened | `all.mp4` or `all.mov` | `01-<scene-slug>.mp4` or `.mov`, `02-…` |
+| Preview | `preview.mp4` | `01-<scene-slug>-preview.mp4` |
+| Layers | `01-<scene-slug>/map.mov`, `route.mov`, `signs.mov` | same |
+| FCPXML | compound clips plus a project timeline | compound clips only |
 
 ## Look and camera
 
@@ -150,7 +208,8 @@ picker. Pick by what the film needs:
 
 ## What Mapper can't do yet
 
-- One scene per project.
+- Transitions between scenes. A joined render uses hard cuts, and a layered
+  export gets its transitions in Final Cut Pro.
 
 ## Reading `render_status`
 
@@ -173,6 +232,9 @@ Each render gets its own folder under the project:
 <project>/renders/<timestamp>/manifest.json
 ```
 
+With `join: false`, the flattened files are one per scene instead (see
+"Scenes").
+
 The manifest records the settings and where the credit went.
 
 ## Final Cut Pro export (optional)
@@ -187,17 +249,19 @@ clip, the default) and `preview` (an H.264 check clip). From a shell:
 
 ```
 <project>/renders/<timestamp>/
-  01-<project>/map.mov      ProRes 422 HQ
-  01-<project>/route.mov    ProRes 4444, alpha
-  01-<project>/signs.mov    ProRes 4444, alpha
+  01-<scene-slug>/map.mov      ProRes 422 HQ
+  01-<scene-slug>/route.mov    ProRes 4444, alpha
+  01-<scene-slug>/signs.mov    ProRes 4444, alpha
   <project>.fcpxml          FCPXML 1.11, validated against Final Cut's DTD if installed
   preview.mp4
   manifest.json
 ```
 
-- Tell the user to import the `.fcpxml`. The `Mapper` event holds a compound
-  clip with map on the primary storyline, route on lane 1 and signs on lane 2
-  (roles `Map.Base`, `Map.Route`, `Map.Signs`).
+- Tell the user to import the `.fcpxml`. The `Mapper` event holds one compound
+  clip per scene, named `<project> · <scene>`. Each has map on the primary
+  storyline, route on lane 1 and signs on lane 2 (roles `Map.Base`,
+  `Map.Route`, `Map.Signs`). With `join` (the default), a project timeline
+  places the scene clips back to back.
 - There is a marker at each stop arrival in the range, named with the stop's
   label or `Day N · name`. With `range`, times count from the range start, and
   frames run from `floor(from × fps)` to `ceil(to × fps)`.
@@ -214,7 +278,8 @@ clip, the default) and `preview` (an H.264 check clip). From a shell:
 - The FCPXML is validated against Final Cut's DTD when Final Cut Pro is
   installed; otherwise validation is skipped and recorded as `skipped-no-fcp`.
   `render_status` says which happened.
-- Final Cut import hasn't been checked by hand yet. See
+- Final Cut import hasn't been checked by hand yet. The check for a two-scene
+  layered export is waiting for the user's import. See
   `docs/final-cut-export.md`.
 
 ## Changes for existing projects
@@ -226,6 +291,10 @@ Projects made before stage 5 still load, with these intended differences:
 - A project with `terrain: true` now renders in 3D. It used to render flat.
 - A symbol other than `dot` now draws its icon in place of the dot.
 - Sign text uses Plus Jakarta Sans.
+
+Projects made before stage 6 still load. Their one scene keeps its stops and
+settings. The layer folder is now named after the scene (`01-<scene-slug>`, not
+`01-<project>`), which is usually the same name.
 
 ## Credit
 

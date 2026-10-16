@@ -9,7 +9,7 @@ import {
   type Project,
   type SeaPaths,
 } from '../../src/core/index.js'
-import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
+import { emptyProject, greekIslands, pacific, projectWithScenes, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 const paperLook = { ...sceneOf(greekIslands()).look, theme: 'paper' as const }
 
@@ -119,7 +119,17 @@ describe('validateProject', () => {
     const both = validateProject(project).warnings.filter((w) => w.code === 'zoom-above-max')
     expect(both).toEqual([expect.objectContaining({ path: ['scenes', 0, 'camera'] })])
     expect(both[0]!.message).toContain('fitted start and end views are at zoom 16')
-    expect(both[0]!.fix).toContain('camera.resolvedStart and scenes[0].camera.resolvedEnd')
+    expect(both[0]!.fix).toContain('scenes[0].camera.resolvedStart and scenes[0].camera.resolvedEnd')
+  })
+
+  test("zoom fix string names the scene's index", () => {
+    const project = projectWithScenes(2)
+    const close = sceneOf(stopsAt([[25, 37], [25.01, 37]], { look: paperLook, camera: { mode: 'fixed', easing: 'smooth' } }))
+    project.scenes[1] = { ...close, id: project.scenes[1]!.id }
+    const warning = validateProject(project).warnings.find((w) => w.code === 'zoom-above-max')!
+    expect(warning.path).toEqual(['scenes', 1, 'camera'])
+    expect(warning.fix).toContain('scenes[1].camera.resolvedStart and scenes[1].camera.resolvedEnd')
+    expect(warning.fix).not.toContain('scenes[0]')
   })
 
   test('a short first hop gives no zoom-above-max warning', () => {

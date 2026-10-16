@@ -1,5 +1,6 @@
 export * from './schema.js'
 export * from './migrate.js'
+export * from './scenes.js'
 export * from './patch.js'
 export * from './undo.js'
 export * from './geo.js'

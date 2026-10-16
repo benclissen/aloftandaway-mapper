@@ -12,7 +12,7 @@ import {
   type StopInput,
   type StopOp,
 } from '../../src/core/index.js'
-import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
+import { emptyProject, greekIslands, pacific, projectWithScenes, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 const s = (name: string, at: LngLat = [0, 0]): StopInput => ({ name, at })
 
@@ -522,5 +522,46 @@ describe('via ops and clearing fields', () => {
       applyPatch(base, { ops: [{ op: 'insert_via', leg: 0, index: 0, point: { at: [24, 37.5] } }, { op: 'remove_via', leg: 0, index: 5 }] }),
     )
     expect(base).toEqual(copy)
+  })
+})
+
+describe('scene-targeted patches', () => {
+  test('sceneSet and ops act on the chosen scene', () => {
+    const project = projectWithScenes(2, ['Drive', 'Sail'])
+    const before = structuredClone(project)
+    const out = applyPatch(project, {
+      scene: 2,
+      sceneSet: { name: 'Cruise', look: { theme: 'paper' } },
+      ops: [{ op: 'update_stop', id: 'mykonos', changes: { name: 'Naxos' } }],
+    })
+    expect(out.scenes[0]).toEqual(before.scenes[0])
+    expect(out.scenes[1]!.name).toBe('Cruise')
+    expect(out.scenes[1]!.look.theme).toBe('paper')
+    expect(out.scenes[1]!.stops.find((x) => x.id === 'mykonos')!.name).toBe('Naxos')
+    expect(project).toEqual(before)
+    // The same scene by id.
+    const byId = applyPatch(project, { scene: before.scenes[1]!.id, sceneSet: { name: 'Cruise' } })
+    expect(byId.scenes[1]!.name).toBe('Cruise')
+    expect(byId.scenes[0]).toEqual(before.scenes[0])
+  })
+
+  test('a stop id from another scene fails', () => {
+    const project = projectWithScenes(2)
+    project.scenes[0]!.stops[0]!.id = 'only-in-one'
+    const e = failure(() => applyPatch(project, { scene: 2, ops: [{ op: 'update_stop', id: 'only-in-one', changes: { name: 'X' } }] }))
+    expect(e.issues[0]!.path).toEqual(['ops', 0, 'id'])
+  })
+
+  test('an unknown scene fails with the scene path', () => {
+    const e = failure(() => applyPatch(projectWithScenes(2), { scene: 5, sceneSet: { name: 'X' } }))
+    expect(e.issues[0]!.path).toEqual(['scene'])
+  })
+
+  test('setStops replaces only the chosen scene', () => {
+    const project = projectWithScenes(2)
+    const out = setStops(project, { scene: 2, stops: [s('A', [1, 1]), s('B', [2, 2])] })
+    expect(out.scenes[0]).toEqual(project.scenes[0])
+    expect(out.scenes[1]!.stops.map((x) => x.name)).toEqual(['A', 'B'])
+    expect(out.scenes[1]!.legs).toHaveLength(1)
   })
 })

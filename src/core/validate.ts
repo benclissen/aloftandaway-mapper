@@ -31,7 +31,7 @@ export function validateProject(
   const warnings: Issue[] = []
   project.scenes.forEach((scene, i) => {
     const prefix = (issue: Issue): Issue => (issue.path ? { ...issue, path: ['scenes', i, ...issue.path] } : issue)
-    const found = validateScene(scene, project.output.aspect, project.output.fps, opts.seaPaths)
+    const found = validateScene(scene, i, project.output.aspect, project.output.fps, opts.seaPaths)
     errors.push(...found.errors.map(prefix))
     warnings.push(...found.warnings.map(prefix))
   })
@@ -88,9 +88,10 @@ function signOverlaps(
 /** A zoom for a message, rounded up to 2 decimals and trimmed, so a value over the maximum never reads as the maximum. */
 const zoomText = (zoom: number): string => String(Math.ceil(zoom * 100 - 1e-9) / 100)
 
-/** Checks one scene. Issue paths are relative to the scene. */
+/** Checks one scene, the `index`th. Issue paths are relative to the scene. */
 function validateScene(
   scene: Scene,
+  index: number,
   aspect: Aspect,
   fps: Fps,
   seaPaths: SeaPaths | undefined,
@@ -164,7 +165,7 @@ function validateScene(
       // end shot too. So every fitted shot listed here has the same zoom.
       const zoom = zoomText(resolved[fitted[0]!].zoom)
       const views = `${fitted.join(' and ')} ${fitted.length > 1 ? 'views are' : 'view is'} at zoom ${zoom}`
-      const resolvedName = (w: 'start' | 'end') => `scenes[0].camera.resolved${w === 'start' ? 'Start' : 'End'}`
+      const resolvedName = (w: 'start' | 'end') => `scenes[${index}].camera.resolved${w === 'start' ? 'Start' : 'End'}`
       warnings.push({
         code: 'zoom-above-max',
         message: `The ${look.theme} theme's tiles stop at zoom ${max}, but the fitted ${views}`,

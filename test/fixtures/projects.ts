@@ -32,6 +32,21 @@ function lineProject(name: string, stops: Stop[], overrides: Partial<Scene>): Pr
   return { ...base, scenes: [scene] }
 }
 
+/**
+ * `n` scenes, each a copy of the Greek Islands scene with its own id and a name from `names` (default "Scene 1" and
+ * so on). The first keeps the project's scene id.
+ */
+export function projectWithScenes(n: number, names: string[] = []): Project {
+  const project = greekIslands()
+  const first = sceneOf(project)
+  project.scenes = Array.from({ length: n }, (_, i) => ({
+    ...structuredClone(first),
+    id: i === 0 ? first.id : `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`,
+    name: names[i] ?? `Scene ${i + 1}`,
+  }))
+  return project
+}
+
 export function greekIslands(scene: Partial<Scene> = {}): Project {
   return lineProject(
     'Greek Islands',

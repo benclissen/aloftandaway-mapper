@@ -1,5 +1,5 @@
 import { applyPatch, isSceneOp, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
-import { resolveScene } from './scenes.js'
+import { resolveScene, sceneTitleOf } from './scenes.js'
 import { defaultModeFor, type Project } from './schema.js'
 
 type Obj = Record<string, unknown>
@@ -107,7 +107,13 @@ export function invertPatch(before: Project, patch: ProjectPatch): ProjectPatch 
 
   const inverse: ProjectPatch = {}
   if (patch.sceneSet || editsStops) inverse.scene = sceneId
-  if (patch.sceneSet) inverse.sceneSet = invertMerge(resolveScene(before, sceneId).scene, patch.sceneSet)
+  if (patch.sceneSet) {
+    const { scene, index } = resolveScene(before, sceneId)
+    inverse.sceneSet = invertMerge(scene, patch.sceneSet)
+    // An old file can hold a blank scene name, and a patch refuses one. Undo restores the title it showed, `Scene N`.
+    const name = inverse.sceneSet.name
+    if (typeof name === 'string' && !name.trim()) inverse.sceneSet.name = sceneTitleOf(name, index)
+  }
   // Invert each op against the state it ran on, then undo them last to first.
   let state = before
   const inverted: PatchOp[] = []

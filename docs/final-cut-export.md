@@ -11,6 +11,8 @@ the FCPXML is laid out, and what has and hasn't been verified.
 mapper render /absolute/path/to/project --layers map,route,signs
 mapper render /absolute/path/to/project --layers map,route,signs,preview
 mapper render /absolute/path/to/project --layers map,route,signs --from 2 --to 4
+mapper render /absolute/path/to/project --layers map,route,signs --scenes 1,3
+mapper render /absolute/path/to/project --layers map,route,signs --each
 mapper render /absolute/path/to/project                   # default: flattened H.264 all.mp4
 mapper render /absolute/path/to/project --codec prores    # flattened ProRes 422 HQ all.mov
 ```
@@ -19,7 +21,15 @@ The MCP `render` tool takes the same options:
 
 ```json
 {"folder":"/absolute/path/to/project","layers":["map","route","signs","preview"],"range":{"from":0,"to":2}}
+{"folder":"/absolute/path/to/project","layers":["map","route","signs"],"scenes":[1,3],"join":false}
 ```
+
+A render covers every scene of the project unless `scenes` (`--scenes`)
+picks some, by id or 1-based position. They always render in film order.
+`join` (on by default) puts the picked scenes back to back with hard cuts;
+`join: false` (`--each`) keeps them apart. `range` (`--from`, `--to`) is in
+seconds on the picked scenes back to back, and works with `join: false` only
+when one scene is picked.
 
 `layers` takes any of `map`, `route`, `signs`, `all` and `preview`, each once.
 
@@ -35,27 +45,44 @@ The MCP `render` tool takes the same options:
 
 ```
 <project>/renders/<YYYY-MM-DD-HHmmss>/
-  01-<project-slug>/
+  01-<scene-slug>/
     map.mov        ProRes 422 HQ, opaque
     route.mov      ProRes 4444, alpha
     signs.mov      ProRes 4444, alpha
+  02-<scene-slug>/          one folder per rendered scene, same three files
   <project-slug>.fcpxml     FCPXML 1.11
   preview.mp4               H.264, when preview is requested
   all.mov | all.mp4         the flattened clip, when all is requested
   manifest.json
 ```
 
-Every file covers the same frames. All are tagged Rec. 709. The manifest
-lists only the layers that finished, plus the credit placement, the FCPXML
-file name and its validation result.
+`<scene-slug>` comes from the scene's name, and `01`, `02` are the scene's
+position in the project, so a render of scenes 1 and 3 has `01-…` and `03-…`.
+A one-scene project's scene is usually named after the project. With
+`join: false`, the flattened clip and the preview are per scene too:
+`01-<scene-slug>.mp4` (or `.mov`) and `01-<scene-slug>-preview.mp4` instead of `all.mp4`
+and `preview.mp4`. The layer folders and the FCPXML are named the same either
+way.
+
+Within a scene, every layer covers the same frames; scenes have their own
+lengths. All files are tagged Rec. 709. The manifest lists only the layers
+that finished, plus the credit placement, the FCPXML file name, its
+validation result and, for a joined render, where each scene starts.
 
 ## Import into Final Cut Pro
 
 Double-click `<project-slug>.fcpxml`, or use File > Import > XML. Final Cut
-creates an event called `Mapper` holding a compound clip and a project that
-uses it.
+creates an event called `Mapper` holding one compound clip per scene, named
+`<project> · <scene>`.
 
-Open the compound clip. It has three connected layers:
+- **Joined** (the default): the event also holds a project, named after the
+  Mapper project, that plays the compound clips back to back in film order,
+  with hard cuts and no gaps. Add transitions in Final Cut if the film needs
+  them.
+- **`join: false`** (`--each`): there is no project, only the compound clips.
+  Put them on a timeline yourself.
+
+Open a compound clip. It has three connected layers:
 
 | Layer | Position | Role |
 |---|---|---|
@@ -63,13 +90,15 @@ Open the compound clip. It has three connected layers:
 | Route | lane 1, above the map | `Map.Route` |
 | Signs | lane 2, above the route | `Map.Signs` |
 
-The compound holds one marker per stop arrival, named with the stop's label,
-or `Day N · name`, or its name. A marker is one frame long, on the map clip.
+Each compound holds one marker per stop arrival in its scene, named with the
+stop's label, or `Day N · name`, or its name. A marker is one frame long, on
+the map clip.
 
-- **Range.** With `--from` and `--to`, the clip holds the frames from
-  `floor(from × fps)` up to `ceil(to × fps)`, clamped to the clip. Only
-  arrivals inside that range get a marker, and marker times count from the
-  first rendered frame.
+- **Range.** With `--from` and `--to`, the render holds the frames from
+  `floor(from × fps)` up to `ceil(to × fps)` of the picked scenes back to
+  back, clamped to their total. A scene the range doesn't reach is left out.
+  Only arrivals inside the range get a marker, and marker times count from
+  the first rendered frame of that scene.
 - **Frame rates.** Durations are exact fractions of a frame, for example
   `73073/24000s` for 73 frames at 24000/1001.
 - **Credit.** If the project's `credit` is `description`, the credit is also
@@ -79,13 +108,12 @@ or `Day N · name`, or its name. A marker is one frame long, on the map clip.
   is `burned`, the map layer carries it.
 - **Moving files.** The FCPXML points at the media by absolute path. If you
   move or rename the render folder after rendering, Final Cut asks you to
-  relink the three clips. Import again from the new location, or relink.
+  relink each scene's three clips. Import again from the new location, or
+  relink.
 
 ## Limits
 
-- One scene per project. The FCPXML writer is built to join several scenes,
-  one compound clip each, and that is exercised with a test fixture. Project
-  files and tools don't expose scenes yet.
+- Scenes are joined with hard cuts only. There are no transitions.
 - Partial layer sets (`map` alone, or `route,signs`) write media but no
   FCPXML.
 - Cancelling or failing a render keeps every layer that finished, and the
@@ -178,7 +206,7 @@ Project A, 4K 25p, credit in the description:
 ```bash
 mapper create-project --json "{\"folder\":\"$T/proj-a\",\"name\":\"Synthetic Isles\"}"
 mapper set-stops --json "{\"folder\":\"$T/proj-a\",\"stops\":$STOPS}"
-mapper update-project --json "{\"folder\":\"$T/proj-a\",\"set\":{\"credit\":\"description\",\"timing\":{\"holdStart\":1,\"travel\":10,\"holdEnd\":2}}}"
+mapper update-project --json "{\"folder\":\"$T/proj-a\",\"set\":{\"credit\":\"description\"},\"sceneSet\":{\"timing\":{\"holdStart\":1,\"travel\":10,\"holdEnd\":2}}}"
 mapper render "$T/proj-a" --layers map,route,signs,preview --from 0 --to 3
 ```
 
@@ -187,7 +215,7 @@ Project B, 1080p at 24000/1001, credit burned in:
 ```bash
 mapper create-project --json "{\"folder\":\"$T/proj-b\",\"name\":\"Synthetic Coast\"}"
 mapper set-stops --json "{\"folder\":\"$T/proj-b\",\"stops\":$STOPS}"
-mapper update-project --json "{\"folder\":\"$T/proj-b\",\"set\":{\"credit\":\"burned\",\"output\":{\"height\":1080,\"fps\":{\"num\":24000,\"den\":1001}},\"timing\":{\"holdStart\":1,\"travel\":10,\"holdEnd\":2}}}"
+mapper update-project --json "{\"folder\":\"$T/proj-b\",\"set\":{\"credit\":\"burned\",\"output\":{\"height\":1080,\"fps\":{\"num\":24000,\"den\":1001}}},\"sceneSet\":{\"timing\":{\"holdStart\":1,\"travel\":10,\"holdEnd\":2}}}"
 mapper render "$T/proj-b" --layers map,route,signs,preview --from 5 --to 8
 ```
 
@@ -195,49 +223,49 @@ The renders land in `$T/proj-a/renders/` and `$T/proj-b/renders/`. The same
 steps work through the MCP tools (`create_project`, `set_stops`,
 `update_project`, `render`) with the same JSON.
 
-Two-scene fixture. Projects don't expose scenes yet, so this calls the FCPXML
-writer directly. It reads render B's media for both scenes and writes
-`$T/two-scene-fixture.fcpxml`, then validates it:
+Project C, two scenes at 1080p 24000/1001, credit in the description. The
+first `update-project` names scene 1 `Coast`, shortens its timing and adds
+scene 2, `Islands`, which copies the look and timing. The render is joined,
+the default, so the FCPXML has a compound clip per scene and a project that
+plays them back to back:
 
 ```bash
-RENDER_B=$(ls -d "$T"/proj-b/renders/*/ | tail -1)
-RENDER_B=${RENDER_B%/} T=$T REPO=$PWD node --input-type=module <<'EOF'
-import { readFile, writeFile } from 'node:fs/promises'
-import path from 'node:path'
-import { pathToFileURL } from 'node:url'
-const load = (file) => import(pathToFileURL(path.join(process.env.REPO, 'dist/render', file)).href)
-const { writeFcpxml } = await load('fcpxml.js')
-const { validateFcpxml } = await load('fcpxml-validation.js')
-const dir = process.env.RENDER_B
-const manifest = JSON.parse(await readFile(path.join(dir, 'manifest.json'), 'utf8'))
-const media = path.join(dir, '01-synthetic-coast')
-const layers = { map: `${media}/map.mov`, route: `${media}/route.mov`, signs: `${media}/signs.mov` }
-const scene = (id, name, markers) => ({ id, name, frames: 73, sourceRange: { fromFrame: 119, toFrame: 192 }, layers, markers })
-const xml = writeFcpxml({
-  projectName: 'Two Scene Fixture',
-  output: manifest.output,
-  credit: 'description',
-  scenes: [
-    scene('s1', 'Scene One', [{ frame: 0, value: 'First frame' }, { frame: 58, value: 'Beta Bay' }]),
-    scene('s2', 'Scene Two', [{ frame: 72, value: 'Last frame' }]),
-  ],
-})
-const out = path.join(process.env.T, 'two-scene-fixture.fcpxml')
-await writeFile(out, xml)
-console.log(out, await validateFcpxml(out))
-EOF
+STOPS_2='[{"name":"Delta Point","at":[14,43.2],"pause":1,"sign":"always"},
+          {"name":"Epsilon Reef","at":[15.2,42.6],"pause":0,"sign":"always"}]'
+mapper create-project --json "{\"folder\":\"$T/proj-c\",\"name\":\"Synthetic Voyage\"}"
+mapper set-stops --json "{\"folder\":\"$T/proj-c\",\"stops\":$STOPS}"
+mapper update-project --json "{\"folder\":\"$T/proj-c\",\"set\":{\"credit\":\"description\",\"output\":{\"height\":1080,\"fps\":{\"num\":24000,\"den\":1001}}},\"sceneSet\":{\"name\":\"Coast\",\"timing\":{\"holdStart\":1,\"travel\":3,\"holdEnd\":1}},\"ops\":[{\"op\":\"add_scene\",\"name\":\"Islands\"}]}"
+mapper set-stops --json "{\"folder\":\"$T/proj-c\",\"scene\":2,\"stops\":$STOPS_2}"
+mapper render "$T/proj-c" --layers map,route,signs,preview
 ```
 
-Expect `passed` when Final Cut Pro is installed. Scene One has markers at
-frames 0 and 58, Scene Two one at frame 72, and scene two starts at
-`73073/24000s`.
+On 2026-10-16 (branch `stage-6-scenes`) all three scripts above were run as
+written. A and B validated and gave the same markers, durations and notes as
+the table above. C took about 80 s and gave:
+
+- `01-coast/` and `02-islands/`, each with `map.mov`, `route.mov` and
+  `signs.mov`, and a joined `preview.mp4`. Coast is 168 frames, Islands 144.
+- `synthetic-voyage.fcpxml`, validated against the Final Cut Pro DTD
+  (`fcpxmlValidation: "passed"`). It holds the compound clips
+  `Synthetic Voyage · Coast` (`7007/1000s`) and `Synthetic Voyage · Islands`
+  (`3003/500s`), each with the credit note, and a project
+  `Synthetic Voyage` (`13013/1000s`) with Islands at offset `7007/1000s`.
+- Markers: Coast at frames 24, 87 and 144 (Alpha Harbour, Beta Bay, Gamma
+  Cove), Islands at 24 and 120 (Delta Point, Epsilon Reef).
+- The result says `Scene 2 · Islands starts at 00:07:00`.
+
+Add `--each` to the render for the unjoined layout: `01-coast-preview.mp4`
+and `02-islands-preview.mp4`, and an FCPXML with the two compound clips and
+no project.
 
 ### Outstanding manual acceptance
 
 Final Cut Pro was not launched, so none of the following has been checked.
 DTD success does not stand in for it. This checklist applies only to the
 optional layered export; the default MP4 path doesn't depend on it, and it
-doesn't block Stage 2 (see [plan.md](plan.md)). Use a disposable library.
+doesn't block Stage 2 (see [plan.md](plan.md)). Check 9, the two-scene
+import, is still pending the user's import for Stage 6. Use a disposable
+library.
 
 1. Import `$T/proj-a/renders/<timestamp>/synthetic-isles.fcpxml` (File > Import > XML). Check the
    `Mapper` event holds a compound clip and a project, and the media isn't
@@ -257,9 +285,14 @@ doesn't block Stage 2 (see [plan.md](plan.md)). Use a disposable library.
    the last frame, and the timeline frame rate is 23.976.
 8. In render A, open the compound's notes (Inspector > Info) and find the
    credit. In render B there should be none.
-9. Import `$T/two-scene-fixture.fcpxml`. The project should hold two
-   compound clips back to back, with no overlap or gap. Both scenes read the
-   same media files, which is expected for this fixture.
+9. Import `$T/proj-c/renders/<timestamp>/synthetic-voyage.fcpxml`. The
+   `Mapper` event should hold two compound clips, `Synthetic Voyage · Coast`
+   and `Synthetic Voyage · Islands`, and a project `Synthetic Voyage`. Open
+   the project: the two compounds play back to back with a hard cut, no
+   overlap and no gap, Islands starting at 7:00 (frame 168). Each compound
+   reads its own scene's folder (`01-coast/`, `02-islands/`) and has its own
+   markers. The cut should land where it does in `preview.mp4`. Pending
+   the user.
 10. Move a copy of a render folder and import its FCPXML to confirm the
     relink prompt appears.
 

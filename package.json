@@ -17,6 +17,7 @@
     "build:land": "tsx scripts/build-land.ts",
     "bench:render": "tsx bench/render-speed.ts",
     "bench:pipeline": "npm run build && tsx bench/pipeline.ts",
+    "bench:capture": "npm run build && tsx bench/capture-stress.ts",
     "build:glyphs": "tsx scripts/build-glyphs.ts",
     "build:icons": "tsx scripts/build-icons.ts"
   },

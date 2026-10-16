@@ -73,6 +73,7 @@ export function startRenderMode(root: HTMLElement): void {
   let stage: MapStage | undefined
   let stageRatio = 0
   let stageLayer: RenderLayer = 'all'
+  let stageCpuOverlay = false
   // Destroying a stage loses its WebGL context on purpose; only an unexpected loss is a crash.
   let stopWatchingContext: (() => void) | undefined
   let faultAtFrame: number | undefined
@@ -84,7 +85,7 @@ export function startRenderMode(root: HTMLElement): void {
     get frameCount() {
       return stage ? stage.frameCount : 0
     },
-    async load(input, { pixelRatio, layer = 'all', scene: sceneId, seaPaths, faultAtFrame: fault, faultAfterRenderFrame: faultAfter, forceUnsettledAt: unsettled }) {
+    async load(input, { pixelRatio, layer = 'all', scene: sceneId, seaPaths, faultAtFrame: fault, faultAfterRenderFrame: faultAfter, forceUnsettledAt: unsettled, cpuOverlay = false }) {
       if (!(pixelRatio > 0)) throw new RangeError(`pixelRatio must be positive, got ${pixelRatio}`)
       const project = parseProject(input)
       // Checked before the stage is touched, so a bad id leaves the loaded scene as it was.
@@ -92,12 +93,13 @@ export function startRenderMode(root: HTMLElement): void {
         throw new Error(`No scene ${sceneId} in this project.`)
       }
       await ready
-      if (!stage || stageRatio !== pixelRatio || stageLayer !== layer) {
+      if (!stage || stageRatio !== pixelRatio || stageLayer !== layer || stageCpuOverlay !== cpuOverlay) {
         stopWatchingContext?.()
         stage?.destroy()
-        stage = new MapStage(root, { pixelRatio, interactive: false, tileBase, layer, deterministicTerrain: true })
+        stage = new MapStage(root, { pixelRatio, interactive: false, tileBase, layer, deterministicTerrain: true, cpuOverlay })
         stageRatio = pixelRatio
         stageLayer = layer
+        stageCpuOverlay = cpuOverlay
         const canvas = stage.map.getCanvas()
         const onLost = () => window.__mapperContextLost?.()
         canvas.addEventListener('webglcontextlost', onLost)

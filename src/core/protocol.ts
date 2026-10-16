@@ -57,4 +57,9 @@ export interface RenderPageOptions {
   faultAfterRenderFrame?: number
   /** Test hook: this frame reports `settled: false`, as a terrain frame whose camera height never held would. */
   forceUnsettledAt?: number
+  /**
+   * Test hook for the capture stress bench: creates the overlay's 2D context with `willReadFrequently`, which keeps the
+   * overlay off the GPU.
+   */
+  cpuOverlay?: boolean
 }

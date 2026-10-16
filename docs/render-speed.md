@@ -119,3 +119,39 @@ ffprobe: codec `prores`, profile `HQ`, pix_fmt `yuv422p10le`, 3840×2160, r_fram
 The user opened the studio but made no edits; the studio re-saved the project unchanged. Studio drags and shots are covered by `test/e2e/studio.test.ts`.
 
 The run found a bug: Claude Code shows only a tool's `structuredContent`, so the agent never saw the text summaries, which include the credit line in `render_status`. Each summary is now in `structuredContent` as well.
+
+## Known capture glitch (Stage 7, Task 8)
+
+- Date: 2026-10-16
+- Chrome: 155.0.8059.80 (Playwright `channel: 'chrome'`, headless), WebGL ANGLE Metal on Apple M6
+- Script: `MAPPER_NET=1 npm run bench:capture -- --loads 1000` (`bench/capture-stress.ts`)
+- Status: parked. Not reproduced, no product change.
+
+The one sighting came from a probe written while chasing an e2e flake. It opened two pages in one browser, 200 times,
+each time with an empty tile cache. Both pages showed `alpine()` as satellite with terrain at 1920×1080, one with the
+credit burned in and one with it in the description, and the probe diffed their frame 0 captures. In iteration 78,
+one capture had a solid 6×8 px block in the sign text colour (#1d2430) over the Chamonix sign, and under it a 9×5 px
+white hole through the "i". The largest channel difference was 212. A separate run captured one loaded page 600
+times and every capture matched, so capture alone doesn't cause it. Page load is the suspect, probably the GPU
+glyph and raster cache that pages in one browser share.
+
+`bench:capture` repeats that pattern: one browser for the whole run, two pages per load, an empty tile cache every 10
+loads. A glitch is any pixel outside the credit box whose largest channel difference is above 8. Satellite and terrain
+seams can differ slightly between pages, so smaller differences don't count. The credit box is measured in the page
+with the credit font. Each glitch's two captures and a diff go under `/tmp/stage7-capture-stress/`.
+`--cpu-overlay` sets the test-only `RenderPageOptions.cpuOverlay`, which creates the overlay's 2D context with
+`willReadFrequently: true` so the overlay is drawn on the CPU.
+
+| Run | Overlay | Loads | Glitches | Errors | Largest clean difference outside the credit box | Time |
+|---|---|---|---|---|---|---|
+| Today's code | GPU (default) | 1000 | 0 | 0 | 7 | 24.0 min (1.44 s/load) |
+
+Checked against the probe's own captures with `npm run bench:capture -- --diff <burned.png> <plain.png>`: iteration
+78 is a glitch (60 px, largest difference 212, box [790,115]–[796,127]), and iterations 0, 29 and 79 are not
+(largest differences outside the credit box 0, 4 and 2).
+
+Two limits. The largest clean difference was 7, just under the threshold of 8, so seam noise can be larger than ±1.
+And the probe emptied the tile cache on every iteration, where this script does it every 10 loads.
+
+The CPU overlay wasn't run for 1,000 loads, since there was nothing for it to fix. If the glitch shows up again,
+rerun this script on today's code and then with `--cpu-overlay`.

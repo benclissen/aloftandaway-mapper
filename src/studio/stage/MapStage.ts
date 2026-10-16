@@ -51,6 +51,8 @@ export interface MapStageOptions {
    * and extra idles per frame. The studio leaves it off and keeps MapLibre's own terrain behaviour.
    */
   deterministicTerrain?: boolean
+  /** Test hook: draws the overlay on the CPU (a 2D context with `willReadFrequently`) rather than the GPU. */
+  cpuOverlay?: boolean
 }
 
 const ROUTE_SOURCE = 'mapper-route'
@@ -194,7 +196,7 @@ export class MapStage {
     this.overlay = document.createElement('canvas')
     this.overlay.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none'
     container.append(mapDiv, this.overlay)
-    const ctx = this.overlay.getContext('2d')
+    const ctx = this.overlay.getContext('2d', opts.cpuOverlay ? { willReadFrequently: true } : undefined)
     if (!ctx) throw new Error('The browser could not create a 2D canvas for the overlay.')
     this.ctx = ctx
 

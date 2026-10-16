@@ -8,8 +8,11 @@ import {
   formatTimecode,
   fpsValue,
   layoutSize,
+  resolveScene,
   type Aspect,
   type Project,
+  type Scene,
+  type SceneRef,
   type Timeline,
 } from '../core/index.js'
 import { resolveSeaPaths } from '../server/paths.js'
@@ -138,27 +141,30 @@ export function closePreviews(): Promise<void> {
 
 interface Loaded {
   project: Project
+  scene: Scene
+  /** The scene's 0-based position in the project. */
+  index: number
   timeline: Timeline
   page: RenderPage
 }
 
 /**
- * Reads the project from disk, loads it into the warm page for its aspect so that a frame comes out `frameWidth`
+ * Reads the project from disk, loads the scene `ref` picks (default the first) into the warm page for its aspect so that a frame comes out `frameWidth`
  * px wide, and runs `use` on it. If loading or `use` rejects, the page is evicted and closed, and the error is
  * rethrown: MapLibre never refetches a tile that errored, so a page that saw a map error would keep painting the
  * gap. The next call opens a fresh page.
  */
-async function withProject<T>(folder: string, frameWidth: (aspect: Aspect) => number, use: (loaded: Loaded) => Promise<T>): Promise<T> {
+async function withProject<T>(folder: string, ref: SceneRef | undefined, frameWidth: (aspect: Aspect) => number, use: (loaded: Loaded) => Promise<T>): Promise<T> {
   const project = await loadProject(folder)
   const seaPaths = await resolveSeaPaths(folder, project)
-  const scene = project.scenes[0]!
+  const { scene, index } = resolveScene(project, ref)
   const timeline = buildTimeline(scene, project.output.fps, buildRoute(scene, seaPaths))
   if (timeline.totalFrames < 1) throw new Error('The project has no frames to preview.')
   const { aspect } = project.output
   const { page, entry } = await pageFor(aspect)
   try {
     await page.load(project, frameWidth(aspect) / layoutSize(aspect).width, { scene: scene.id, seaPaths })
-    return await use({ project, timeline, page })
+    return await use({ project, scene, index, timeline, page })
   } catch (e) {
     evict(aspect, entry, page)
     throw e
@@ -186,21 +192,26 @@ async function previewsDir(folder: string): Promise<string> {
   return dir
 }
 
+/** `frame-<n>.png`, or `scene<position>-frame-<n>.png` when the project has more than one scene. */
+const frameFile = (project: Project, index: number, frame: number) =>
+  `${project.scenes.length > 1 ? `scene${index + 1}-` : ''}frame-${frame}.png`
+
 /**
- * Renders one frame `width` px wide (default 960) and saves it to `<folder>/.mapper/previews/frame-<n>.png`. A
- * map error rejects the call. It isn't retried, since MapLibre never refetches a tile that errored.
+ * Renders one frame of a scene (default the first) `width` px wide (default 960) and saves it to
+ * `<folder>/.mapper/previews/frame-<n>.png`, or `scene<position>-frame-<n>.png` when the project has more than one
+ * scene. A map error rejects the call. It isn't retried, since MapLibre never refetches a tile that errored.
  */
-export async function previewFrame(args: { folder: string; at: PreviewAt; width?: number }): Promise<PreviewResult> {
+export async function previewFrame(args: { folder: string; at: PreviewAt; width?: number; scene?: SceneRef }): Promise<PreviewResult> {
   const width = args.width ?? DEFAULT_PREVIEW_WIDTH
   const at = PreviewAtSchema.parse(args.at)
   assertWholeNumber('width', width)
   return exclusive(async () => {
-    const { frame, png, fps } = await withProject(args.folder, () => width, async ({ timeline, page }) => {
+    const { frame, png, fps, name } = await withProject(args.folder, args.scene, () => width, async ({ project, index, timeline, page }) => {
       const frame = resolveFrame(at, timeline)
       await page.renderFrame(frame)
-      return { frame, png: await page.capturePng(), fps: fpsValue(timeline.fps) }
+      return { frame, png: await page.capturePng(), fps: fpsValue(timeline.fps), name: frameFile(project, index, frame) }
     })
-    const file = path.join(await previewsDir(args.folder), `frame-${frame}.png`)
+    const file = path.join(await previewsDir(args.folder), name)
     await writeFile(file, png)
     return { png, path: file, frame, seconds: frame / fps }
   })
@@ -209,10 +220,10 @@ export async function previewFrame(args: { folder: string; at: PreviewAt; width?
 // Contact sheets
 
 /** `MM:SS:FF · f<frame>`, followed by ` · <stop name>` when the frame is a stop's arrival frame. */
-export function frameCaption(project: Project, timeline: Timeline, frame: number): string {
+export function frameCaption(_project: Project, scene: Scene, timeline: Timeline, frame: number): string {
   const caption = `${formatTimecode(frame, timeline.fps)} · f${frame}`
   const arrival = timeline.arrivals.find((a) => a.frame === frame)
-  const stop = arrival && project.scenes[0]!.stops.find((s) => s.id === arrival.stopId)
+  const stop = arrival && scene.stops.find((s) => s.id === arrival.stopId)
   return stop ? `${caption} · ${stop.name}` : caption
 }
 
@@ -247,10 +258,11 @@ function timestamp(date: Date): string {
 }
 
 /**
- * Renders `count` evenly spaced frames (default 9) into a captioned grid `width` px wide (default 1920), and saves
- * it to `<folder>/.mapper/previews/contact-<YYYYMMDD-HHmmss>.png`.
+ * Renders `count` evenly spaced frames (default 9) of a scene (default the first) into a captioned grid `width` px
+ * wide (default 1920), and saves it to `<folder>/.mapper/previews/contact-<YYYYMMDD-HHmmss>.png`, or
+ * `scene<position>-contact-<YYYYMMDD-HHmmss>.png` when the project has more than one scene.
  */
-export async function contactSheet(args: { folder: string; count?: number; width?: number }): Promise<ContactSheetResult> {
+export async function contactSheet(args: { folder: string; count?: number; width?: number; scene?: SceneRef }): Promise<ContactSheetResult> {
   const count = args.count ?? DEFAULT_SHEET_COUNT
   const width = args.width ?? DEFAULT_SHEET_WIDTH
   assertWholeNumber('count', count)
@@ -259,16 +271,16 @@ export async function contactSheet(args: { folder: string; count?: number; width
   const cellWidth = Math.floor((width - SHEET_GAP * (columns + 1)) / columns)
   if (cellWidth < 1) throw new RangeError(`width ${width} is too small for ${count} frames in ${columns} columns.`)
   return exclusive(async () => {
-    const { frames, cells, fps } = await withProject(args.folder, () => cellWidth, async ({ project, timeline, page }) => {
+    const { frames, cells, fps, prefix } = await withProject(args.folder, args.scene, () => cellWidth, async ({ project, scene, index, timeline, page }) => {
       const last = timeline.totalFrames - 1
       const frames = Array.from({ length: count }, (_, i) => (count === 1 ? 0 : Math.round((i * last) / (count - 1))))
       const cells: { dataUrl: string; caption: string }[] = []
       for (const frame of frames) {
         await page.renderFrame(frame)
         const png = await page.capturePng()
-        cells.push({ dataUrl: `data:image/png;base64,${png.toString('base64')}`, caption: frameCaption(project, timeline, frame) })
+        cells.push({ dataUrl: `data:image/png;base64,${png.toString('base64')}`, caption: frameCaption(project, scene, timeline, frame) })
       }
-      return { frames, cells, fps: fpsValue(timeline.fps) }
+      return { frames, cells, fps: fpsValue(timeline.fps), prefix: project.scenes.length > 1 ? `scene${index + 1}-` : '' }
     })
 
     const browser = await warmBrowser()
@@ -282,7 +294,7 @@ export async function contactSheet(args: { folder: string; count?: number; width
     } finally {
       await sheetPage.close()
     }
-    const file = path.join(await previewsDir(args.folder), `contact-${timestamp(new Date())}.png`)
+    const file = path.join(await previewsDir(args.folder), `${prefix}contact-${timestamp(new Date())}.png`)
     await writeFile(file, png)
     return { png, path: file, frames: frames.map((frame) => ({ frame, seconds: frame / fps })) }
   })

@@ -171,6 +171,24 @@ test('a command takes --help', async () => {
   expect(stdout).toContain('--json-file')
 })
 
+test('mapper set-stops --json with scene 2', async () => {
+  const folder = path.join(tmp, 'scenes')
+  await mapper('create-project', '--json', JSON.stringify({ folder, name: 'Scenes' }))
+  const added = await mapper('update-project', '--json', JSON.stringify({ folder, ops: [{ op: 'add_scene', name: 'Sail' }] }))
+  expect(added.code, added.stderr).toBe(0)
+  const set = await mapper('set-stops', '--json', JSON.stringify({ ...STOPS, folder, scene: 2 }))
+  expect(set.code, set.stderr).toBe(0)
+  const result = JSON.parse(set.stdout)
+  expect(result.project.scenes[0].stops).toHaveLength(0)
+  expect(result.project.scenes[1].stops).toHaveLength(3)
+  expect(result.scene).toEqual({ id: result.project.scenes[1].id, position: 2 })
+  expect(set.stderr).toContain('Changed Scene 2 of 2 · Sail.')
+
+  const unknown = await mapper('set-stops', '--json', JSON.stringify({ ...STOPS, folder, scene: 9 }))
+  expect(unknown.code).toBe(1)
+  expect(unknown.stderr).toContain('no scene 9')
+})
+
 test('render --layers all,preview fails before any render folder exists', async () => {
   const folder = path.join(tmp, 'combo')
   await mapper('create-project', '--json', JSON.stringify({ folder, name: 'Combo' }))

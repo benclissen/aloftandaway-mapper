@@ -222,7 +222,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     throwIfAborted(signal)
     const scenes = sceneExports(plan.scenes, completed, dir)
     if (plan.fcpxml) {
-      published = await publishFcpxml({ dir, project: snapshot, scenes, signal, dtdPath: args.fcpxmlDtdPath })
+      published = await publishFcpxml({ dir, project: snapshot, scenes, join: plan.join, signal, dtdPath: args.fcpxmlDtdPath })
     }
     const outputs = completed.map(absolute)
     const renderFps = round2(elapsedFps())

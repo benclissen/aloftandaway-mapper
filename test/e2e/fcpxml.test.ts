@@ -25,6 +25,7 @@ function scene(id: string, name: string, frames: number, d: string): SceneExport
 const input: FcpxmlInput = {
   projectName: 'Trip',
   output: { aspect: '16:9', height: 1080, fps: { num: 25, den: 1 } },
+  join: true,
   credit: 'burned',
   scenes: [scene('a', 'Drive', 50, '/renders/trip/01-drive'), scene('b', 'Sail', 75, '/renders/trip/02-sail')],
 }
@@ -33,6 +34,12 @@ describe.skipIf(!dtd)(dtd ? 'FCPXML vs installed Apple DTD' : 'skipped: Final Cu
   test('a generated two-scene document validates', async () => {
     const file = path.join(dir, 'ok.fcpxml')
     await writeFile(file, writeFcpxml(input))
+    expect(await validateFcpxml(file)).toBe('passed')
+  })
+
+  test('a join-false two-scene document validates', async () => {
+    const file = path.join(dir, 'separate.fcpxml')
+    await writeFile(file, writeFcpxml({ ...input, join: false }))
     expect(await validateFcpxml(file)).toBe('passed')
   })
 

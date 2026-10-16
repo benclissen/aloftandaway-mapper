@@ -78,5 +78,7 @@ export interface FcpxmlInput {
   credit: Project['credit']
   /** Every credit line the project's scenes need. Description placement joins them into each compound clip's note. */
   creditLines: string[]
+  /** Whether to add a project that plays the scenes back to back. When false, the event holds only the compound clips. */
+  join: boolean
   scenes: SceneExport[]
 }

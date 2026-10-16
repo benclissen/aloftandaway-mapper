@@ -127,7 +127,7 @@ export function writeFcpxml(input: FcpxmlInput): string {
     const duration = t(scene.frames)
     for (const layer of LAYERS) {
       lines.push(
-        `    <asset${attrs({ id: ids.assets[layer.key], name: layer.name, start: '0s', duration, hasVideo: 1, hasAudio: 0, format: formatId })}>`,
+        `    <asset${attrs({ id: ids.assets[layer.key], name: `${scene.name || 'Untitled'} · ${layer.name}`, start: '0s', duration, hasVideo: 1, hasAudio: 0, format: formatId })}>`,
         `      <media-rep${attrs({ kind: 'original-media', src: pathToFileURL(scene.layers[layer.key]).href })}/>`,
         '    </asset>',
       )
@@ -163,21 +163,25 @@ export function writeFcpxml(input: FcpxmlInput): string {
     lines.push(`      <ref-clip${attrs({ ref: sceneIds[i].media, name: compoundName(scene), start: '0s', duration: t(scene.frames) })}/>`)
   })
 
-  const totalFrames = input.scenes.reduce((sum, scene) => sum + scene.frames, 0)
+  if (input.join) {
+    const totalFrames = input.scenes.reduce((sum, scene) => sum + scene.frames, 0)
+    lines.push(
+      `      <project${attrs({ name: input.projectName })}>`,
+      `        <sequence${attrs({ format: formatId, duration: t(totalFrames), tcStart: '0s', tcFormat: 'NDF' })}>`,
+      '          <spine>',
+    )
+    let offset = 0
+    input.scenes.forEach((scene, i) => {
+      lines.push(`            <ref-clip${attrs({ ref: sceneIds[i].media, name: compoundName(scene), offset: t(offset), start: '0s', duration: t(scene.frames) })}/>`)
+      offset += scene.frames
+    })
+    lines.push(
+      '          </spine>',
+      '        </sequence>',
+      '      </project>',
+    )
+  }
   lines.push(
-    `      <project${attrs({ name: input.projectName })}>`,
-    `        <sequence${attrs({ format: formatId, duration: t(totalFrames), tcStart: '0s', tcFormat: 'NDF' })}>`,
-    '          <spine>',
-  )
-  let offset = 0
-  input.scenes.forEach((scene, i) => {
-    lines.push(`            <ref-clip${attrs({ ref: sceneIds[i].media, name: compoundName(scene), offset: t(offset), start: '0s', duration: t(scene.frames) })}/>`)
-    offset += scene.frames
-  })
-  lines.push(
-    '          </spine>',
-    '        </sequence>',
-    '      </project>',
     '    </event>',
     '  </library>',
     '</fcpxml>',

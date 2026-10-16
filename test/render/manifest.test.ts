@@ -5,14 +5,14 @@ import path from 'node:path'
 import type { Browser } from 'playwright'
 import { PNG } from 'pngjs'
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest'
-import { MAP_CREDIT, type RenderPageOptions } from '../../src/core/index.js'
+import { MAP_CREDIT, SATELLITE_CREDIT_WRITTEN, type RenderPageOptions } from '../../src/core/index.js'
 import { Encoder } from '../../src/render/encode.js'
 import { RenderError } from '../../src/render/errors.js'
 import { planExport } from '../../src/render/export-plan.js'
-import { writeManifest, type ExportManifest } from '../../src/render/manifest.js'
+import { buildManifest, writeManifest, type ExportManifest, type ManifestInput } from '../../src/render/manifest.js'
 import { renderPass, type PassDeps, type PassEncoder, type PassPage } from '../../src/render/render-pass.js'
 import { writeFileAtomic } from '../../src/server/atomic.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { greekIslands, projectWithScenes } from '../fixtures/projects.js'
 
 vi.mock('../../src/server/atomic.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/server/atomic.js')>()
@@ -47,7 +47,8 @@ function manifest(status: ExportManifest['status']): ExportManifest {
     credit: MAP_CREDIT,
     creditPlacement: project.credit,
     status,
-    scenes: [{ id: project.id, name: project.name, range: { fromFrame: 0, toFrame: 50 } }],
+    scenes: [{ id: project.id, name: project.name, position: 1, offsetFrame: 0, range: { fromFrame: 0, toFrame: 50 } }],
+    join: true,
     outputs: [],
     totalFrames: 50,
     completedWorkFrames: 0,
@@ -99,6 +100,77 @@ describe('writeManifest', () => {
     }
     expect(JSON.parse(await readFile(file, 'utf8')).status).toBe('running')
     expect(readdirSync(dir)).toEqual(['manifest.json'])
+  })
+})
+
+describe('buildManifest', () => {
+  /** Drive and Sail, two copies of the Greek Islands scene of 350 frames each. */
+  const twoScenes = () => projectWithScenes(2, ['Drive', 'Sail'])
+  const input = (project: ReturnType<typeof twoScenes>, plan: ManifestInput['plan']): ManifestInput => ({
+    project,
+    projectHash: 'abc',
+    mapperVersion: '0.0.0',
+    plan,
+    codec: 'h264',
+    flattenedOnly: true,
+    status: 'running',
+    completed: [],
+    completedWorkFrames: 0,
+    renderFps: 0,
+    renderedAt: '2026-10-16T00:00:00.000Z',
+  })
+
+  test('manifest records join, positions and offsets', () => {
+    const project = twoScenes()
+    const [drive, sail] = project.scenes
+    const joined = buildManifest(input(project, planExport(project, { seaPaths: {}, range: { from: 10, to: 20 } })))
+    expect(joined.join).toBe(true)
+    // 10 s to 20 s of the joined 28 s: frames 250 to 350 of Drive, then 0 to 150 of Sail.
+    expect(joined.scenes).toEqual([
+      { id: drive!.id, name: 'Drive', position: 1, offsetFrame: 0, range: { fromFrame: 250, toFrame: 350 } },
+      { id: sail!.id, name: 'Sail', position: 2, offsetFrame: 100, range: { fromFrame: 0, toFrame: 150 } },
+    ])
+    expect(joined.totalFrames).toBe(250)
+    expect(joined.durationSeconds).toBe(10)
+    expect(joined.totalWorkFrames).toBe(250)
+    // The Stage 1 fields describe one scene's clip, so a render of two has none.
+    expect(joined).not.toHaveProperty('codec')
+    expect(joined).not.toHaveProperty('range')
+
+    const separate = buildManifest(input(project, planExport(project, { seaPaths: {}, scenes: [2, 1], join: false })))
+    expect(separate.join).toBe(false)
+    expect(separate.scenes.map((s) => [s.position, s.offsetFrame, s.range])).toEqual([
+      [1, 0, { fromFrame: 0, toFrame: 350 }],
+      [2, 0, { fromFrame: 0, toFrame: 350 }],
+    ])
+    expect(separate.totalFrames).toBe(700)
+  })
+
+  test('a flattened render of one scene keeps the Stage 1 fields, with that scene\'s range', () => {
+    const project = twoScenes()
+    const plan = planExport(project, { seaPaths: {}, scenes: [2], range: { from: 1, to: 2 } })
+    const completed = [{ ...plan.passes[0]!, frames: 25, segments: 2, recoveries: 1 }]
+    const manifest = buildManifest({ ...input(project, plan), completed, status: 'cancelled', completedWorkFrames: 25 })
+    expect(manifest).toMatchObject({
+      codec: 'h264',
+      range: { fromFrame: 25, toFrame: 50 },
+      segments: 2,
+      recoveries: 1,
+      cancelled: true,
+      framesDone: 25,
+    })
+    expect(manifest.scenes).toEqual([{ id: project.scenes[1]!.id, name: 'Sail', position: 2, offsetFrame: 0, range: { fromFrame: 25, toFrame: 50 } }])
+  })
+
+  test('credit covers only the rendered scenes', () => {
+    const project = twoScenes()
+    project.scenes[0]!.look.theme = 'light'
+    project.scenes[1]!.look.theme = 'satellite'
+    const first = buildManifest(input(project, planExport(project, { seaPaths: {}, scenes: [1] })))
+    expect(first.credit).toBe(MAP_CREDIT)
+    expect(first.credit).not.toContain(SATELLITE_CREDIT_WRITTEN)
+    const both = buildManifest(input(project, planExport(project, { seaPaths: {} })))
+    expect(both.credit).toContain(SATELLITE_CREDIT_WRITTEN)
   })
 })
 

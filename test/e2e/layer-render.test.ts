@@ -145,7 +145,7 @@ test('exports map, route and signs as aligned ProRes layers', async () => {
   expect(manifest.totalFrames).toBe(50)
   expect(manifest.completedWorkFrames).toBe(150)
   expect(manifest.totalWorkFrames).toBe(150)
-  expect(manifest.scenes).toEqual([{ id: expect.any(String), name: 'Greek Islands', range: { fromFrame: 0, toFrame: 50 } }])
+  expect(manifest.scenes).toEqual([{ id: expect.any(String), name: 'Greek Islands', position: 1, offsetFrame: 0, range: { fromFrame: 0, toFrame: 50 } }])
   const outputs = manifest.outputs as { path: string; fromFrame: number; toFrame: number; kind: string }[]
   expect(outputs.map((o) => [o.path, o.kind, o.fromFrame, o.toFrame])).toEqual([
     [`${SLUG_DIR}/map.mov`, 'prores-hq', 0, 50],

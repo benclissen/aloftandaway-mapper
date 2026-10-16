@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -9,10 +9,11 @@ import { afterAll, beforeAll, expect, test } from 'vitest'
 import { type Project } from '../../src/core/index.js'
 import { cancelRender, renderStatus, startRenderJob, type RenderStatus } from '../../src/render/jobs.js'
 import { closePreviews, previewFrame } from '../../src/render/preview.js'
-import { frameRange, renderProject } from '../../src/render/render.js'
+import { frameRange, RenderCancelled, renderProject, type CompletedOutput } from '../../src/render/render.js'
+import { leftover } from '../../src/mcp/tools.js'
 import { getServer } from '../../src/server/server.js'
 import { createProject, loadProject, mutateProject, projectHash, saveProject } from '../../src/server/store.js'
-import { greekIslands, sceneOf } from '../fixtures/projects.js'
+import { greekIslands, projectWithScenes, sceneOf } from '../fixtures/projects.js'
 import { pixelDiff } from './helpers.js'
 
 const run = promisify(execFile)
@@ -229,3 +230,79 @@ test('range maps seconds to frames, clamped to the clip', () => {
   expect(() => frameRange({ from: 2, to: 1 }, 350, 25)).toThrow(/not a valid range/)
   expect(() => frameRange({ from: 20, to: 30 }, 350, 25)).toThrow(/no frames/)
 })
+
+/** Two short blank scenes at 1920×1080 and 25 fps: Drive of 1.6 s (40 frames), then Sail of 2 s (50 frames). */
+function driveAndSail(): Project {
+  const project = projectWithScenes(2, ['Drive', 'Sail'])
+  project.scenes[0]!.timing = { holdStart: 0.4, travel: 0.8, holdEnd: 0.4 }
+  project.scenes[1]!.timing = { holdStart: 0.4, travel: 1.2, holdEnd: 0.4 }
+  for (const scene of project.scenes) scene.stops = scene.stops.map((stop) => ({ ...stop, pause: 0 }))
+  return project
+}
+
+/** Frames ffmpeg decodes from the file, not the count its header claims. */
+async function countFrames(file: string): Promise<number> {
+  const { stdout } = await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', file])
+  return Number(stdout.trim())
+}
+
+test('joins two scenes into all.mp4', async () => {
+  const folder = await writeFolder(driveAndSail())
+  const result = await renderProject({ folder })
+  expect(result.video).toBe(path.join(result.dir, 'all.mp4'))
+  expect(result.frames).toBe(90)
+  expect(await countFrames(result.video!)).toBe(90)
+  expect(readdirSync(result.dir).sort()).toEqual(['all.mp4', 'manifest.json'])
+  expect(result.outputs).toEqual([
+    { sceneId: 'joined', request: 'all', layer: 'all', kind: 'h264', path: result.video, fromFrame: 0, toFrame: 90, frames: 90, segments: 2, recoveries: 0 },
+  ])
+  expect(result.sceneStarts.map((s) => [s.position, s.name, s.seconds])).toEqual([[1, 'Drive', 0], [2, 'Sail', 1.6]])
+  const manifest = readManifest(result.manifest)
+  expect(manifest).toMatchObject({ status: 'done', join: true, totalFrames: 90, durationSeconds: 3.6 })
+  expect(manifest.outputs).toEqual([{ ...result.outputs[0], path: 'all.mp4' }])
+  expect((manifest.scenes as { offsetFrame: number }[]).map((s) => s.offsetFrame)).toEqual([0, 40])
+  expect(manifest).not.toHaveProperty('codec')
+}, 120_000)
+
+test('join false writes 01- and 02- clips', async () => {
+  const folder = await writeFolder(driveAndSail())
+  const result = await renderProject({ folder, join: false })
+  expect(result.video).toBeUndefined()
+  expect(result.outputs.map((o) => [path.relative(result.dir, o.path), o.frames])).toEqual([['01-drive.mp4', 40], ['02-sail.mp4', 50]])
+  expect(await countFrames(path.join(result.dir, '01-drive.mp4'))).toBe(40)
+  expect(await countFrames(path.join(result.dir, '02-sail.mp4'))).toBe(50)
+  expect(readdirSync(result.dir).sort()).toEqual(['01-drive.mp4', '02-sail.mp4', 'manifest.json'])
+  expect(result.sceneStarts).toEqual([])
+  expect(readManifest(result.manifest)).toMatchObject({ join: false, totalFrames: 90 })
+}, 120_000)
+
+test('cancel before the join keeps the scene parts', async () => {
+  const project = driveAndSail()
+  const sailId = project.scenes[1]!.id
+  const folder = await writeFolder(project)
+  const controller = new AbortController()
+  let dir = ''
+  const finished: CompletedOutput[] = []
+  const rendering = renderProject({
+    folder,
+    signal: controller.signal,
+    onStart: (info) => (dir = info.dir),
+    onOutput: (output) => finished.push(output),
+    onProgress: (p) => {
+      if (p.sceneId === sailId && p.frame >= 45) controller.abort()
+    },
+  })
+  await expect(rendering).rejects.toBeInstanceOf(RenderCancelled)
+  expect(existsSync(path.join(dir, '01-drive.part.mp4'))).toBe(true)
+  expect(await countFrames(path.join(dir, '01-drive.part.mp4'))).toBe(40)
+  expect(existsSync(path.join(dir, 'all.mp4'))).toBe(false)
+  expect(readdirSync(dir).filter((f) => f.includes('joining'))).toEqual([])
+  const manifest = readManifest(path.join(dir, 'manifest.json'))
+  expect(manifest.status).toBe('cancelled')
+  expect((manifest.outputs as { path: string }[]).map((o) => o.path)).toEqual(['01-drive.part.mp4'])
+  expect(finished.map((o) => o.path)).toEqual([path.join(dir, '01-drive.part.mp4')])
+  expect((await leftover({ outputs: finished, dir })).slice(0, 2)).toEqual([
+    'Finished outputs kept:',
+    `- clip of Drive: ${path.join(dir, '01-drive.part.mp4')}`,
+  ])
+}, 120_000)

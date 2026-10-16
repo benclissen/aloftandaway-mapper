@@ -339,17 +339,19 @@ export function etaText(seconds: number): string {
   return `about ${Math.round(seconds / 60)} min left`
 }
 
+/** The render's manifest as far as it can be read: nothing when it is missing or unreadable. */
+async function readManifest(manifestPath: string): Promise<{ creditPlacement?: unknown; credit?: unknown; scenes?: unknown }> {
+  try {
+    return JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
 /** The reminder to credit the map, with where the render put it. */
 export async function creditLine(manifestPath: string): Promise<string> {
-  let placement: unknown
-  let credit: unknown
-  try {
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { creditPlacement?: unknown; credit?: unknown }
-    placement = manifest.creditPlacement
-    credit = manifest.credit
-  } catch {
-    // The manifest is unreadable; say what to credit without saying where.
-  }
+  // An unreadable manifest gives neither, so the line says what to credit without saying where.
+  const { creditPlacement: placement, credit } = await readManifest(manifestPath)
   // The manifest holds the credit for what the render showed; the base line is the safe fallback.
   const text = typeof credit === 'string' ? credit : MAP_CREDIT
   if (text === '') return 'No map credit is required for this render.'
@@ -359,9 +361,14 @@ export async function creditLine(manifestPath: string): Promise<string> {
 }
 
 
-/** The finished render: every file it wrote, the folder and the required map credit. */
+/**
+ * The finished render: every file it wrote, where each scene starts in a joined clip, the folder and the required
+ * map credit.
+ */
 export async function doneSummary(r: RenderResult): Promise<string> {
   const layers = r.outputs.filter((o) => o.request !== 'all' && o.request !== 'preview')
+  // With one file per scene there is no single video or preview; each scene's file is listed.
+  const files = (request: 'all' | 'preview', one?: string) => (one ? [one] : r.outputs.filter((o) => o.request === request).map((o) => o.path))
   return [
     `Done. ${plural(r.frames, 'frame')} at ${r.renderFps.toFixed(1)} fps.`,
     ...(r.fcpxml
@@ -372,18 +379,35 @@ export async function doneSummary(r: RenderResult): Promise<string> {
             : 'FCPXML validation was skipped: Final Cut Pro is not installed, so the DTD is unavailable.',
         ]
       : []),
-    ...(r.video ? [`Video: ${r.video}`] : []),
+    ...files('all', r.video).map((file) => `Video: ${file}`),
     ...layers.map((o) => `Layer ${o.layer}: ${o.path}`),
-    ...(r.preview ? [`Preview: ${r.preview}`] : []),
+    ...files('preview', r.preview).map((file) => `Preview: ${file}`),
+    ...(r.sceneStarts.length > 1
+      ? r.sceneStarts.map((s) => {
+          const frame = Math.round((s.seconds * r.fps.num) / r.fps.den)
+          return `Scene ${s.position} · ${s.name || 'Untitled'} starts at ${formatTimecode(frame, r.fps)}`
+        })
+      : []),
     `Manifest: ${r.manifest}`,
     `Folder: ${r.dir}`,
     await creditLine(r.manifest),
   ].join('\n')
 }
 
-/** What a failed or cancelled render left behind. The CLI prints the same text. */
+/**
+ * What a failed or cancelled render left behind. The CLI prints the same text. When the render had more than one
+ * scene, each output names its scene, as in `clip of Drive` for a part that was never joined.
+ */
 export async function leftover(status: Pick<RenderStatus, 'outputs' | 'dir'>): Promise<string[]> {
-  const label = (o: NonNullable<RenderStatus['outputs']>[number]) => (o.request === 'preview' ? 'preview' : o.request === 'all' ? 'clip' : o.layer)
+  const { scenes } = status.dir && status.outputs?.length ? await readManifest(path.join(status.dir, 'manifest.json')) : {}
+  const names = new Map(
+    Array.isArray(scenes) && scenes.length > 1 ? (scenes as { id: string; name: string }[]).map((s) => [s.id, s.name || 'Untitled']) : [],
+  )
+  const label = (o: NonNullable<RenderStatus['outputs']>[number]) => {
+    const what = o.request === 'preview' ? 'preview' : o.request === 'all' ? 'clip' : o.layer
+    const scene = names.get(o.sceneId)
+    return scene === undefined ? what : `${what} of ${scene}`
+  }
   return [
     ...(status.outputs?.length ? ['Finished outputs kept:', ...status.outputs.map((o) => `- ${label(o)}: ${o.path}`)] : ['No outputs were finished.']),
     ...(status.dir ? [`Folder: ${status.dir}`, await creditLine(path.join(status.dir, 'manifest.json'))] : []),
@@ -576,15 +600,17 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'render',
     description:
-      "Render the clip to video. The default is one flattened H.264 MP4 (all.mp4); codec: 'prores' makes a ProRes master. Optional range { from, to } in seconds. Look at a contact sheet before rendering. Returns a jobId; poll render_status. The folder must be absolute. For a layered Final Cut Pro export, pass layers ['map','route','signs'] (ProRes plus FCPXML).",
+      "Render the clip to video. The default is one flattened H.264 MP4 (all.mp4) with every scene back to back; codec: 'prores' makes a ProRes master. scenes picks some scenes, and join: false writes one file per scene. Optional range { from, to } in seconds on the picked scenes back to back. Look at a contact sheet before rendering. Returns a jobId; poll render_status. The folder must be absolute. For a layered Final Cut Pro export, pass layers ['map','route','signs'] (ProRes plus FCPXML).",
     input: z.strictObject({
       folder,
       codec: z.enum(['prores', 'h264']).optional().describe("Codec of the flattened clip: h264 (default) or prores. Isolated layers are always ProRes"),
       range: z.strictObject({ from: z.number().min(0), to: z.number().min(0) }).optional(),
       layers: LayersSchema.optional().describe("Any of map, route, signs, all (the flattened clip, default) or preview (H.264 check clip). All can't join preview; map, route and signs are always ProRes, so codec h264 needs all alongside them"),
+      scenes: z.array(SceneRefSchema).optional().describe('Scenes to render, by id or 1-based position; default all. Always rendered in film order'),
+      join: z.boolean().optional().describe('Default true: one clip with the scenes back to back. false: one file per scene'),
     }),
-    async run({ folder, codec, range, layers }) {
-      const id = startRenderJob({ folder, codec, range, layers })
+    async run({ folder, codec, range, layers, scenes, join }) {
+      const id = startRenderJob({ folder, codec, range, layers, scenes, join })
       const deadline = Date.now() + START_WAIT_MS
       for (;;) {
         const status = statusOf(id)

@@ -155,6 +155,7 @@ test.each([
   ['render with an unknown layer', ['render', '/tmp/x', '--layers', 'map,depth']],
   ['render with a duplicate layer', ['render', '/tmp/x', '--layers', 'map, map']],
   ['render with a non-number --to', ['render', '/tmp/x', '--from', '1', '--to', 'soon']],
+  ['render with an empty --scenes entry', ['render', '/tmp/x', '--scenes', '1,,2']],
   ['studio without a folder', ['studio']],
   ['doctor with a stray argument', ['doctor', 'extra']],
 ])('%s exits 2', async (_name, args) => {
@@ -250,6 +251,65 @@ test('a cancelled render reports its folder and the map credit on stderr and exi
   expect(stderr).toContain('Credit required: ')
 }, 60_000)
 
+/** Writes a preload that swaps the modules `main.js` imports by these specifiers for the given URLs. */
+async function swapImports(dir: string, swaps: Record<string, string>): Promise<string> {
+  const preload = path.join(dir, 'preload.mjs')
+  await writeFile(
+    preload,
+    `import { registerHooks } from 'node:module'
+const swaps = ${JSON.stringify(swaps)}
+registerHooks({
+  resolve(specifier, context, next) {
+    if (context.parentURL === ${JSON.stringify(pathToFileURL(MAIN).href)} && specifier in swaps) {
+      return { url: swaps[specifier], shortCircuit: true }
+    }
+    return next(specifier, context)
+  },
+})
+`,
+  )
+  return preload
+}
+
+test('mapper render --scenes 1,s_x --each parses positions and ids', async () => {
+  // A fake render returns the scenes and join it was given.
+  const dir = path.join(tmp, 'scenes-each')
+  await mkdir(dir, { recursive: true })
+  const fakeRender = path.join(dir, 'fake-render.mjs')
+  await writeFile(
+    fakeRender,
+    `export function addOutput(outputs, output) {
+  outputs.push(output)
+}
+export async function renderProject(args) {
+  return { dir: ${JSON.stringify(dir)}, manifest: ${JSON.stringify(path.join(dir, 'manifest.json'))}, frames: 1, renderFps: 1, fps: { num: 25, den: 1 }, projectHash: 'fake', outputs: [], scenes: [], sceneStarts: [], args: { scenes: args.scenes, join: args.join } }
+}
+`,
+  )
+  const preload = await swapImports(dir, { '../render/render.js': pathToFileURL(fakeRender).href })
+  const run = (...args: string[]) => new Promise<Run>((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, MAIN, 'render', dir, ...args])
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (d: Buffer) => (stdout += d))
+    child.stderr.on('data', (d: Buffer) => (stderr += d))
+    child.on('error', reject)
+    child.on('close', (code) => resolve({ code, stdout, stderr }))
+  })
+  const each = await run('--scenes', '1, s_x,12', '--each')
+  expect(each.code, each.stderr).toBe(0)
+  expect(JSON.parse(each.stdout).args).toEqual({ scenes: [1, 's_x', 12], join: false })
+  const all = await run()
+  expect(all.code, all.stderr).toBe(0)
+  expect(JSON.parse(all.stdout).args).toEqual({})
+})
+
+test('render --help documents --scenes and --each', async () => {
+  const { stdout } = await mapper('render', '--help')
+  expect(stdout).toContain('--scenes <ids or positions>')
+  expect(stdout).toContain('--each')
+})
+
 test('a signal after the render finishes is not reported as a cancel', async () => {
   // A preload swaps in a render that succeeds at once, and a summary that waits for SIGINT before it prints. The
   // signal so always lands while the result is printing, and the shutdown handler has run by the time it goes on.
@@ -258,9 +318,12 @@ test('a signal after the render finishes is not reported as a cancel', async () 
   const fakeRender = path.join(dir, 'fake-render.mjs')
   await writeFile(
     fakeRender,
-    `export async function renderProject(args) {
+    `export function addOutput(outputs, output) {
+  outputs.push(output)
+}
+export async function renderProject(args) {
   args.onStart?.({ dir: ${JSON.stringify(dir)} })
-  return { dir: ${JSON.stringify(dir)}, manifest: ${JSON.stringify(path.join(dir, 'manifest.json'))}, frames: 1, renderFps: 1, projectHash: 'fake', outputs: [], scenes: [] }
+  return { dir: ${JSON.stringify(dir)}, manifest: ${JSON.stringify(path.join(dir, 'manifest.json'))}, frames: 1, renderFps: 1, fps: { num: 25, den: 1 }, projectHash: 'fake', outputs: [], scenes: [], sceneStarts: [] }
 }
 `,
   )
@@ -280,25 +343,10 @@ export async function doneSummary(result) {
 }
 `,
   )
-  const swaps = {
+  const preload = await swapImports(dir, {
     '../render/render.js': pathToFileURL(fakeRender).href,
     '../mcp/tools.js': pathToFileURL(slowTools).href,
-  }
-  const preload = path.join(dir, 'preload.mjs')
-  await writeFile(
-    preload,
-    `import { registerHooks } from 'node:module'
-const swaps = ${JSON.stringify(swaps)}
-registerHooks({
-  resolve(specifier, context, next) {
-    if (context.parentURL === ${JSON.stringify(pathToFileURL(MAIN).href)} && specifier in swaps) {
-      return { url: swaps[specifier], shortCircuit: true }
-    }
-    return next(specifier, context)
-  },
-})
-`,
-  )
+  })
   const child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, MAIN, 'render', dir], {
     env: { ...(process.env as Record<string, string>), MAPPER_CACHE_DIR: path.join(tmp, 'cache') },
   })

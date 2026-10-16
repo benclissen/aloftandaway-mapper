@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -7,8 +7,14 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { createMcpServer } from '../../src/mcp/server.js'
 import { creditLine, doneSummary, leftover, statusSummary, TOOLS } from '../../src/mcp/tools.js'
-import type { RenderStatus } from '../../src/render/jobs.js'
+import { startRenderJob, type RenderStatus } from '../../src/render/jobs.js'
 import { contactSheet, previewFrame } from '../../src/render/preview.js'
+
+// The real job runs; the spy records what the render tool asked for.
+vi.mock('../../src/render/jobs.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/render/jobs.js')>()
+  return { ...actual, startRenderJob: vi.fn(actual.startRenderJob) }
+})
 
 // No browser in unit tests: the preview functions are replaced, and the tests check what they were asked for.
 vi.mock('../../src/render/preview.js', async (importOriginal) => ({
@@ -590,6 +596,20 @@ describe('tools', () => {
     expect(await statusSummary(running())).toMatch(/^Frame 120 of 900 · 12\.5 fps/)
   })
 
+  test('render tool passes scenes and join through', async () => {
+    const folder = path.join(tmp, 'picked')
+    await call('create_project', { folder, name: 'Picked' })
+    const added = await call('update_project', { folder, ops: [{ op: 'add_scene', name: 'Sail' }] })
+    const sailId = (added.structuredContent as { project: { scenes: { id: string }[] } }).project.scenes[1]!.id
+    vi.mocked(startRenderJob).mockClear()
+    // Neither scene has stops, so the job fails before a render folder exists.
+    const result = await call('render', { folder, scenes: [sailId, 1], join: false })
+    expect(result.isError).toBe(true)
+    expect(startRenderJob).toHaveBeenCalledWith(expect.objectContaining({ folder, scenes: [sailId, 1], join: false }))
+    const schema = TOOLS.find((t) => t.name === 'render')!.input
+    expect(schema.safeParse({ folder, scenes: ['x', 0] }).success).toBe(false)
+  })
+
   test('render_status and cancel_render reject an unknown job', async () => {
     for (const name of ['render_status', 'cancel_render']) {
       const result = await call(name, { jobId: 'missing' })
@@ -626,7 +646,7 @@ describe('render summaries', () => {
   const output = (request: string, layer: string, file: string) => ({ request, layer, path: `/r/${file}` }) as never
 
   test('the done summary names the default MP4 as the video', async () => {
-    const summary = await doneSummary({ video: '/r/all.mp4', outputs: [], frames: 25, renderFps: 10, manifest: '/nonexistent/manifest.json', dir: '/r' } as never)
+    const summary = await doneSummary({ video: '/r/all.mp4', outputs: [], sceneStarts: [], frames: 25, renderFps: 10, manifest: '/nonexistent/manifest.json', dir: '/r' } as never)
     expect(summary).toContain('Video: /r/all.mp4')
   })
 
@@ -644,6 +664,53 @@ describe('render summaries', () => {
     expect(lines).toContain('Folder: /nonexistent/render')
     expect(lines.at(-1)).toMatch(/^Credit required: /)
     expect(lines.at(-1)).not.toContain('(burned in)')
+  })
+
+  test('leftover names the scene of each part a joined render left', async () => {
+    const dir = path.join(tmp, 'parts')
+    await mkdir(dir, { recursive: true })
+    const scenes = [{ id: 'a', name: 'Drive' }, { id: 'b', name: '' }]
+    await writeFile(path.join(dir, 'manifest.json'), JSON.stringify({ scenes, credit: '' }))
+    const part = (sceneId: string, request: string, layer: string, file: string) => ({ sceneId, request, layer, path: `${dir}/${file}` }) as never
+    const lines = await leftover({
+      dir,
+      outputs: [part('a', 'all', 'all', '01-drive.part.mp4'), part('a', 'map', 'map', '01-drive/map.mov'), part('b', 'preview', 'all', '02-scene-preview.part.mp4')],
+    })
+    expect(lines.slice(0, 4)).toEqual([
+      'Finished outputs kept:',
+      `- clip of Drive: ${dir}/01-drive.part.mp4`,
+      `- map of Drive: ${dir}/01-drive/map.mov`,
+      `- preview of Untitled: ${dir}/02-scene-preview.part.mp4`,
+    ])
+  })
+
+  test('doneSummary says where each joined scene starts', async () => {
+    const result = {
+      dir: '/d',
+      manifest: '/d/manifest.json',
+      video: '/d/all.mp4',
+      frames: 650,
+      renderFps: 10,
+      fps: { num: 25, den: 1 },
+      outputs: [],
+      sceneStarts: [
+        { id: 'a', name: 'Drive', position: 1, seconds: 0 },
+        { id: 'b', name: 'Sail', position: 3, seconds: 13 },
+      ],
+    }
+    const text = await doneSummary(result as never)
+    expect(text).toContain('Scene 1 · Drive starts at 00:00:00\nScene 3 · Sail starts at 00:13:00')
+    const one = await doneSummary({ ...result, sceneStarts: result.sceneStarts.slice(0, 1) } as never)
+    expect(one).not.toContain('starts at')
+  })
+
+  test('doneSummary lists every clip of a render with one file per scene', async () => {
+    const out = (request: string, file: string) => ({ sceneId: 's', request, layer: 'all', path: `/d/${file}` }) as never
+    const text = await doneSummary({
+      dir: '/d', manifest: '/d/manifest.json', frames: 100, renderFps: 10, fps: { num: 25, den: 1 }, sceneStarts: [],
+      outputs: [out('all', '01-drive.mp4'), out('all', '02-sail.mp4')],
+    } as never)
+    expect(text).toContain('Video: /d/01-drive.mp4\nVideo: /d/02-sail.mp4')
   })
 
   test('creditLine says which credit is burned in and that the full text still goes in the description', async () => {
@@ -673,6 +740,7 @@ describe('render summaries', () => {
       frames: 50,
       renderFps: 10,
       outputs: [],
+      sceneStarts: [],
       fcpxml: '/nonexistent/render/trip.fcpxml',
       fcpxmlValidation: 'skipped-no-fcp',
     } as never)
@@ -688,6 +756,7 @@ describe('render summaries', () => {
       frames: 50,
       renderFps: 10,
       outputs: [],
+      sceneStarts: [],
       fcpxml: '/d/trip.fcpxml',
       fcpxmlValidation: 'passed',
     } as never)

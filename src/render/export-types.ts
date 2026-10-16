@@ -33,6 +33,7 @@ export interface SceneExport {
 }
 
 export interface RenderPass {
+  /** The scene rendered. A finished clip joined from the scenes' parts has `joined` here. */
   sceneId: string
   /** What was asked for. `layer` is `all` for both the flattened clip and the preview; this tells them apart. */
   request: LayerRequest

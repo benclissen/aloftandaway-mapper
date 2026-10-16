@@ -377,7 +377,7 @@ describe('validateProject', () => {
       const found = validateProject(project).warnings.filter((w) => w.code === 'sign-overlap')
       expect(found).toHaveLength(1)
       expect(vi.mocked(signBox).mock.calls.length).toBeGreaterThan(0)
-      for (const call of vi.mocked(signBox).mock.calls) expect(call[2]).toBe(31)
+      for (const call of vi.mocked(signBox).mock.calls) expect(call[2]).toBe(41)
     })
 
     test('does not warn for signs far apart', () => {

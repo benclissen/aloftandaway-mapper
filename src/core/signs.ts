@@ -15,17 +15,20 @@ export const SIGN_TAG = {
   radius: 6,
 }
 
-/** Clear space kept between a sign's box and the edge of the symbol below it, in layout px. */
+/** Clear space kept between a sign's pointer tip and the edge of the symbol below it, in layout px. */
 const SIGN_CLEARANCE = 6
 
 /**
- * How far above its dot a sign's box sits in this scene: the tag's own lift, or enough to clear the biggest symbol the
- * scene draws (the look's symbol and every leg's override), whichever is higher.
+ * How far above its dot a sign's box sits in this scene: the tag's own lift, or enough that the pointer tip clears the
+ * biggest badge or icon the scene draws (the look's symbol and every leg's override) by 6 px, whichever is higher. A
+ * plain dot or no symbol never raises it.
  */
 export function signLift(scene: Scene): number {
   const style = symbolStyleOf(scene.look)
   const symbols = [scene.look.symbol, ...scene.legs.flatMap((leg) => (leg.symbol ? [leg.symbol] : []))]
-  return Math.max(SIGN_TAG.lift, SIGN_CLEARANCE + Math.max(...symbols.map((symbol) => vehicleRadius(symbol, style))))
+  const radii = symbols.filter((s) => s !== 'dot' && s !== 'none').map((s) => vehicleRadius(s, style))
+  const r = Math.max(0, ...radii)
+  return Math.max(SIGN_TAG.lift, r + SIGN_TAG.pointer + SIGN_CLEARANCE)
 }
 
 /** The text a stop's sign shows. */

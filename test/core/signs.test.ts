@@ -23,13 +23,13 @@ describe('vehicleRadius', () => {
 })
 
 describe('signLift', () => {
-  test('a badge scene lifts signs to 31 px', () => {
-    expect(signLift(scene('car'))).toBe(31)
-    expect(signLift(scene('car', { style: 'badge-line' }))).toBe(31)
+  test('a badge scene lifts signs to 41 px', () => {
+    expect(signLift(scene('car'))).toBe(41)
+    expect(signLift(scene('car', { style: 'badge-line' }))).toBe(41)
   })
 
-  test('an icon scene lifts signs to 22 px', () => {
-    expect(signLift(scene('plane', { style: 'icon' }))).toBe(22)
+  test('an icon scene lifts signs to 32 px', () => {
+    expect(signLift(scene('plane', { style: 'icon' }))).toBe(32)
   })
 
   test('a dot scene keeps 16 px', () => {
@@ -37,16 +37,16 @@ describe('signLift', () => {
     expect(signLift(scene('none'))).toBe(16)
   })
 
-  test('a scene with a dot leg and a badge leg uses 31 px', () => {
-    expect(signLift(scene('dot', { legSymbols: [undefined, 'ferry'] }))).toBe(31)
-    expect(signLift(scene('car', { legSymbols: ['dot', 'dot'] }))).toBe(31)
+  test('a scene with a dot leg and a badge leg uses 41 px', () => {
+    expect(signLift(scene('dot', { legSymbols: [undefined, 'ferry'] }))).toBe(41)
+    expect(signLift(scene('car', { legSymbols: ['dot', 'dot'] }))).toBe(41)
   })
 })
 
 describe('signBox', () => {
   test('sits the box a given lift above the dot, the default lift when none is given', () => {
     expect(signBox([100, 200], 'Hi').bottom).toBe(200 - SIGN_TAG.lift)
-    expect(signBox([100, 200], 'Hi', 31).bottom).toBe(169)
-    expect(signBox([100, 200], 'Hi', 31).top).toBe(169 - (SIGN_TAG.lineHeight + 2 * SIGN_TAG.padY))
+    expect(signBox([100, 200], 'Hi', 41).bottom).toBe(159)
+    expect(signBox([100, 200], 'Hi', 41).top).toBe(159 - (SIGN_TAG.lineHeight + 2 * SIGN_TAG.padY))
   })
 })

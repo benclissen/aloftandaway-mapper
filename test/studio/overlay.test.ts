@@ -223,10 +223,17 @@ describe('sign', () => {
     return lines[tip - 1]![1]
   }
 
+  /** The y of the pointer's tip: the lowest point of the sign's path. */
+  function tipY(calls: Call[]): number {
+    return Math.max(...calls.filter((c) => c.op === 'lineTo').map((c) => (c.args as [number, number])[1]))
+  }
+
   test('a sign sits clear of the badge', () => {
-    // The badge, with its ring, reaches 25 px above the dot.
-    expect(boxBottom(sign({ symbol: 'car' }))).toBeLessThanOrEqual(200 - 25)
-    expect(boxBottom(sign({ symbol: 'car' }))).toBe(200 - 31)
+    // The badge, with its ring, reaches 25 px from the dot's centre, and the pointer tip keeps 6 px clear of it.
+    const badge = sign({ symbol: 'car' })
+    expect(boxBottom(badge)).toBe(200 - 41)
+    expect(tipY(badge)).toBe(200 - 41 + 10)
+    expect(tipY(badge)).toBeLessThanOrEqual(200 - 25 - 6)
     expect(boxBottom(sign({ symbol: 'dot' }))).toBe(200 - 16)
   })
 })

@@ -118,7 +118,15 @@ export function symbolStyleOf(look: Look): SymbolStyle {
 }
 
 /** Sizes of the head's symbol in layout px. The studio overlay draws with these, and sign placement measures with them. */
-export const SYMBOL_SIZES = { dotRadius: 6, badgeRadius: 22, badgeRing: 3, iconSize: 26, iconHalo: 6 }
+export const SYMBOL_SIZES = {
+  dotRadius: 6,
+  badgeRadius: 22,
+  badgeRing: 3,
+  /** The icon grid's 24 units are drawn this many layout px across. */
+  iconSize: 26,
+  /** Width of the white halo behind a bare icon. */
+  iconHalo: 6,
+}
 
 /** How far a symbol reaches from the head's centre in layout px, for keeping signs clear of it. */
 export function vehicleRadius(symbol: SymbolKind, style: SymbolStyle): number {

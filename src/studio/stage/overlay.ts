@@ -27,9 +27,9 @@ const TERMINAL_SCALE = 1.5
 const DOT_STROKE = 2.5
 const NAVY = '#0a2434'
 const WHITE = '#ffffff'
-/** The icon grid's 24 units are drawn this many layout px across. */
+/** The icons are drawn on a grid of 24 units. */
 const ICON_GRID = 24
-/** Stroke widths: the icon's own, in icon units, and the white halo behind a bare icon, in layout px. */
+/** The icon's own stroke width, in icon units. */
 const ICON_STROKE = 2.2
 const TAG_STYLE = {
   fill: 'rgba(255, 255, 255, 0.92)',

@@ -105,6 +105,9 @@ async function expectBurnedCreditFits(aspect: '16:9' | '9:16'): Promise<void> {
       expect(band.length, `credit line ${line + 1} has no ink`).toBeGreaterThan(4)
     }
     expect(top).toBeGreaterThanOrEqual(boxTop)
+    // Nothing went past the stubs, so no network was needed.
+    expect(burned.leaks, 'the burned page made requests the stubs do not answer').toEqual([])
+    expect(plain.leaks, 'the plain page made requests the stubs do not answer').toEqual([])
   } finally {
     await burned.close()
     await plain.close()

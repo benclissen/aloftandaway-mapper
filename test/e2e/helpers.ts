@@ -69,13 +69,14 @@ function solidTile(): Buffer {
 /**
  * Opens render mode at the layout size and loads the project into it. With `tileUpstream`, the page gets its own
  * server whose tile proxy fetches from there. With `stubTiles`, satellite, terrain and vector tiles are answered
- * in the browser (solid green, sea level, empty), so the page needs no network.
+ * in the browser (solid green, sea level, empty), so the page needs no network: any other request beyond the studio's
+ * files and the glyphs is aborted and listed in `leaks`.
  */
 export async function openRenderPage(
   project: Project,
   pixelRatio: number,
   opts: { tileUpstream?: string; layer?: RenderLayer; seaPaths?: SeaPaths; flatTerrain?: boolean; stubTiles?: boolean } = {},
-): Promise<{ page: Page; close(): Promise<void> }> {
+): Promise<{ page: Page; leaks: string[]; close(): Promise<void> }> {
   const { server: sharedServer, browser, tempDir } = await setup()
   const server = opts.tileUpstream
     ? await startServer({
@@ -89,11 +90,34 @@ export async function openRenderPage(
   // Terrain on the blank theme is the one offline scene that has a credit. Its elevation tiles come from the network
   // (or the server's proxy), so a test that only needs the credit can answer them with sea level instead.
   if (opts.flatTerrain) await context.route('**/tiles/terrain/**', (route) => route.fulfill({ contentType: 'image/png', body: flatTerrainTile() }))
-  // Every tile answered locally, so two pages draw the same map and a test can tell the overlay's pixels from the map's.
-  // Live tiles can differ by a colour level at a seam between two loads. Glyphs and fonts are not tiles and still load.
+  // Every tile answered in the browser, so two pages draw the same map and a test can tell the overlay's pixels from
+  // the map's (live tiles can differ by a colour level at a seam between two loads), and the page needs no network.
+  // Playwright tries the route registered last first, so the catch-all goes in first: it passes the studio's own files
+  // and the local glyphs, and aborts and records anything else, so a test can assert that nothing leaked past the stubs.
+  const leaks: string[] = []
   if (opts.stubTiles) {
+    const local = new URL(server.base)
+    await context.route('**/*', (route) => {
+      const url = new URL(route.request().url())
+      if (url.origin === local.origin && (url.pathname.startsWith(`${local.pathname}studio/`) || url.pathname.startsWith(`${local.pathname}tiles/fonts/`))) return route.continue()
+      leaks.push(url.href)
+      return route.abort()
+    })
     await context.route('**/tiles/satellite/**', (route) => route.fulfill({ contentType: 'image/png', body: solidTile() }))
     await context.route('**/tiles/terrain/**', (route) => route.fulfill({ contentType: 'image/png', body: flatTerrainTile() }))
+    // The vector source loads a TileJSON from `.../tiles/planet`, which names the tile URLs; the tiles themselves are empty.
+    await context.route('**/tiles/planet', (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          tilejson: '3.0.0',
+          tiles: [route.request().url().replace(/planet$/, 'planet/stub/{z}/{x}/{y}.pbf')],
+          minzoom: 0,
+          maxzoom: 14,
+          bounds: [-180, -85.0511, 180, 85.0511],
+        }),
+      }),
+    )
     await context.route('**/tiles/planet/**', (route) => route.fulfill({ status: 204 }))
   }
   const page = await context.newPage()
@@ -111,6 +135,7 @@ export async function openRenderPage(
   frames.set(page, { ...size, pixelRatio, transparent: opts.layer === 'route' || opts.layer === 'signs' })
   return {
     page,
+    leaks,
     close: async () => {
       await context.close()
       if (server !== sharedServer) await server.close()

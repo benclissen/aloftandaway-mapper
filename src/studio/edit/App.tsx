@@ -248,7 +248,7 @@ export function App() {
         ? project.scenes.map((s) => ({
             id: s.id,
             name: s.name,
-            seconds: Math.round(buildTimeline(s, project.output.fps, buildRoute(s, seaPaths)).durationSeconds),
+            seconds: buildTimeline(s, project.output.fps, buildRoute(s, seaPaths)).durationSeconds,
           }))
         : [],
     [project, seaPaths],

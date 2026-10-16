@@ -716,9 +716,172 @@ describe('scene tabs', () => {
   test('tabs list the scenes in order with their lengths', async () => {
     const { page, close } = await openTwo()
     try {
-      expect(await tabNames(page)).toEqual(['Drive · 13 s', 'Sail · 14 s'])
+      expect(await tabNames(page)).toEqual(['Drive · 13.0 s', 'Sail · 14.0 s'])
       expect(await page.getByRole('tablist').count()).toBe(1)
-      expect(await activeTab(page).textContent()).toBe('Drive · 13 s')
+      expect(await activeTab(page).textContent()).toBe('Drive · 13.0 s')
+    } finally {
+      await close()
+    }
+  })
+
+  test('a short scene shows tenths of a second', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      expect(await tabNames(page)).toEqual(['Drive · 13.0 s', 'Sail · 14.0 s'])
+      // 0.1 s hold, 0.2 s travel, 0.1 s hold and no pauses: a 0.4 s clip, not "0 s".
+      await mutateProject(folder, (p) => ({
+        ...p,
+        scenes: p.scenes.map((s, i) =>
+          i === 0 ? { ...s, timing: { holdStart: 0.1, travel: 0.2, holdEnd: 0.1 }, stops: s.stops.map((stop) => ({ ...stop, pause: 0 })) } : s,
+        ),
+      }))
+      await expect.poll(() => tabNames(page)).toEqual(['Drive · 0.4 s', 'Sail · 14.0 s'])
+    } finally {
+      await close()
+    }
+  })
+
+  test('blur keeps a rename', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill('  Harbour  ')
+      await page.getByTestId('scene-add').focus()
+      await page.getByTestId('scene-rename').waitFor({ state: 'detached' })
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Harbour'])
+      // One commit, trimmed, and Enter does not commit a second time on the blur that follows.
+      expect(await page.getByTestId('undo').getAttribute('title')).toContain('Undo Rename Sail to Harbour')
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill('Quay')
+      await page.keyboard.press('Enter')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Quay'])
+      await page.getByTestId('undo').click()
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Harbour'])
+      await page.getByTestId('undo').click()
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Sail'])
+      expect(await page.getByTestId('undo').isEnabled()).toBe(false)
+      // A blank name or an unchanged one leaves the scene alone.
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill('   ')
+      await page.getByTestId('scene-add').focus()
+      await page.getByTestId('scene-rename').waitFor({ state: 'detached' })
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill(' Sail ')
+      await page.getByTestId('scene-add').focus()
+      await page.getByTestId('scene-rename').waitFor({ state: 'detached' })
+      await page.waitForTimeout(300)
+      expect(await sceneNames(folder)).toEqual(['Drive', 'Sail'])
+      expect(await page.getByTestId('undo').isEnabled()).toBe(false)
+    } finally {
+      await close()
+    }
+  })
+
+  test('escape still cancels a rename', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill('Nope')
+      await page.keyboard.press('Escape')
+      await page.getByTestId('scene-rename').waitFor({ state: 'detached' })
+      await page.waitForTimeout(300)
+      expect(await sceneNames(folder)).toEqual(['Drive', 'Sail'])
+      expect(await tabNames(page)).toEqual([expect.stringMatching(/^Drive · /), expect.stringMatching(/^Sail · /)])
+      expect(await page.getByTestId('undo').isEnabled()).toBe(false)
+    } finally {
+      await close()
+    }
+  })
+
+  test("undo of a delete doesn't reopen its menu or rename", async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      // A menu left open on a scene that goes away does not come back with it.
+      await page.getByTestId('scene-add').click()
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Scene 2', 'Sail'])
+      await page.locator('.scene-tab').nth(1).getByRole('button', { name: 'Scene menu' }).click()
+      await page.getByTestId('scene-menu').waitFor()
+      await page.keyboard.press('Meta+z')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Sail'])
+      await page.getByTestId('scene-menu').waitFor({ state: 'detached' })
+      await page.keyboard.press('Meta+Shift+z')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Scene 2', 'Sail'])
+      await expect.poll(() => tabNames(page)).toHaveLength(3)
+      expect(await page.getByTestId('scene-menu').count()).toBe(0)
+
+      // So does a rename field. Here the agent removes the scene and puts it back.
+      const scenes = (await loadProject(folder)).scenes
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').waitFor()
+      await mutateProject(folder, (p) => ({ ...p, scenes: p.scenes.filter((s) => s.id !== scenes[1]!.id) }))
+      await expect.poll(() => tabNames(page)).toHaveLength(2)
+      // Let the studio take the first write in before the second lands; two agent writes in the same instant can be seen as one.
+      await page.waitForTimeout(600)
+      await mutateProject(folder, (p) => ({ ...p, scenes }))
+      await expect.poll(() => tabNames(page)).toHaveLength(3)
+      expect(await page.getByTestId('scene-rename').count()).toBe(0)
+      expect(await page.getByTestId('scene-menu').count()).toBe(0)
+    } finally {
+      await close()
+    }
+  })
+
+  test('Home and End pick the first and last tab', async () => {
+    const { page, close } = await openTwo()
+    try {
+      await page.getByTestId('scene-add').click()
+      await expect.poll(() => tabNames(page)).toHaveLength(3)
+      await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Scene 2')).toBe(true)
+      await activeTab(page).focus()
+      await page.keyboard.press('Home')
+      await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Drive')).toBe(true)
+      await expect.poll(() => page.evaluate(() => document.activeElement?.textContent?.startsWith('Drive'))).toBe(true)
+      await page.keyboard.press('End')
+      await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Sail')).toBe(true)
+      await expect.poll(() => page.evaluate(() => document.activeElement?.textContent?.startsWith('Sail'))).toBe(true)
+      // Already at the end: nothing moves.
+      await page.keyboard.press('End')
+      expect((await activeTab(page).textContent())?.startsWith('Sail')).toBe(true)
+    } finally {
+      await close()
+    }
+  })
+
+  test('inactive tab text has at least 7:1 contrast with the bar', async () => {
+    const { page, close } = await openTwo()
+    try {
+      const colours = await page.evaluate(() => {
+        const rgba = (css: string) => css.match(/[\d.]+/g)!.map(Number)
+        const over = (top: number[], below: number[]) => {
+          const a = top[3] ?? 1
+          return [0, 1, 2].map((i) => top[i]! * a + below[i]! * (1 - a))
+        }
+        const bar = rgba(getComputedStyle(document.querySelector('.scene-bar')!).backgroundColor)
+        const out: Record<string, number[]> = {}
+        for (const [name, el] of [
+          ['tab', document.querySelector('[role="tab"][aria-selected="false"]')!],
+          ['more', document.querySelector('.scene-tab[data-active="false"] .scene-more')!],
+        ] as const) {
+          const tab = el.closest('.scene-tab')!
+          const behind = over(rgba(getComputedStyle(tab).backgroundColor), bar)
+          out[name] = [...rgba(getComputedStyle(el).color).slice(0, 3), ...behind] as number[]
+        }
+        return out
+      })
+      const luminance = (c: number[]) => {
+        const [r, g, b] = c.map((v) => {
+          const s = v / 255
+          return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+        })
+        return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!
+      }
+      for (const [name, c] of Object.entries(colours)) {
+        const hi = luminance(c.slice(0, 3))
+        const lo = luminance(c.slice(3))
+        const ratio = (Math.max(hi, lo) + 0.05) / (Math.min(hi, lo) + 0.05)
+        console.log(`inactive ${name} contrast ${ratio.toFixed(2)}:1`)
+        expect(ratio, name).toBeGreaterThanOrEqual(7)
+      }
     } finally {
       await close()
     }
@@ -733,7 +896,7 @@ describe('scene tabs', () => {
       await expect.poll(() => handles(page).count()).toBe(4)
       await expect.poll(() => page.getByTestId('leg-row-0').textContent()).toContain('1 · Piraeus → Mykonos')
       expect(await page.locator('[data-testid^="leg-row-"]').count()).toBe(3)
-      expect(await activeTab(page).textContent()).toBe('Sail · 14 s')
+      expect(await activeTab(page).textContent()).toBe('Sail · 14.0 s')
       await page.getByTestId('scene-tab').nth(0).click()
       await expect.poll(() => handles(page).count()).toBe(3)
     } finally {
@@ -807,7 +970,7 @@ describe('scene tabs', () => {
       await page.keyboard.press('Enter')
       await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Detour', 'Sail'])
       expect(await page.getByTestId('undo').getAttribute('title')).toContain('Undo Rename Scene 2 to Detour')
-      await expect.poll(() => tabNames(page)).toEqual(['Drive · 13 s', 'Detour · 13 s', 'Sail · 14 s'])
+      await expect.poll(() => tabNames(page)).toEqual(['Drive · 13.0 s', 'Detour · 13.0 s', 'Sail · 14.0 s'])
 
       // Duplicate Sail: the copy sits after it and is shown.
       await choose(page, 2, 'Duplicate')
@@ -873,7 +1036,7 @@ describe('scene tabs', () => {
       await page.getByTestId('scene-tab').nth(1).click()
       await expect.poll(() => handles(page).count()).toBe(4)
       await mutateProject(folder, (p) => applyPatch(p, { ops: [{ op: 'move_scene', id: SAIL, index: 0 }] }))
-      await expect.poll(() => tabNames(page)).toEqual(['Sail · 14 s', 'Drive · 13 s'])
+      await expect.poll(() => tabNames(page)).toEqual(['Sail · 14.0 s', 'Drive · 13.0 s'])
       expect((await activeTab(page).textContent())?.startsWith('Sail')).toBe(true)
       expect(await handles(page).count()).toBe(4)
       expect(await page.locator('.notice').count()).toBe(0)
@@ -889,7 +1052,7 @@ describe('scene tabs', () => {
       await expect.poll(() => handles(page).count()).toBe(4)
       await mutateProject(folder, (p) => applyPatch(p, { ops: [{ op: 'remove_scene', id: SAIL }] }))
       await page.getByRole('status').filter({ hasText: 'That scene was removed. Showing Drive.' }).waitFor()
-      expect(await tabNames(page)).toEqual(['Drive · 13 s'])
+      expect(await tabNames(page)).toEqual(['Drive · 13.0 s'])
       await expect.poll(() => handles(page).count()).toBe(3)
     } finally {
       await close()

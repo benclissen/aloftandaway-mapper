@@ -1,12 +1,12 @@
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Map as MapLibreMap } from 'maplibre-gl'
-import type { Page, WebSocketRoute } from 'playwright'
+import type { Page, Route, WebSocketRoute } from 'playwright'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { applyPatch, buildRoute, buildTimeline, formatTimecode, pointAt, type LngLat, type Project, type Scene } from '../../src/core/index.js'
 import { loadProject, mutateProject } from '../../src/server/store.js'
-import { greekIslands, pacific, sceneOf, twoScenes } from '../fixtures/projects.js'
-import { closeAll, openStudioPage } from './helpers.js'
+import { greekIslands, pacific, projectWithScenes, sceneOf, twoScenes } from '../fixtures/projects.js'
+import { closeAll, flatTerrainTile, openStudioPage } from './helpers.js'
 
 afterAll(closeAll)
 
@@ -1064,6 +1064,80 @@ describe('scene tabs', () => {
       await expect.poll(() => page.getByTestId('legs-panel').textContent()).toContain('Add stops through your agent to see legs here.')
       await expect.poll(() => handles(page).count()).toBe(0)
       expect(await page.locator('.notice-error').count()).toBe(0)
+    } finally {
+      await close()
+    }
+  })
+
+  /**
+   * Opens the studio on two copies of the Greek Islands scene, "Drive" and "Sail", each with a via point on leg 0, so
+   * that their stop ids and via indexes are the same. Drive has terrain, whose tiles are held until `release`: Drive's
+   * first frame never finishes, so a switch to Sail stays loading behind it, with Drive's handles still on the map.
+   */
+  async function openHeld() {
+    const project = projectWithScenes(2, ['Drive', 'Sail'])
+    for (const scene of project.scenes) {
+      scene.camera = { mode: 'fixed', easing: 'smooth' }
+      scene.legs[0]!.via = [{ at: [24.5, 37.7] }]
+    }
+    project.scenes[0]!.look.terrain = true
+    let held: Route[] | undefined = []
+    const answer = (route: Route) => route.fulfill({ contentType: 'image/png', body: flatTerrainTile() })
+    const studio = await openStudioPage(project, VIEWPORT, (page) =>
+      page.context().route('**/tiles/terrain/**', (route) => (held ? void held.push(route) : answer(route))),
+    )
+    await expect.poll(() => handles(studio.page).count()).toBe(4)
+    const release = async () => {
+      const routes = held ?? []
+      held = undefined
+      await Promise.all(routes.map(answer))
+    }
+    return { ...studio, release }
+  }
+
+  /** Switches to Sail, which then waits behind Drive's first frame. */
+  async function switchWhileHeld(page: Page) {
+    await page.getByTestId('scene-tab').nth(1).click()
+    await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Sail')).toBe(true)
+    expect(await page.getByTestId('stage').getAttribute('data-shown-frame')).toBeNull()
+  }
+
+  const mykonos = async (folder: string, name: string) => (await byName(folder, name)).stops.find((s) => s.id === 'mykonos')!
+
+  test('a point menu opened while another scene loads edits the scene whose handle it came from', async () => {
+    const { page, folder, release, close } = await openHeld()
+    try {
+      await switchWhileHeld(page)
+      // Drive's handle, still on the map: Sail has a stop with the same id.
+      await page.getByTestId('stop-marker-mykonos').click({ button: 'right' })
+      expect(await page.getByTestId('point-menu-sharp').textContent()).toBe('Sharp corner')
+      await page.getByTestId('point-menu-sharp').click()
+      await expect.poll(async () => (await mykonos(folder, 'Drive')).sharp).toBe(true)
+      expect((await mykonos(folder, 'Sail')).sharp).toBeUndefined()
+    } finally {
+      await release()
+      await close()
+    }
+  })
+
+  test("selecting a leg while another scene loads shows only the new scene's via handles", async () => {
+    const { page, folder, release, close } = await openHeld()
+    try {
+      await switchWhileHeld(page)
+      await page.getByTestId('leg-row-0').click()
+      await expect.poll(() => page.getByTestId('stage').getAttribute('data-selected-leg')).toBe('0')
+      // Drive's via handle for leg 0 would sit on Drive's route, but Sail's leg is the one selected.
+      await page.waitForTimeout(300)
+      expect(await page.locator('.via-handle').count()).toBe(0)
+      expect(await page.getByTestId('stage').getAttribute('data-shown-frame')).toBeNull()
+
+      // Once Sail has loaded, its own handle shows, and its menu edits Sail.
+      await release()
+      await page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
+      await page.getByTestId('via-marker-0-0').click({ button: 'right' })
+      await page.getByTestId('point-menu-sharp').click()
+      await expect.poll(async () => (await byName(folder, 'Sail')).legs[0]!.via[0]!.sharp).toBe(true)
+      expect((await byName(folder, 'Drive')).legs[0]!.via[0]!.sharp).toBeUndefined()
     } finally {
       await close()
     }

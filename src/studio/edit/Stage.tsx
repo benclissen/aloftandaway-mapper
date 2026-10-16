@@ -2,7 +2,7 @@ import type { Map as MapLibreMap } from 'maplibre-gl'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { clampLat, layoutSize, type Project, type ProjectPatch, type SeaPaths, type Shot } from '../../core/index.js'
 import { MapStage } from '../stage/MapStage.js'
-import { RouteEditor, type PointTarget, type RouteEditorCallbacks } from './RouteEditor.js'
+import { RouteEditor, type PointMenuTarget, type RouteEditorCallbacks } from './RouteEditor.js'
 
 declare global {
   interface Window {
@@ -37,7 +37,7 @@ interface StageProps {
    * is the project version the gesture began on.
    */
   onEdit(patch: ProjectPatch, label: string, seen?: string): Promise<boolean>
-  onPointMenu(target: PointTarget, client: { x: number; y: number }, seen?: string): void
+  onPointMenu(target: PointMenuTarget, client: { x: number; y: number }, seen?: string): void
   onError(message: string): void
 }
 
@@ -201,6 +201,7 @@ class StageController {
   private loadProject(): void {
     const { stage, project, sceneId, seaPaths } = this
     if (!stage || !project || sceneId === undefined) return
+    this.editor?.loading(sceneId)
     stage.load(project, sceneId, seaPaths).then(
       () => {
         if (this.stage === stage && this.project === project && this.sceneId === sceneId) this.editor?.sync(project, sceneId)

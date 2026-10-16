@@ -45,7 +45,7 @@ function setup(): Promise<Shared> {
 let flatTile: Buffer | undefined
 
 /** A 256 px Terrarium elevation tile at sea level everywhere (red 128, green 0, blue 0). */
-function flatTerrainTile(): Buffer {
+export function flatTerrainTile(): Buffer {
   if (!flatTile) {
     const tile = new PNG({ width: 256, height: 256 })
     for (let i = 0; i < tile.data.length; i += 4) tile.data.set([128, 0, 0, 255], i)
@@ -100,11 +100,12 @@ export async function openRenderPage(
 
 /**
  * Writes the project (with a fresh id, since the fixtures share one) to a temp folder, registers it and opens the
- * studio's edit mode at `viewport`.
+ * studio's edit mode at `viewport`. `beforeOpen` runs on the page before it goes to the studio, to route its requests.
  */
 export async function openStudioPage(
   project: Project,
   viewport: { width: number; height: number },
+  beforeOpen?: (page: Page) => Promise<void>,
 ): Promise<{ page: Page; folder: string; project: Project; close(): Promise<void> }> {
   const { server, browser, tempDir } = await setup()
   const folder = await mkdtemp(path.join(tempDir, 'project-'))
@@ -114,6 +115,7 @@ export async function openStudioPage(
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1 })
   const page = await context.newPage()
   page.on('pageerror', (error) => process.stderr.write(`page error: ${error.message}\n`))
+  await beforeOpen?.(page)
   await page.goto(server.studioUrl(key))
   return { page, folder, project: saved, close: () => context.close() }
 }

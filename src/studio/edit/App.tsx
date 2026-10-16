@@ -16,7 +16,7 @@ import { CLIENT_ID, getProject, patch, RequestError, sceneParam, setSceneParam, 
 import { EditHistory, EditQueue, OutsideWrites, redoPatch, SCENE_OPS, scenesAround, type Entry } from './history.js'
 import { LegsPanel } from './LegsPanel.js'
 import { PointMenu } from './PointMenu.js'
-import { isSharp, removeViaEdit, sharpEdit, type PointTarget } from './RouteEditor.js'
+import { isSharp, removeViaEdit, sharpEdit, type PointMenuTarget } from './RouteEditor.js'
 import { SceneTabs, type SceneSummary } from './SceneTabs.js'
 import { Scrubber, type Tick } from './Scrubber.js'
 import { ShotPanel } from './ShotPanel.js'
@@ -69,7 +69,7 @@ export function App() {
   const [notice, setNotice] = useState<Notice>()
   const [selectedLeg, setSelectedLeg] = useState<LegPair>()
   /** The open point menu, and the project version it was opened on. */
-  const [pointMenu, setPointMenu] = useState<{ target: PointTarget; at: { x: number; y: number }; seen?: string }>()
+  const [pointMenu, setPointMenu] = useState<{ target: PointMenuTarget; at: { x: number; y: number }; seen?: string }>()
   /** The scene on screen. It is a scene of `project` whenever `project` is. */
   const [activeSceneId, setActiveSceneId] = useState<string>()
   /** `activeSceneId`, readable outside a render and set at once. */
@@ -446,7 +446,7 @@ export function App() {
 
   const onEdit = useCallback((body: ProjectPatch, label: string, seen?: string) => edit(body, label, { seen }), [edit])
   const onPointMenu = useCallback(
-    (target: PointTarget, at: { x: number; y: number }, seen?: string) => setPointMenu({ target, at, seen }),
+    (target: PointMenuTarget, at: { x: number; y: number }, seen?: string) => setPointMenu({ target, at, seen }),
     [],
   )
   const closePointMenu = useCallback(() => setPointMenu(undefined), [])
@@ -455,6 +455,10 @@ export function App() {
 
   if (loadError) return <p className="studio-message">{loadError}</p>
   if (!project || !scene || !route || !timeline) return <p className="studio-message">Loading the project…</p>
+
+  // The menu acts on the scene its point is in. During a tab switch that is the old scene, whose handles are still up.
+  const menuScene = pointMenu && project.scenes.find((s) => s.id === pointMenu.target.scene)
+  const menuSharp = pointMenu && menuScene && isSharp(menuScene, pointMenu.target.point)
 
   const saveShot = (which: 'start' | 'end') => {
     const shot = stage.current?.shot()
@@ -492,19 +496,19 @@ export function App() {
         />
         <LegsPanel scene={scene} route={route} selectedLeg={selected} onSelectLeg={selectLeg} onEdit={onEdit} />
       </div>
-      {pointMenu && isSharp(scene, pointMenu.target) !== undefined && (
+      {pointMenu && menuScene && menuSharp !== undefined && (
         <PointMenu
-          target={pointMenu.target}
+          target={pointMenu.target.point}
           at={pointMenu.at}
-          sharp={isSharp(scene, pointMenu.target)!}
+          sharp={menuSharp}
           onToggleSharp={() => {
-            const edit = sharpEdit(scene, pointMenu.target)
+            const edit = sharpEdit(menuScene, pointMenu.target.point)
             if (edit) void onEdit(edit.patch, edit.label, pointMenu.seen)
           }}
           onRemove={() => {
-            const { target } = pointMenu
-            if (target.kind !== 'via') return
-            const edit = removeViaEdit(target.leg, target.index)
+            const { point } = pointMenu.target
+            if (point.kind !== 'via') return
+            const edit = removeViaEdit(menuScene.id, point.leg, point.index)
             void onEdit(edit.patch, edit.label, pointMenu.seen)
           }}
           onClose={closePointMenu}

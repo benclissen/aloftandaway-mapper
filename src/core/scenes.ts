@@ -16,9 +16,25 @@ export function resolveScene(project: Project, ref?: SceneRef): { scene: Scene; 
   throw new ProjectError([{ path: ['scene'], message: `no scene ${named}; the scenes are ${scenes}` }])
 }
 
-/** For example `Scene 2 of 3 · Sail`. A scene with no name shows as `Untitled`. */
+/** The message for a scene name that is empty or only spaces. */
+export const BLANK_SCENE_NAME = "a scene name can't be blank"
+
+/**
+ * What to call a scene: its name without surrounding spaces, or `Scene N` (N is `index` + 1) when the name is blank.
+ * Old files can hold a blank name; new input can't.
+ */
+export function sceneTitleOf(name: string, index: number): string {
+  return name.trim() || `Scene ${index + 1}`
+}
+
+/** `sceneTitleOf` for the scene at `index`. */
+export function sceneTitle(project: Project, index: number): string {
+  return sceneTitleOf(project.scenes[index]?.name ?? '', index)
+}
+
+/** For example `Scene 2 of 3 · Sail`. A scene with no name shows as `Scene 2`. */
 export function sceneLabel(project: Project, index: number): string {
-  return `Scene ${index + 1} of ${project.scenes.length} · ${project.scenes[index]?.name || 'Untitled'}`
+  return `Scene ${index + 1} of ${project.scenes.length} · ${sceneTitle(project, index)}`
 }
 
 // Scene ops
@@ -51,6 +67,7 @@ export function applySceneOp(project: Project, op: SceneOp, at: number, stopId: 
     case 'add_scene': {
       const to = op.index ?? scenes.length
       checkIndex(to, scenes.length)
+      if (op.name !== undefined && !op.name.trim()) fail(['ops', at, 'name'], BLANK_SCENE_NAME)
       if (op.id !== undefined && scenes.some((s) => s.id === op.id)) fail(['ops', at, 'id'], `scene id '${op.id}' is already in use`)
       let from: Scene
       if (op.copyLookFrom === undefined) from = scenes[Math.max(0, to - 1)]!
@@ -65,7 +82,7 @@ export function applySceneOp(project: Project, op: SceneOp, at: number, stopId: 
       const { mode, easing, follow } = from.camera
       const scene: Scene = {
         id: op.id ?? newSceneId(),
-        name: op.name ?? `Scene ${to + 1}`,
+        name: op.name === undefined ? `Scene ${to + 1}` : op.name.trim(),
         timing: structuredClone(from.timing),
         stops: [],
         legs: [],
@@ -82,7 +99,7 @@ export function applySceneOp(project: Project, op: SceneOp, at: number, stopId: 
       const copy: Scene = {
         ...structuredClone(original),
         id,
-        name: `${original.name} copy`,
+        name: `${sceneTitle(project, i)} copy`,
       }
       copy.stops = copy.stops.map((s) => ({ ...s, id: stopId() }))
       return { ...project, scenes: scenes.toSpliced(i + 1, 0, copy) }

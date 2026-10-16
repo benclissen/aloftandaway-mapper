@@ -23,6 +23,8 @@ import {
   resolveShots,
   sceneLabel,
   SceneRefSchema,
+  sceneTitle,
+  sceneTitleOf,
   setStops,
   StopInputSchema,
   SymbolKindSchema,
@@ -136,7 +138,7 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
     }))
     blocks.push([
       ...(many ? [`${sceneLabel(project, index)} (id ${scene.id})`] : []),
-      `${project.name}: ${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
+      `${many ? '' : `${project.name}: `}${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
       `Style: ${scene.look.theme}, terrain ${scene.look.terrain ? 'on' : 'off'}.`,
       ...(scene.stops.length
         ? scene.stops.map((s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}${s.sharp ? ' · sharp' : ''}`)
@@ -197,7 +199,7 @@ function sceneSentence(label: string | undefined, sentence: string): string {
 
 /** `Scenes: 1 Drive, 2 Sail.` */
 function scenesLine(project: Project): string {
-  return `Scenes: ${project.scenes.map((s, i) => `${i + 1} ${s.name || 'Untitled'}`).join(', ')}.`
+  return `Scenes: ${project.scenes.map((s, i) => `${i + 1} ${sceneTitle(project, i)}`).join(', ')}.`
 }
 
 // GPX
@@ -393,7 +395,7 @@ export async function doneSummary(r: RenderResult): Promise<string> {
     ...(r.sceneStarts.length > 1
       ? r.sceneStarts.map((s) => {
           const frame = Math.round((s.seconds * r.fps.num) / r.fps.den)
-          return `Scene ${s.position} · ${s.name || 'Untitled'} starts at ${formatTimecode(frame, r.fps)}`
+          return `Scene ${s.position} · ${sceneTitleOf(s.name, s.position - 1)} starts at ${formatTimecode(frame, r.fps)}`
         })
       : []),
     `Manifest: ${r.manifest}`,
@@ -410,7 +412,7 @@ export async function doneSummary(r: RenderResult): Promise<string> {
 export async function leftover(status: Pick<RenderStatus, 'outputs' | 'dir' | 'warnings'>): Promise<string[]> {
   const { scenes } = status.dir && status.outputs?.length ? await readManifest(path.join(status.dir, 'manifest.json')) : {}
   const names = new Map(
-    Array.isArray(scenes) && scenes.length > 1 ? (scenes as { id: string; name: string }[]).map((s) => [s.id, s.name || 'Untitled']) : [],
+    Array.isArray(scenes) && scenes.length > 1 ? (scenes as { id: string; name: string }[]).map((s, i) => [s.id, sceneTitleOf(s.name, i)]) : [],
   )
   const label = (o: NonNullable<RenderStatus['outputs']>[number]) => {
     const what = o.request === 'preview' ? 'preview' : o.request === 'all' ? 'clip' : o.layer

@@ -22,7 +22,7 @@ import {
   type ViaPoint,
   type StopInput,
 } from './schema.js'
-import { SceneRefSchema, applySceneOp, resolveScene, type SceneRef } from './scenes.js'
+import { BLANK_SCENE_NAME, SceneRefSchema, applySceneOp, resolveScene, type SceneRef } from './scenes.js'
 
 // Ops and patches
 
@@ -354,7 +354,11 @@ export function applyPatch(project: Project, patch: ProjectPatch): Project {
   }
   if (sceneSet) {
     checkKeys(sceneSet, SCENE_SET_FORBIDDEN, 'sceneSet')
-    edit((scene) => mergePatch(scene, sceneSet) as Scene)
+    // A name is stored trimmed, and a blank one is refused. (Other types fall through to the schema.)
+    const name = sceneSet.name
+    if (typeof name === 'string' && !name.trim()) fail(['sceneSet', 'name'], BLANK_SCENE_NAME)
+    const merged = typeof name === 'string' ? { ...sceneSet, name: name.trim() } : sceneSet
+    edit((scene) => mergePatch(scene, merged) as Scene)
   }
   ops?.forEach((op, i) => {
     if (isSceneOp(op)) work = applySceneOp(work, op, i, newStopId)

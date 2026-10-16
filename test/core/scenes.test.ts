@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { ProjectError, SceneRefSchema, applyPatch, newSceneId, resolveScene, sceneLabel, type Project } from '../../src/core/index.js'
+import { ProjectError, SceneRefSchema, applyPatch, newSceneId, resolveScene, sceneLabel, sceneTitle, sceneTitleOf, type Project } from '../../src/core/index.js'
 import { projectWithScenes } from '../fixtures/projects.js'
 
 describe('scene references', () => {
@@ -44,7 +44,50 @@ describe('scene references', () => {
     const project = projectWithScenes(2, ['Drive', 'Sail'])
     expect(sceneLabel(project, 1)).toBe('Scene 2 of 2 · Sail')
     project.scenes[0]!.name = ''
-    expect(sceneLabel(project, 0)).toBe('Scene 1 of 2 · Untitled')
+    expect(sceneLabel(project, 0)).toBe('Scene 1 of 2 · Scene 1')
+  })
+
+  test('a blank name shows as Scene N', () => {
+    const project = projectWithScenes(3, ['Drive', '', '   '])
+    expect(sceneTitle(project, 0)).toBe('Drive')
+    expect(sceneTitle(project, 1)).toBe('Scene 2')
+    expect(sceneTitle(project, 2)).toBe('Scene 3')
+    expect(sceneTitleOf('  Sail  ', 0)).toBe('Sail')
+    expect(sceneTitleOf('\t', 4)).toBe('Scene 5')
+  })
+
+  test('a whitespace name is refused on add_scene', () => {
+    const project = projectWithScenes(2, ['Drive', 'Sail'])
+    for (const name of ['', '   ']) {
+      const e = failure(() => applyPatch(project, { ops: [{ op: 'add_scene', name }] }))
+      expect(e.issues[0]?.path).toEqual(['ops', 0, 'name'])
+      expect(e.issues[0]?.message).toBe("a scene name can't be blank")
+    }
+    const later = failure(() => applyPatch(project, { ops: [{ op: 'add_scene' }, { op: 'add_scene', name: ' ' }] }))
+    expect(later.issues[0]?.path).toEqual(['ops', 1, 'name'])
+  })
+
+  test('a whitespace name is refused on sceneSet', () => {
+    const project = projectWithScenes(2, ['Drive', 'Sail'])
+    for (const name of ['', '   ']) {
+      const e = failure(() => applyPatch(project, { sceneSet: { name } }))
+      expect(e.issues[0]?.path).toEqual(['sceneSet', 'name'])
+      expect(e.issues[0]?.message).toBe("a scene name can't be blank")
+    }
+  })
+
+  test('names are stored trimmed', () => {
+    const project = projectWithScenes(2, ['Drive', 'Sail'])
+    const added = applyPatch(project, { ops: [{ op: 'add_scene', name: '  Fly  ' }] })
+    expect(added.scenes[2]!.name).toBe('Fly')
+    const set = applyPatch(project, { scene: 2, sceneSet: { name: ' Boat ' } })
+    expect(set.scenes[1]!.name).toBe('Boat')
+  })
+
+  test('duplicating a scene with a blank name gives Scene N copy', () => {
+    const project = projectWithScenes(2, ['Drive', ''])
+    const p = applyPatch(project, { ops: [{ op: 'duplicate_scene', id: project.scenes[1]!.id }] })
+    expect(p.scenes[2]!.name).toBe('Scene 2 copy')
   })
 })
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { sceneTitleOf } from '../../core/index.js'
 import { swallowNextClick } from './PointMenu.js'
 
 /** What a tab shows about one scene. */
@@ -175,8 +176,8 @@ export function SceneTabs({ scenes, activeId, onSelect, onAdd, onRename, onDupli
   return (
     <div className="scene-bar">
       <div className="scene-tabs" role="tablist" aria-label="Scenes" ref={list} onKeyDown={onKeyDown}>
-        {scenes.map((scene) => {
-          const label = scene.name || 'Untitled'
+        {scenes.map((scene, position) => {
+          const label = sceneTitleOf(scene.name, position)
           const active = scene.id === activeId
           return (
             <div key={scene.id} className="scene-tab" data-active={active} role="presentation">

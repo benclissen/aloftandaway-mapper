@@ -468,6 +468,18 @@ describe('tools', () => {
       expect(lines.filter((l) => l.startsWith('Style: '))).toHaveLength(2)
     })
 
+    test('each scene block starts with its counts, not the project name', async () => {
+      const folder = await twoScenes('scene-blocks')
+      const got = await call('get_project', { folder })
+      const lines = text(got).split('\n')
+      expect(lines.filter((l) => l.includes('Trip'))).toEqual([lines[0]])
+      const counts = lines.filter((l) => /^\d+ stops?, /.test(l))
+      expect(counts).toHaveLength(2)
+      expect(counts[0]).toMatch(/^2 stops, [\d.]+ s \(\d+ frames\), 3840×2160\.$/)
+      const header = lines.findIndex((l) => l.startsWith('Scene 1 of 2 · Drive'))
+      expect(lines[header + 1]).toBe(counts[0])
+    })
+
     test('a one-scene summary is unchanged', async () => {
       const folder = path.join(tmp, 'one-scene')
       await call('create_project', { folder, name: 'Greek Islands', output: { height: 1080 } })
@@ -757,7 +769,7 @@ describe('render summaries', () => {
       'Finished outputs kept:',
       `- clip of Drive: ${dir}/01-drive.part.mp4`,
       `- map of Drive: ${dir}/01-drive/map.mov`,
-      `- preview of Untitled: ${dir}/02-scene-preview.part.mp4`,
+      `- preview of Scene 2: ${dir}/02-scene-preview.part.mp4`,
     ])
   })
 

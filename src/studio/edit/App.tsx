@@ -7,6 +7,8 @@ import {
   invertPatch,
   isSceneOp,
   newSceneId,
+  sceneTitle,
+  sceneTitleOf,
   type PatchResponse,
   type SeaPaths,
   type Project,
@@ -117,7 +119,7 @@ export function App() {
           const next = incoming.scenes[Math.min(at, incoming.scenes.length - 1)]!
           showScene(next.id)
           if (!deleting.current.has(active!)) {
-            setNotice({ kind: 'info', text: `That scene was removed. Showing ${next.name || 'Untitled'}.`, keep: true })
+            setNotice({ kind: 'info', text: `That scene was removed. Showing ${sceneTitleOf(next.name, incoming.scenes.indexOf(next))}.`, keep: true })
           }
         }
       }
@@ -413,7 +415,11 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [step])
 
-  const sceneName = (id: string) => current.current?.scenes.find((s) => s.id === id)?.name || 'Untitled'
+  const sceneName = (id: string) => {
+    const project = current.current
+    const index = project ? project.scenes.findIndex((s) => s.id === id) : -1
+    return project && index >= 0 ? sceneTitle(project, index) : 'scene'
+  }
 
   const addScene = () => {
     const scenes = current.current?.scenes ?? []

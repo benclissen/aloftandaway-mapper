@@ -347,10 +347,21 @@ describe('writeFcpxml', () => {
     const input: FcpxmlInput = { ...twoScenes(), scenes: [scene('a', '', 25, '/r/a'), scene('b', 'Sail', 25, '/r/b')] }
     const doc = parse(writeFcpxml(input))
     expect((resources(doc).asset as Node[]).map((a) => a['@_name'])).toEqual([
-      'Untitled · Map', 'Untitled · Route', 'Untitled · Signs',
+      'Scene 1 · Map', 'Scene 1 · Route', 'Scene 1 · Signs',
       'Sail · Map', 'Sail · Route', 'Sail · Signs',
     ])
     expect(compoundClips(doc).map((c) => c.map['@_name'])).toEqual(['Map', 'Map'])
+  })
+
+  test('a file with a blank scene name loads and exports as Scene N', () => {
+    const input: FcpxmlInput = { ...twoScenes(), scenes: [scene('a', 'Drive', 50, '/r/a'), scene('b', '   ', 75, '/r/b')] }
+    for (const join of [true, false]) {
+      const doc = parse(writeFcpxml({ ...input, join }))
+      expect(resources(doc).media.map((m: Node) => m['@_name'])).toEqual(['Trip · Drive', 'Trip · Scene 2'])
+      expect((resources(doc).asset as Node[]).slice(3).map((a) => a['@_name'])).toEqual([
+        'Scene 2 · Map', 'Scene 2 · Route', 'Scene 2 · Signs',
+      ])
+    }
   })
 
   test('same-named scenes stay distinct', () => {

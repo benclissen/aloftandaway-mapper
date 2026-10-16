@@ -10,9 +10,10 @@ import {
   type SeaPaths,
   type Project,
   type ProjectPatch,
+  type Scene,
 } from '../../core/index.js'
 import { CLIENT_ID, getProject, patch, RequestError, sceneParam, setSceneParam, subscribe } from './api.js'
-import { EditHistory, EditQueue, type Entry } from './history.js'
+import { EditHistory, EditQueue, redoPatch, SCENE_OPS, scenesAround, type Entry } from './history.js'
 import { LegsPanel } from './LegsPanel.js'
 import { PointMenu } from './PointMenu.js'
 import { isSharp, removeViaEdit, sharpEdit, type PointTarget } from './RouteEditor.js'
@@ -30,10 +31,21 @@ const INFO_NOTICE_MS = 2500
 
 const newer = (a: Project, b: Project) => Date.parse(a.updatedAt) > Date.parse(b.updatedAt)
 
-/** The ops that change the list of scenes; a patch with only these names no scene. */
-const SCENE_OPS = new Set(['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene', 'restore_scene'])
+/** The ops that find a leg or via point by its index, which an unseen write can make point at the wrong one. */
+const INDEX_OPS = new Set(['update_leg', 'insert_via', 'update_via', 'remove_via'])
 
 const HISTORY_CLEARED = 'Your agent changed the project. Undo history cleared.'
+const ROUTE_CHANGED = 'The route changed while you were editing. Try again.'
+
+/** A leg, known by the stops at its ends so that it stays the same leg when stops are added or removed elsewhere. */
+type LegPair = { from: string; to: string }
+
+/** The index of the leg from `pair.from` to `pair.to` in `scene`, or undefined when they are no longer next to each other. */
+function legIndex(scene: Scene | undefined, pair: LegPair | undefined): number | undefined {
+  if (!scene || !pair) return undefined
+  const i = scene.stops.findIndex((s, i) => s.id === pair.from && scene.stops[i + 1]?.id === pair.to)
+  return i < 0 ? undefined : i
+}
 
 const MODE_NAMES = { fixed: 'Fixed', glide: 'Glide', follow: 'Follow' } as const
 
@@ -55,14 +67,14 @@ export function App() {
   const [playing, setPlaying] = useState(false)
   const [freeView, setFreeView] = useState(false)
   const [notice, setNotice] = useState<Notice>()
-  const [selectedLeg, setSelectedLeg] = useState<number>()
+  const [selectedLeg, setSelectedLeg] = useState<LegPair>()
   const [pointMenu, setPointMenu] = useState<{ target: PointTarget; at: { x: number; y: number } }>()
   /** The scene on screen. It is a scene of `project` whenever `project` is. */
   const [activeSceneId, setActiveSceneId] = useState<string>()
   /** `activeSceneId`, readable outside a render and set at once. */
   const activeRef = useRef<string | undefined>(undefined)
-  /** A scene this studio is deleting, so that seeing it go isn't reported as the agent's doing. */
-  const deleting = useRef<string | undefined>(undefined)
+  /** Scenes this studio is removing, so that seeing one go isn't reported as the agent's doing. */
+  const deleting = useRef(new Set<string>())
   const stage = useRef<StageHandle | null>(null)
   /** The project on screen, readable outside a render. */
   const current = useRef<Project | undefined>(undefined)
@@ -101,12 +113,13 @@ export function App() {
         } else {
           const next = incoming.scenes[Math.min(at, incoming.scenes.length - 1)]!
           showScene(next.id)
-          if (deleting.current !== active) {
+          if (!deleting.current.has(active!)) {
             setNotice({ kind: 'info', text: `That scene was removed. Showing ${next.name || 'Untitled'}.`, keep: true })
           }
         }
       }
-      deleting.current = undefined
+      // A removal is done with once its scene is gone.
+      for (const id of deleting.current) if (!incoming.scenes.some((s) => s.id === id)) deleting.current.delete(id)
       setProject(incoming)
       setSeaPaths(paths)
       return true
@@ -177,12 +190,19 @@ export function App() {
   }, [activeSceneId])
 
   const scene = project?.scenes.find((s) => s.id === activeSceneId)
-  // A leg that no longer exists can't stay selected.
-  const legCount = scene?.legs.length ?? 0
-  const selected = selectedLeg !== undefined && selectedLeg < legCount ? selectedLeg : undefined
+  // The selected leg follows its stops; once they are no longer next to each other, nothing is selected.
+  const selected = legIndex(scene, selectedLeg)
   useEffect(() => {
-    if (scene && selectedLeg !== undefined && selectedLeg >= legCount) setSelectedLeg(undefined)
-  }, [scene, selectedLeg, legCount])
+    if (scene && selectedLeg && selected === undefined) setSelectedLeg(undefined)
+  }, [scene, selectedLeg, selected])
+
+  /** Selects leg `leg` of the scene on screen, by its stops. */
+  const selectLeg = useCallback((leg: number | undefined) => {
+    const stops = current.current?.scenes.find((s) => s.id === activeRef.current)?.stops
+    const from = leg === undefined ? undefined : stops?.[leg]
+    const to = leg === undefined ? undefined : stops?.[leg + 1]
+    setSelectedLeg(from && to ? { from: from.id, to: to.id } : undefined)
+  }, [])
 
   // Escape deselects. An open menu catches Escape first and closes instead.
   useEffect(() => {
@@ -241,16 +261,25 @@ export function App() {
    * Every studio edit comes through here. It queues `body` behind any edit still saving, works out how to undo it
    * against the project it is sent against, and resolves to whether it was saved. A failure shows the reason. `label`
    * names the edit for undo; `saved`, when given, is shown once it's saved.
+   *
+   * An edit that finds a leg or via point by index is sent only if the project is still the version the studio holds,
+   * since an unseen write may have moved what that index points at. Stop and scene edits name what they change by id
+   * and are always applied.
    */
   const edit = useCallback(
     (input: ProjectPatch, label: string, saved?: string): Promise<boolean> => {
       // An edit to a scene's contents names the scene it was made on, even if the tab changes before it is sent.
-      const touchesScene = input.sceneSet !== undefined || input.ops?.some((op) => !SCENE_OPS.has(op.op))
+      const editsStops = input.ops?.some((op) => !SCENE_OPS.has(op.op)) ?? false
+      const touchesScene = input.sceneSet !== undefined || editsStops
       const body: ProjectPatch =
         touchesScene && input.scene === undefined && activeRef.current !== undefined ? { ...input, scene: activeRef.current } : input
+      // Undo comes back to the scene the edit was made on: the one a stop, leg or via edit names, else the one on screen.
+      const madeOn = editsStops && typeof body.scene === 'string' ? body.scene : activeRef.current!
+      const conditional = body.ops?.some((op) => INDEX_OPS.has(op.op)) ?? false
       let held = ''
       let sentIn = 0
       let inverse: ProjectPatch | undefined
+      let around: { sceneBefore: string; sceneAfter: string } | undefined
       let problem = ''
       const make = (base: Project): ProjectPatch | undefined => {
         held = base.updatedAt
@@ -259,28 +288,31 @@ export function App() {
           // Applying it here first turns a patch that doesn't fit the project into a readable error.
           applyPatch(base, body)
           inverse = invertPatch(base, body)
+          around = scenesAround(base, body, madeOn)
           return body
         } catch (e) {
           problem = (e as Error).message
           return undefined
         }
       }
-      return queue.run(make, () => current.current!).then(
+      return queue.run(make, () => current.current!, { conditional }).then(
         (response) => {
-          if (!response || !inverse) {
+          if (!response || !inverse || !around) {
             setNotice({ kind: 'error', text: `Not saved. ${problem}` })
             return false
           }
           // An outside change seen while this was saving cleared the history; recording it now would undo onto that.
           if (settle(response, held) && generation.current === sentIn) {
-            history.push({ label, forward: body, inverse })
+            history.push({ label, forward: redoPatch(body, response.project), inverse, ...around })
             historyChanged()
             setNotice(saved ? { kind: 'info', text: saved } : undefined)
           }
           return true
         },
         (e: Error) => {
-          setNotice({ kind: 'error', text: `Not saved. ${e.message}` })
+          // Only a conditional edit can be refused as stale. The agent's write reaches the studio over the WebSocket.
+          if (e instanceof RequestError && e.status === 409) setNotice({ kind: 'error', text: ROUTE_CHANGED })
+          else setNotice({ kind: 'error', text: `Not saved. ${e.message}` })
           return false
         },
       )
@@ -291,25 +323,41 @@ export function App() {
   /**
    * Undoes or redoes the latest step, in turn with any edit still saving. The server applies it only if the project
    * is still the version the studio holds, so it never overwrites a write the studio hasn't seen yet; a refusal
-   * clears the history. A step that fails to save is dropped.
+   * clears the history. A step that fails to save is dropped. Once saved, it shows the scene the step belongs to: the
+   * one the edit was made on after an undo, the one the edit showed after a redo.
    */
   const step = useCallback(
     (direction: 'undo' | 'redo') => {
       let entry: Entry | undefined
       let held = ''
       let sentIn = 0
+      // Scenes the step removes, such as the one an undone add made; their going isn't the agent's doing.
+      let removes: string[] = []
+      const done = () => {
+        for (const id of removes) deleting.current.delete(id)
+      }
       const make = (base: Project): ProjectPatch | undefined => {
         entry = direction === 'undo' ? history.takeUndo() : history.takeRedo()
         historyChanged()
         held = base.updatedAt
         sentIn = generation.current
-        return entry && (direction === 'undo' ? entry.inverse : entry.forward)
+        const patch = entry && (direction === 'undo' ? entry.inverse : entry.forward)
+        removes = patch?.ops?.flatMap((op) => (op.op === 'remove_scene' ? [op.id] : [])) ?? []
+        for (const id of removes) deleting.current.add(id)
+        return patch
       }
       void queue.run(make, () => current.current!, { conditional: true }).then(
         (response) => {
-          if (response && settle(response, held) && generation.current === sentIn) setNotice(undefined)
+          if (!response || !entry) return done()
+          const matched = settle(response, held)
+          // After settling, which has taken in the project without the removed scenes.
+          done()
+          if (matched && generation.current === sentIn) setNotice(undefined)
+          const show = direction === 'undo' ? entry.sceneBefore : entry.sceneAfter
+          if (show !== activeRef.current && current.current?.scenes.some((s) => s.id === show)) showScene(show)
         },
         (e: Error) => {
+          done()
           if (entry) history.discard(entry)
           historyChanged()
           if (e instanceof RequestError && e.status === 409) clearHistory(true)
@@ -317,7 +365,7 @@ export function App() {
         },
       )
     },
-    [queue, history, settle, clearHistory],
+    [queue, history, settle, clearHistory, showScene],
   )
 
   // Cmd-Z undoes and Shift-Cmd-Z redoes, except in a form field, which keeps its own undo.
@@ -338,7 +386,7 @@ export function App() {
     const at = scenes.findIndex((s) => s.id === activeRef.current)
     const id = newSceneId()
     void edit({ ops: [{ op: 'add_scene', index: at + 1, copyLookFrom: activeRef.current!, id }] }, 'Add a scene').then((saved) => {
-      if (saved) showScene(id)
+      if (saved && current.current?.scenes.some((s) => s.id === id)) showScene(id)
     })
   }
 
@@ -348,7 +396,7 @@ export function App() {
   const duplicateScene = (id: string) => {
     const newId = newSceneId()
     void edit({ ops: [{ op: 'duplicate_scene', id, newId }] }, `Duplicate ${sceneName(id)}`).then((saved) => {
-      if (saved) showScene(newId)
+      if (saved && current.current?.scenes.some((s) => s.id === newId)) showScene(newId)
     })
   }
 
@@ -359,10 +407,8 @@ export function App() {
   }
 
   const deleteScene = (id: string) => {
-    deleting.current = id
-    void edit({ ops: [{ op: 'remove_scene', id }] }, `Delete ${sceneName(id)}`).then((saved) => {
-      if (!saved) deleting.current = undefined
-    })
+    deleting.current.add(id)
+    void edit({ ops: [{ op: 'remove_scene', id }] }, `Delete ${sceneName(id)}`).then(() => deleting.current.delete(id))
   }
 
   const onEdit = useCallback((body: ProjectPatch, label: string) => edit(body, label), [edit])
@@ -403,12 +449,12 @@ export function App() {
           handle={stage}
           selectedLeg={selected}
           onUserMove={onUserMove}
-          onSelectLeg={setSelectedLeg}
+          onSelectLeg={selectLeg}
           onEdit={onEdit}
           onPointMenu={onPointMenu}
           onError={onStageError}
         />
-        <LegsPanel scene={scene} route={route} selectedLeg={selected} onSelectLeg={setSelectedLeg} onEdit={onEdit} />
+        <LegsPanel scene={scene} route={route} selectedLeg={selected} onSelectLeg={selectLeg} onEdit={onEdit} />
       </div>
       {pointMenu && isSharp(scene, pointMenu.target) !== undefined && (
         <PointMenu

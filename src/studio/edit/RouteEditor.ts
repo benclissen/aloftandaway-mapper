@@ -124,6 +124,14 @@ export class RouteEditor {
     return this.project?.scenes.find((s) => s.id === this.sceneId)
   }
 
+  /**
+   * Sends an edit to the scene whose handles are on screen, which during a tab switch is still the old one until the
+   * new scene has loaded.
+   */
+  private edit(patch: ProjectPatch, label: string): Promise<boolean> {
+    return this.cb.onEdit(this.sceneId === undefined ? patch : { ...patch, scene: this.sceneId }, label)
+  }
+
   private readonly onMapClick = (e: MapMouseEvent): void => {
     // Handles stop their own clicks; this is a second guard.
     if (e.originalEvent.target instanceof Element && e.originalEvent.target.closest('.edit-handle')) return
@@ -149,10 +157,7 @@ export class RouteEditor {
       return
     }
     const { at, insertIndex } = nearestOnLeg(route, selected, [e.lngLat.lng, e.lngLat.lat])
-    void this.cb.onEdit(
-      { ops: [{ op: 'insert_via', leg: selected, index: insertIndex, point: { at: savedAt(at) } }] },
-      'Add a via point',
-    )
+    void this.edit({ ops: [{ op: 'insert_via', leg: selected, index: insertIndex, point: { at: savedAt(at) } }] }, 'Add a via point')
   }
 
   private syncStops(): void {
@@ -235,7 +240,7 @@ export class RouteEditor {
       if (this.justDragged.delete(marker) || !e.altKey) return
       const t = target()
       const edit = t && this.scene && sharpEdit(this.scene, t)
-      if (edit) void this.cb.onEdit(edit.patch, edit.label)
+      if (edit) void this.edit(edit.patch, edit.label)
     })
     element.addEventListener('contextmenu', (e) => {
       e.preventDefault()
@@ -259,13 +264,12 @@ export class RouteEditor {
       this.dragging.delete(marker)
       const name = this.scene?.stops.find((s) => s.id === id)?.name ?? id
       const { lng, lat } = marker.getLngLat()
-      void this.cb
-        .onEdit({ ops: [{ op: 'update_stop', id, changes: { at: savedAt([lng, lat]) } }] }, `Move ${name}`)
-        .then((saved) => {
-          // Nothing was saved, so no new project will move the marker: put it back over the stop.
-          const stop = this.scene?.stops.find((s) => s.id === id)
-          if (!saved && stop && this.stopMarkers.get(id) === marker && !this.dragging.has(marker)) marker.setLngLat(stop.at)
-        })
+      const patch: ProjectPatch = { ops: [{ op: 'update_stop', id, changes: { at: savedAt([lng, lat]) } }] }
+      void this.edit(patch, `Move ${name}`).then((saved) => {
+        // Nothing was saved, so no new project will move the marker: put it back over the stop.
+        const stop = this.scene?.stops.find((s) => s.id === id)
+        if (!saved && stop && this.stopMarkers.get(id) === marker && !this.dragging.has(marker)) marker.setLngLat(stop.at)
+      })
     })
     return marker
   }
@@ -289,20 +293,19 @@ export class RouteEditor {
       const w = where()
       if (!w) return
       const edit = removeViaEdit(w.leg, w.index)
-      void this.cb.onEdit(edit.patch, edit.label)
+      void this.edit(edit.patch, edit.label)
     })
     marker.on('dragend', () => {
       this.dragging.delete(marker)
       const w = where()
       if (!w) return
       const { lng, lat } = marker.getLngLat()
-      void this.cb
-        .onEdit({ ops: [{ op: 'update_via', leg: w.leg, index: w.index, changes: { at: savedAt([lng, lat]) } }] }, 'Move a via point')
-        .then((saved) => {
-          const route = this.stage.route
-          const at = route && this.viaMarkers[w.index] === marker && this.viaLeg === w.leg && this.viaPosition(route, w.leg, w.index)
-          if (!saved && at && !this.dragging.has(marker)) marker.setLngLat(at)
-        })
+      const patch: ProjectPatch = { ops: [{ op: 'update_via', leg: w.leg, index: w.index, changes: { at: savedAt([lng, lat]) } }] }
+      void this.edit(patch, 'Move a via point').then((saved) => {
+        const route = this.stage.route
+        const at = route && this.viaMarkers[w.index] === marker && this.viaLeg === w.leg && this.viaPosition(route, w.leg, w.index)
+        if (!saved && at && !this.dragging.has(marker)) marker.setLngLat(at)
+      })
     })
     return marker
   }

@@ -73,7 +73,7 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
                     const value = e.target.value as SymbolKind | ''
                     const label = value ? SYMBOL_LABELS[value] : 'Default'
                     void onEdit(
-                      { ops: [{ op: 'update_leg', index: i, changes: { symbol: value || null } }] },
+                      { scene: scene.id, ops: [{ op: 'update_leg', index: i, changes: { symbol: value || null } }] },
                       `Leg ${i + 1} transport: ${label}`,
                     )
                   }}
@@ -92,7 +92,7 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
                   onChange={(e) => {
                     const mode = e.target.value as LegMode
                     void onEdit(
-                      { ops: [{ op: 'update_leg', index: i, changes: { mode } }] },
+                      { scene: scene.id, ops: [{ op: 'update_leg', index: i, changes: { mode } }] },
                       `Leg ${i + 1} mode: ${MODE_LABELS[mode]}`,
                     )
                   }}

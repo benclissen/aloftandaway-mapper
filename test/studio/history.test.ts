@@ -1,12 +1,16 @@
 import { describe, expect, test } from 'vitest'
-import type { PatchResponse, Project, ProjectPatch } from '../../src/core/index.js'
-import { EditHistory, EditQueue } from '../../src/studio/edit/history.js'
-import { greekIslands } from '../fixtures/projects.js'
+import { applyPatch, type PatchResponse, type Project, type ProjectPatch } from '../../src/core/index.js'
+import { EditHistory, EditQueue, redoPatch, scenesAround } from '../../src/studio/edit/history.js'
+import { greekIslands, twoScenes } from '../fixtures/projects.js'
+
+const SCENE = 'a0000000-0000-4000-8000-000000000001'
 
 const entry = (label: string) => ({
   label,
   forward: { set: { name: `${label} on` } } as ProjectPatch,
   inverse: { set: { name: `${label} off` } } as ProjectPatch,
+  sceneBefore: SCENE,
+  sceneAfter: SCENE,
 })
 
 describe('EditHistory', () => {
@@ -46,6 +50,45 @@ describe('EditHistory', () => {
     expect(history.canRedo).toBe(false)
     expect(history.redoLabel).toBeUndefined()
     expect(history.undoLabel).toBe('two')
+  })
+})
+
+describe('scenes around an edit', () => {
+  const project = twoScenes()
+  const [drive, sail] = project.scenes.map((s) => s.id) as [string, string]
+  const NEW = '00000000-0000-4000-8000-0000000000aa'
+
+  test('an entry keeps the scenes to show before and after', () => {
+    // An edit inside a scene shows that scene both ways.
+    expect(scenesAround(project, { scene: sail, sceneSet: { name: 'Boat' } }, sail)).toEqual({ sceneBefore: sail, sceneAfter: sail })
+    // Add and duplicate show the new scene after.
+    expect(scenesAround(project, { ops: [{ op: 'add_scene', index: 1, id: NEW }] }, drive)).toEqual({ sceneBefore: drive, sceneAfter: NEW })
+    expect(scenesAround(project, { ops: [{ op: 'duplicate_scene', id: sail, newId: NEW }] }, drive)).toEqual({
+      sceneBefore: drive,
+      sceneAfter: NEW,
+    })
+    // Deleting the scene on screen shows the one that takes its place, or the one before it at the end.
+    expect(scenesAround(project, { ops: [{ op: 'remove_scene', id: drive }] }, drive)).toEqual({ sceneBefore: drive, sceneAfter: sail })
+    expect(scenesAround(project, { ops: [{ op: 'remove_scene', id: sail }] }, sail)).toEqual({ sceneBefore: sail, sceneAfter: drive })
+    // Deleting another scene keeps the one on screen.
+    expect(scenesAround(project, { ops: [{ op: 'remove_scene', id: sail }] }, drive)).toEqual({ sceneBefore: drive, sceneAfter: drive })
+
+    const history = new EditHistory()
+    history.push({ ...entry('add'), sceneBefore: drive, sceneAfter: NEW })
+    expect(history.takeUndo()).toMatchObject({ sceneBefore: drive, sceneAfter: NEW })
+    expect(history.takeRedo()).toMatchObject({ sceneBefore: drive, sceneAfter: NEW })
+  })
+
+  test('redo of a duplicate restores the copy as saved', () => {
+    const forward: ProjectPatch = { ops: [{ op: 'duplicate_scene', id: sail, newId: NEW }] }
+    const saved = applyPatch(project, forward)
+    const redo = redoPatch(forward, saved)
+    expect(redo).toEqual({ ops: [{ op: 'restore_scene', index: 2, scene: saved.scenes[2] }] })
+    // Redone, the copy keeps the stop ids that later edits name.
+    expect(applyPatch(project, redo).scenes).toEqual(saved.scenes)
+    // Anything else is redone as it was made.
+    const edit: ProjectPatch = { scene: sail, sceneSet: { name: 'Boat' } }
+    expect(redoPatch(edit, applyPatch(project, edit))).toBe(edit)
   })
 })
 

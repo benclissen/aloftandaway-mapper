@@ -62,7 +62,8 @@ function SceneMenu({ at, canMoveLeft, canMoveRight, canDelete, onRename, onDupli
     const onDown = (e: MouseEvent) => {
       if (ref.current?.contains(e.target as Node)) return
       onClose()
-      swallowNextClick()
+      // A press on the map must not also edit the route. Anywhere else (another tab, its menu button) it does its job.
+      if (e.target instanceof Element && e.target.closest('.stage')) swallowNextClick()
     }
     window.addEventListener('keydown', onKey, true)
     window.addEventListener('mousedown', onDown, true)

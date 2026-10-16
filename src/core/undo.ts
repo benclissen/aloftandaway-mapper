@@ -1,4 +1,4 @@
-import { applyPatch, ProjectPatchSchema, type ProjectPatch, type StopOp } from './patch.js'
+import { applyPatch, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
 import { defaultModeFor, type Project } from './schema.js'
 
 type Obj = Record<string, unknown>
@@ -32,7 +32,7 @@ function oldValues(target: object, changes: Obj): Obj {
   return old
 }
 
-function invertOp(project: Project, op: StopOp): StopOp {
+function invertOp(project: Project, op: PatchOp): PatchOp {
   const scene = project.scenes[0]!
   switch (op.op) {
     case 'update_stop': {
@@ -74,7 +74,7 @@ export function invertPatch(before: Project, patch: ProjectPatch): ProjectPatch 
   if (patch.sceneSet) inverse.sceneSet = invertMerge(before.scenes[0], patch.sceneSet)
   // Invert each op against the state it ran on, then undo them last to first.
   let state = before
-  const inverted: StopOp[] = []
+  const inverted: PatchOp[] = []
   for (const op of ops) {
     inverted.push(invertOp(state, op))
     state = applyPatch(state, { ops: [op] })

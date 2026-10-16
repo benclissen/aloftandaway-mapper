@@ -9,6 +9,7 @@ import {
   ProjectError,
   StopInputSchema,
   StopSchema,
+  SceneSchema,
   parseProject,
   zodIssues,
   type Leg,
@@ -21,7 +22,7 @@ import {
   type ViaPoint,
   type StopInput,
 } from './schema.js'
-import { SceneRefSchema, resolveScene, type SceneRef } from './scenes.js'
+import { SceneRefSchema, applySceneOp, resolveScene, type SceneRef } from './scenes.js'
 
 // Ops and patches
 
@@ -66,7 +67,33 @@ const StopOpSchema = z.discriminatedUnion('op', [
   }),
   z.strictObject({ op: z.literal('remove_via'), leg: index, index }),
 ])
+/** The ops on the chosen scene's stops, legs and via points. */
 export type StopOp = z.infer<typeof StopOpSchema>
+
+const SceneOpSchema = z.discriminatedUnion('op', [
+  z.strictObject({
+    op: z.literal('add_scene'),
+    index: index.optional(),
+    name: z.string().optional(),
+    copyLookFrom: SceneRefSchema.optional(),
+    id: z.uuid().optional(),
+  }),
+  z.strictObject({ op: z.literal('duplicate_scene'), id: z.string(), newId: z.uuid().optional() }),
+  z.strictObject({ op: z.literal('remove_scene'), id: z.string() }),
+  z.strictObject({ op: z.literal('move_scene'), id: z.string(), index }),
+  z.strictObject({ op: z.literal('restore_scene'), index, scene: SceneSchema }),
+])
+/** The ops that add, duplicate, remove, move and restore scenes. */
+export type SceneOp = z.infer<typeof SceneOpSchema>
+
+const PatchOpSchema = z.discriminatedUnion('op', [StopOpSchema, SceneOpSchema])
+export type PatchOp = z.infer<typeof PatchOpSchema>
+
+const SCENE_OPS = new Set<string>(['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene', 'restore_scene'])
+
+function isSceneOp(op: PatchOp): op is SceneOp {
+  return SCENE_OPS.has(op.op)
+}
 
 export const ProjectPatchSchema = z.strictObject({
   /** JSON Merge Patch over the project's own fields: name, output and credit. */
@@ -75,8 +102,11 @@ export const ProjectPatchSchema = z.strictObject({
   scene: SceneRefSchema.optional(),
   /** JSON Merge Patch over the chosen scene's name, timing, look and camera. */
   sceneSet: z.record(z.string(), z.unknown()).optional(),
-  /** Edits to the chosen scene's stops and legs, applied in order after `set` and `sceneSet`. */
-  ops: z.array(StopOpSchema).optional(),
+  /**
+   * Edits applied in order after `set` and `sceneSet`: to the chosen scene's stops and legs, and to the list of scenes
+   * itself (add, duplicate, remove, move, restore).
+   */
+  ops: z.array(PatchOpSchema).optional(),
 })
 export type ProjectPatch = z.infer<typeof ProjectPatchSchema>
 
@@ -297,7 +327,7 @@ function checkKeys(patch: Record<string, unknown>, forbidden: Map<string, string
 
 /**
  * Applies `set` (a merge patch over the project), then `sceneSet` (a merge patch over the chosen scene), then `ops`
- * (on the chosen scene), in order. Pure and all or nothing: the input is never modified, and any failure throws a
+ * (stop, leg and via ops on the chosen scene, and scene ops on the project), in order. Pure and all or nothing: the input is never modified, and any failure throws a
  * `ProjectError`.
  */
 export function applyPatch(project: Project, patch: ProjectPatch): Project {
@@ -313,14 +343,18 @@ export function applyPatch(project: Project, patch: ProjectPatch): Project {
   // The scene is looked up by id before each step, so an op that moves it (a scene op) can't leave a stale index.
   const { scene: chosen } = resolveScene(work, ref)
   const sceneId = chosen.id
-  const edit = (change: (scene: Scene) => Scene): void => {
+  const edit = (change: (scene: Scene) => Scene, at?: number): void => {
     const i = work.scenes.findIndex((s) => s.id === sceneId)
+    if (i < 0) fail(at === undefined ? [] : ['ops', at], `scene '${sceneId}' was removed earlier in this patch`)
     work.scenes[i] = change(work.scenes[i]!)
   }
   if (sceneSet) {
     checkKeys(sceneSet, SCENE_SET_FORBIDDEN, 'sceneSet')
     edit((scene) => mergePatch(scene, sceneSet) as Scene)
   }
-  ops?.forEach((op, i) => edit((scene) => applyOp(scene, op, i)))
+  ops?.forEach((op, i) => {
+    if (isSceneOp(op)) work = applySceneOp(work, op, i, newStopId)
+    else edit((scene) => applyOp(scene, op, i), i)
+  })
   return parseProject(work)
 }

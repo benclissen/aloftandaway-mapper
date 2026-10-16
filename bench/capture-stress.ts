@@ -4,7 +4,7 @@
 // Both render frame 0 and are captured; outside the credit box the two frames should match. Satellite and terrain
 // seams can differ by ±1 between pages, so a glitch is a pixel that differs by more than 8 in a channel.
 //
-// Usage: npm run bench:capture [-- --loads 1000 --cpu-overlay]
+// Usage: npm run bench:capture [-- --loads 1000 --cold-every 10 --cpu-overlay]
 //        npm run bench:capture -- --diff <burned.png> <plain.png>   (runs the detector on two saved captures)
 //
 // Needs the network (OpenFreeMap, EOX and AWS terrain tiles). Glitches are saved under /tmp/stage7-capture-stress/.
@@ -29,8 +29,10 @@ const STUDIO_DIR = path.join(ROOT, 'dist', 'studio')
 const OUT_ROOT = '/tmp/stage7-capture-stress'
 /** A pixel whose largest channel difference is above this, outside the credit box, is a glitch. */
 const THRESHOLD = 8
-/** A new server with an empty tile cache every this many loads. */
+/** By default, a new server with an empty tile cache every this many loads. `--cold-every` changes it. */
 const COLD_EVERY = 10
+/** Differences above this, outside the credit box, make up the bbox logged for the worst clean load. */
+const NOISE_FLOOR = 4
 /** Slack around the measured credit text, for its halo and anti-aliasing. Layout px. */
 const CREDIT_PAD = 6
 /**
@@ -41,11 +43,18 @@ const CREDIT = { margin: 16, lineHeight: 20, haloWidth: 3, font: '500 14px "Plus
 
 interface Box { x0: number; y0: number; x1: number; y1: number }
 
+/** `b` grown to take in pixel (x, y). */
+const grow = (b: Box | undefined, x: number, y: number): Box =>
+  b ? { x0: Math.min(b.x0, x), y0: Math.min(b.y0, y), x1: Math.max(b.x1, x), y1: Math.max(b.y1, y) } : { x0: x, y0: y, x1: x, y1: y }
+
 interface Detection {
   /** Pixels outside the credit box with a channel difference above THRESHOLD. */
   glitchPixels: number
-  /** The largest channel difference outside the credit box. */
+  /** The largest channel difference outside the credit box, and the first pixel that has it. */
   maxOutside: number
+  maxAt: [number, number] | undefined
+  /** Bounding box of the pixels outside the credit box with a difference above NOISE_FLOOR. */
+  noiseBox: Box | undefined
   /** Bounding box of the glitch pixels, or undefined when there are none. */
   bbox: Box | undefined
   /** Pixels that differ at all, anywhere. */
@@ -59,6 +68,8 @@ function detect(a: PNG, b: PNG, credit: Box): Detection {
   const diff = new PNG({ width: a.width, height: a.height })
   let glitchPixels = 0
   let maxOutside = 0
+  let maxAt: [number, number] | undefined
+  let noiseBox: Box | undefined
   let anyDiff = 0
   let bbox: Box | undefined
   for (let y = 0; y < a.height; y++) {
@@ -74,19 +85,21 @@ function detect(a: PNG, b: PNG, credit: Box): Detection {
       if (d === 0) continue
       anyDiff++
       const inCredit = x >= credit.x0 && x <= credit.x1 && y >= credit.y0 && y <= credit.y1
-      if (!inCredit) maxOutside = Math.max(maxOutside, d)
+      if (!inCredit && d > maxOutside) {
+        maxOutside = d
+        maxAt = [x, y]
+      }
+      if (!inCredit && d > NOISE_FLOOR) noiseBox = grow(noiseBox, x, y)
       if (inCredit || d <= THRESHOLD) {
         diff.data[i] = diff.data[i + 1] = diff.data[i + 2] = 96
         continue
       }
       glitchPixels++
       diff.data[i] = 255
-      bbox = bbox
-        ? { x0: Math.min(bbox.x0, x), y0: Math.min(bbox.y0, y), x1: Math.max(bbox.x1, x), y1: Math.max(bbox.y1, y) }
-        : { x0: x, y0: y, x1: x, y1: y }
+      bbox = grow(bbox, x, y)
     }
   }
-  return { glitchPixels, maxOutside, bbox, anyDiff, diff }
+  return { glitchPixels, maxOutside, maxAt, noiseBox, bbox, anyDiff, diff }
 }
 
 /** The stress project: alpine() as satellite with terrain, at 1920×1080. */
@@ -163,6 +176,7 @@ async function shoot(o: Opened, project: Project): Promise<{ png: Buffer; settle
 }
 
 const fmtBox = (b: Box | undefined) => (b ? `[${b.x0},${b.y0}]-[${b.x1},${b.y1}] (${b.x1 - b.x0 + 1}×${b.y1 - b.y0 + 1})` : 'none')
+const fmtAt = (at: [number, number] | undefined) => (at ? `(${at[0]},${at[1]})` : 'none')
 const log = (line: string) => process.stdout.write(`${line}\n`)
 
 async function freshServer(tmp: string): Promise<{ server: MapperServer; cacheDir: string }> {
@@ -185,7 +199,7 @@ async function diffFiles(fileA: string, fileB: string): Promise<void> {
     const credit = await measureCredit(page, project)
     const r = detect(PNG.sync.read(readFileSync(fileA)), PNG.sync.read(readFileSync(fileB)), credit)
     log(`credit box ${fmtBox(credit)}`)
-    log(`glitch: ${r.glitchPixels > 0 ? 'yes' : 'no'}  glitchPixels=${r.glitchPixels} maxOutside=${r.maxOutside} bbox=${fmtBox(r.bbox)} anyDiff=${r.anyDiff}`)
+    log(`glitch: ${r.glitchPixels > 0 ? 'yes' : 'no'}  glitchPixels=${r.glitchPixels} maxOutside=${r.maxOutside} at ${fmtAt(r.maxAt)} bbox=${fmtBox(r.bbox)} above${NOISE_FLOOR}=${fmtBox(r.noiseBox)} anyDiff=${r.anyDiff}`)
   } finally {
     await browser.close()
     await server.close()
@@ -193,7 +207,7 @@ async function diffFiles(fileA: string, fileB: string): Promise<void> {
   }
 }
 
-async function stress(loads: number, cpuOverlay: boolean): Promise<void> {
+async function stress(loads: number, cpuOverlay: boolean, coldEvery: number): Promise<void> {
   const runTag = `${cpuOverlay ? 'cpu' : 'gpu'}-${new Date().toISOString().replace(/[:.]/g, '-')}`
   const outDir = path.join(OUT_ROOT, runTag)
   mkdirSync(outDir, { recursive: true })
@@ -201,7 +215,7 @@ async function stress(loads: number, cpuOverlay: boolean): Promise<void> {
   const { browser, channel, webgl } = await launchBrowser()
   log(`capture stress: ${loads} loads, overlay on the ${cpuOverlay ? 'CPU (willReadFrequently)' : 'GPU (default)'}`)
   log(`browser: ${channel} ${browser.version()}, WebGL ${webgl}`)
-  log(`glitch: a pixel outside the credit box differing by more than ${THRESHOLD} in a channel; fresh tile cache every ${COLD_EVERY} loads`)
+  log(`glitch: a pixel outside the credit box differing by more than ${THRESHOLD} in a channel; fresh tile cache every ${coldEvery === 1 ? 'load' : `${coldEvery} loads`}`)
   log(`output: ${outDir}`)
 
   const burnedProject = stressProject('burned')
@@ -211,12 +225,13 @@ async function stress(loads: number, cpuOverlay: boolean): Promise<void> {
   let glitches = 0
   let errors = 0
   let unsettled = 0
-  /** The largest difference outside the credit box on loads that weren't glitches: the seam noise. */
-  let noise = 0
+  /** The clean load (no glitch) with the largest difference outside the credit box: the worst seam noise. */
+  let worst: { load: number; max: number; at: [number, number] | undefined; noiseBox: Box | undefined } | undefined
+  const worstStem = path.join(outDir, 'worst-clean')
   const started = performance.now()
   try {
     for (let i = 0; i < loads; i++) {
-      if (i % COLD_EVERY === 0) {
+      if (i % coldEvery === 0) {
         if (current) {
           await current.server.close()
           rmSync(current.cacheDir, { recursive: true, force: true })
@@ -235,7 +250,12 @@ async function stress(loads: number, cpuOverlay: boolean): Promise<void> {
         const sb = await shoot(b, plainProject)
         if (!sa.settled || !sb.settled) unsettled++
         const r = detect(PNG.sync.read(sa.png), PNG.sync.read(sb.png), credit)
-        if (r.glitchPixels === 0) noise = Math.max(noise, r.maxOutside)
+        if (r.glitchPixels === 0 && r.maxOutside > (worst?.max ?? 0)) {
+          // Kept so someone can check that it is seam noise. A later, larger one replaces it.
+          worst = { load: i, max: r.maxOutside, at: r.maxAt, noiseBox: r.noiseBox }
+          writeFileSync(`${worstStem}-burned.png`, sa.png)
+          writeFileSync(`${worstStem}-plain.png`, sb.png)
+        }
         if (r.glitchPixels > 0) {
           glitches++
           const stem = path.join(outDir, `load${i}`)
@@ -265,7 +285,13 @@ async function stress(loads: number, cpuOverlay: boolean): Promise<void> {
     rmSync(tmp, { recursive: true, force: true })
   }
   const total = (performance.now() - started) / 1000
-  log(`errors: ${errors}, unsettled frames: ${unsettled}, largest difference outside the credit box on clean loads: ${noise}`)
+  log(`errors: ${errors}, unsettled frames: ${unsettled}`)
+  log(
+    worst
+      ? `worst clean load: ${worst.load}, largest difference outside the credit box ${worst.max} at ${fmtAt(worst.at)}, ` +
+          `pixels above ${NOISE_FLOOR} in ${fmtBox(worst.noiseBox)}, saved ${worstStem}-{burned,plain}.png`
+      : 'worst clean load: none, no clean load differed outside the credit box',
+  )
   log(`time: ${(total / 60).toFixed(1)} min, ${(total / loads).toFixed(2)} s/load`)
   log(`glitches: ${glitches} of ${loads - errors} loads`)
 }
@@ -274,6 +300,7 @@ const { values, positionals } = parseArgs({
   options: {
     loads: { type: 'string', default: '100' },
     'cpu-overlay': { type: 'boolean', default: false },
+    'cold-every': { type: 'string', default: String(COLD_EVERY) },
     diff: { type: 'boolean', default: false },
   },
   allowPositionals: true,
@@ -285,6 +312,8 @@ if (values.diff) {
 } else {
   const loads = Number(values.loads)
   if (!Number.isInteger(loads) || loads < 1) throw new Error(`--loads must be a positive integer, got ${values.loads}.`)
-  await stress(loads, values['cpu-overlay'])
+  const coldEvery = Number(values['cold-every'])
+  if (!Number.isInteger(coldEvery) || coldEvery < 1) throw new Error(`--cold-every must be a positive integer, got ${values['cold-every']}.`)
+  await stress(loads, values['cpu-overlay'], coldEvery)
 }
 process.exit(0)

@@ -124,34 +124,55 @@ The run found a bug: Claude Code shows only a tool's `structuredContent`, so the
 
 - Date: 2026-10-16
 - Chrome: 155.0.8059.80 (Playwright `channel: 'chrome'`, headless), WebGL ANGLE Metal on Apple M6
-- Script: `MAPPER_NET=1 npm run bench:capture -- --loads 1000` (`bench/capture-stress.ts`)
-- Status: parked. Not reproduced, no product change.
+- Script: `MAPPER_NET=1 npm run bench:capture -- --loads 1000 [--cold-every N]` (`bench/capture-stress.ts`)
+- Status: parked. Not reproduced in 3,000 loads, no product change.
 
-The one sighting came from a probe written while chasing an e2e flake. It opened two pages in one browser, 200 times,
-each time with an empty tile cache. Both pages showed `alpine()` as satellite with terrain at 1920×1080, one with the
-credit burned in and one with it in the description, and the probe diffed their frame 0 captures. In iteration 78,
-one capture had a solid 6×8 px block in the sign text colour (#1d2430) over the Chamonix sign, and under it a 9×5 px
-white hole through the "i". The largest channel difference was 212. A separate run captured one loaded page 600
-times and every capture matched, so capture alone doesn't cause it. Page load is the suspect, probably the GPU
-glyph and raster cache that pages in one browser share.
+**The sighting.** A probe written while chasing an e2e flake opened two pages in one browser, 200 times, with a new
+server and an empty tile cache before each pair. Both pages showed `alpine()` as satellite with terrain at
+1920×1080. The first page had the credit burned in and the second had it in the description, and the probe diffed
+their frame 0 captures. In iteration 78 the second page's capture (`it78-plain.png`) had a solid 6×8 px block in
+the sign text colour (#1d2430) over the Chamonix sign, and under it a 9×5 px white hole through the "i". The largest
+channel difference was 212. So the page that glitched was the second one, which loaded from a server cache the
+first page had just filled (3,854 ms for the first page against 271 ms for the second). In a separate run, 600
+captures of one loaded page all matched, so capture alone doesn't cause it. Page load is the suspect, probably the
+GPU glyph and raster cache that pages in one browser share.
 
-`bench:capture` repeats that pattern: one browser for the whole run, two pages per load, an empty tile cache every 10
-loads. A glitch is any pixel outside the credit box whose largest channel difference is above 8. Satellite and terrain
-seams can differ slightly between pages, so smaller differences don't count. The credit box is measured in the page
-with the credit font. Each glitch's two captures and a diff go under `/tmp/stage7-capture-stress/`.
-`--cpu-overlay` sets the test-only `RenderPageOptions.cpuOverlay`, which creates the overlay's 2D context with
-`willReadFrequently: true` so the overlay is drawn on the CPU.
+**The check.** `bench:capture` repeats that pattern: one browser for the whole run and two pages per load, burned
+then plain, with a new server and an empty tile cache every `--cold-every` loads (default 10). A glitch is any pixel
+outside the credit box whose largest channel difference is above 8. Satellite and terrain seams can differ slightly
+between pages, so smaller differences don't count. The credit box is measured in the page with the credit font,
+[1142,1005]–[1912,1075] here. Each glitch's two captures and a diff go under `/tmp/stage7-capture-stress/`. So does
+the PNG pair of the worst clean load, the one with the largest difference outside the credit box, so it can be
+checked by eye. `--cpu-overlay` sets the test-only `RenderPageOptions.cpuOverlay`, which creates the overlay's 2D
+context with `willReadFrequently: true` so the overlay is drawn on the CPU.
 
-| Run | Overlay | Loads | Glitches | Errors | Largest clean difference outside the credit box | Time |
+| Run | Cache emptied | Loads with a cold first page | Glitches | Errors | Worst clean difference outside the credit box | Time |
 |---|---|---|---|---|---|---|
-| Today's code | GPU (default) | 1000 | 0 | 0 | 7 | 24.0 min (1.44 s/load) |
+| 1 | every 10 loads | 100 of 1,000 | 0 of 1,000 | 0 | 7 (position not logged; logging came later) | 24.0 min (1.44 s/load) |
+| 2 | every load | 1,000 of 1,000 | 0 of 1,000 | 0 | 6 at (686,875) | 71.7 min (4.30 s/load) |
+| 3 | every 10 loads (rerun of 1) | 100 of 1,000 | 0 of 1,000 | 0 | 4 at (703,790) | 23.3 min (1.40 s/load) |
 
-Checked against the probe's own captures with `npm run bench:capture -- --diff <burned.png> <plain.png>`: iteration
-78 is a glitch (60 px, largest difference 212, box [790,115]–[796,127]), and iterations 0, 29 and 79 are not
-(largest differences outside the credit box 0, 4 and 2).
+All three runs used the GPU overlay (the default). No frame came back unsettled.
 
-Two limits. The largest clean difference was 7, just under the threshold of 8, so seam noise can be larger than ±1.
-And the probe emptied the tile cache on every iteration, where this script does it every 10 loads.
+**How strong the negative is.** Take the probe's rate, 1 glitch in 200 loads, and count only loads that match its
+pattern (a cold first page, then a second page from the cache it just filled). Then P(G = 0) is 0.995^100 ≈ 0.61 for
+run 1 or run 3 alone, 0.995^1000 ≈ 0.0067 for run 2, and 0.995^1200 ≈ 0.0024 for all three together. So a glitch
+as common as the probe suggested would almost certainly have shown up. Zero in 1,200 matching loads puts the rate
+below about 1 in 400 (the rule of three, 95%). It doesn't rule out a rarer glitch, or one that depends on something
+these runs didn't vary, such as the machine's other GPU load.
+
+**The worst clean difference.** Run 2's worst, load 283, has 8 pixels outside the credit box that differ at all:
+four by 1, two by 2, one by 5 and one by 6. The two above 4 sit in a 2×3 px cluster at [686,873]–[687,875] in plain
+satellite imagery, with no stop, sign or route nearby. The two captures are identical by eye. Run 3's worst is 4, at
+(703,790), the same pixel as the largest difference in the probe's clean iteration 29. Both look like raster noise
+in the imagery, not the glitch. The PNG pairs are in
+`/tmp/stage7-capture-stress/gpu-2026-10-16T20-55-33-093Z/` and `/tmp/stage7-capture-stress/gpu-2026-10-16T22-07-48-445Z/`.
+Run 1's 7 wasn't located. The margin under the threshold of 8 is small, so a real glitch peaking at 8 or less would
+be missed. The sighting peaked at 212.
+
+The detector was checked on the probe's own captures with `npm run bench:capture -- --diff <burned.png> <plain.png>`.
+Iteration 78 is a glitch (60 px, largest difference 212, box [790,115]–[796,127]), and iterations 0, 29 and 79 are
+not (largest differences outside the credit box 0, 4 and 2).
 
 The CPU overlay wasn't run for 1,000 loads, since there was nothing for it to fix. If the glitch shows up again,
-rerun this script on today's code and then with `--cpu-overlay`.
+rerun with `--cold-every 1`, first on the default overlay and then with `--cpu-overlay`.

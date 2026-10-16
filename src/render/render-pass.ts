@@ -89,6 +89,10 @@ export interface RenderPassArgs {
   forceUnsettledAt?: number
   /** The H.264 encoder for an `h264` pass. Picked here when left out. */
   h264Encoder?: H264Encoder
+  /** Test hook: deletes a file, instead of `rm(path, { force: true })`. */
+  removeFile?: (path: string) => Promise<void>
+  /** Called with a line for something that went wrong without failing the pass, such as a segment left on disk. */
+  onWarning?: (line: string) => void
 }
 
 /**
@@ -97,8 +101,9 @@ export interface RenderPassArgs {
  *
  * Frames are deterministic, so a pass survives a crashed page, a lost WebGL context or a stuck frame: it opens a
  * fresh page with the same scene and layer and carries on from the failed frame into a new segment
- * (`<layer>.part<k>.<ext>` beside the output), up to 3 times. The segments are joined without re-encoding at the end.
- * An ffmpeg failure is not a page fault and fails the pass at once. A failed pass leaves its segments behind.
+ * (`<layer>.part<k>.<ext>` beside the output), up to 3 times. The segments are joined without re-encoding at the end,
+ * then deleted; a segment that can't be deleted is a warning (`onWarning`), not a failure. An ffmpeg failure is not a
+ * page fault and fails the pass at once. A failed pass leaves its segments behind.
  */
 export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_DEPS): Promise<CompletedPass> {
   const { browser, project, seaPaths, scene, pass, dir, signal } = args
@@ -243,6 +248,9 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
       await rename(parts[0]!, out)
     } else {
       await joinParts({ parts, out, codec: media.codec, signal })
+      // The segments are never in the manifest, so nothing has to forget them first.
+      const warning = await removeParts(parts, { dir, what: 'segment', removeFile: args.removeFile })
+      if (warning) args.onWarning?.(warning)
     }
     return { ...pass, frames, segments: parts.length, recoveries }
   } finally {
@@ -257,9 +265,10 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
 }
 
 /**
- * Joins the parts into `out` and deletes them. The concat list sits beside `out`, named after it, so joins in the
- * same folder never share one. If the join fails, the parts are kept and named in the fix, as `kept` (default
- * "segments rendered so far"). Aborting `signal` stops the join, keeps the parts and rejects with `RenderCancelled`.
+ * Joins the parts into `out`. The parts are left for the caller to delete with `removeParts`, once nothing lists them.
+ * The concat list sits beside `out`, named after it, so joins in the same folder never share one. If the join fails,
+ * the parts are named in the fix, as `kept` (default "segments rendered so far"). Aborting `signal` stops the join
+ * and rejects with `RenderCancelled`.
  */
 export async function joinParts(args: { parts: string[]; out: string; codec: Codec; kept?: string; signal?: AbortSignal }): Promise<void> {
   const ext = path.extname(args.out)
@@ -273,8 +282,32 @@ export async function joinParts(args: { parts: string[]; out: string; codec: Cod
       `Render again. The ${args.parts.length} ${args.kept ?? 'segments rendered so far'} are kept: ${args.parts.join(', ')}`,
     )
   }
-  await Promise.all(args.parts.map((part) => rm(part, { force: true })))
 }
+
+/**
+ * Deletes the joined parts at `paths`, each through `removeFile` (default `rm` with `force`). Never throws: if any
+ * can't be deleted, returns a warning naming them relative to `dir`, as `what`s (e.g. "scene part"), and the error
+ * codes. Returns undefined when every part is gone.
+ */
+export async function removeParts(
+  paths: string[],
+  opts: { dir: string; what: string; removeFile?: (path: string) => Promise<void> },
+): Promise<string | undefined> {
+  const removeFile = opts.removeFile ?? ((file: string) => rm(file, { force: true }))
+  const results = await Promise.allSettled(paths.map((file) => removeFile(file)))
+  const failed = paths.flatMap((file, i) => {
+    const result = results[i]!
+    return result.status === 'rejected' ? [{ file, reason: errorCode(result.reason) }] : []
+  })
+  if (failed.length === 0) return undefined
+  const names = failed.map(({ file }) => path.relative(opts.dir, file)).join(', ')
+  const reasons = [...new Set(failed.map(({ reason }) => reason))].join(', ')
+  const what = failed.length === 1 ? opts.what : `${opts.what}s`
+  return `Couldn't delete ${failed.length} ${what} after joining them: ${names} (${reasons}). They're not needed; delete them yourself.`
+}
+
+/** A filesystem error's code (e.g. `EACCES`), or the message of any other error. */
+const errorCode = (e: unknown) => (e as NodeJS.ErrnoException | undefined)?.code ?? errorMessage(e)
 
 export function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new RenderCancelled()

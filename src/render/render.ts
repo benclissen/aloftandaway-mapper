@@ -24,7 +24,7 @@ import { pickedSceneIndexes, planExport, sceneMarkers } from './export-plan.js'
 import type { CompletedPass, LayerRequest, MediaKind, PlannedJoin, PlannedScene, RenderPass, SceneExport } from './export-types.js'
 import { buildManifest, renderedFrames, writeManifest, type ExportManifest } from './manifest.js'
 import { publishFcpxml, type PublishedFcpxml } from './publish.js'
-import { errorMessage, joinParts, MEDIA, renderPass, throwIfAborted } from './render-pass.js'
+import { errorMessage, joinParts, MEDIA, removeParts, renderPass, throwIfAborted } from './render-pass.js'
 import { describeWarnings, mergeWarnings, NO_WARNINGS, type RenderWarnings } from './warnings.js'
 
 /** Progress fps is averaged over this many frames. */
@@ -132,6 +132,8 @@ export interface RenderArgs {
   fcpxmlDtdPath?: string
   /** Test hook: the H.264 encoder to use instead of the one `pickH264Encoder` picks. */
   h264Encoder?: H264Encoder
+  /** Test hook: deletes a joined part or segment, instead of `rm(path, { force: true })`. */
+  removeFile?: (path: string) => Promise<void>
 }
 
 export { RenderError, RenderCancelled } from './errors.js'
@@ -146,7 +148,8 @@ export { joinParts } from './render-pass.js'
  *
  * Joined (the default), the flattened clip is `all.mp4` (or `all.mov`) and the preview `preview.mp4`. With several
  * scenes, each is first rendered to `<NN>-<scene>.part.<ext>`, and the parts are joined without re-encoding once
- * every pass is done, then deleted. With `join: false` each scene keeps its own `<NN>-<scene>.<ext>`.
+ * every pass is done. The joined clip then replaces them in the manifest, and only after that are they deleted; a part
+ * that can't be deleted is a warning, not a failure. With `join: false` each scene keeps its own `<NN>-<scene>.<ext>`.
  *
  * The project is read once, so later edits don't affect a running render. Each pass recovers from page faults on its
  * own (see `renderPass`). Finished outputs, scene parts included, stay on disk and in the manifest when a later pass
@@ -253,26 +256,32 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
       const base = completedWork
       const faults = pass === faultPass ? { faultAtFrame: args.faultAtFrame, faultAfterRenderFrame: args.faultAfterRenderFrame } : {}
       const unsettled: number[] = []
+      const other: string[] = []
       const done = await renderPass({
         browser, project: snapshot, seaPaths, scene, pass, dir, signal, h264Encoder, ...faults,
         forceUnsettledAt: args.forceUnsettledAt,
+        removeFile: args.removeFile,
         onFrame: (n) => report(base + n),
         onUnsettled: (n) => unsettled.push(n),
+        onWarning: (line) => other.push(line),
       })
       // Only a finished pass's frames count: a failed pass leaves no output for them to be in.
-      warn({ unsettled, other: [] }, scene.id)
+      warn({ unsettled, other }, scene.id)
       completed.push(done)
       completedWork = base + done.frames
       await writeManifest(manifestFile, makeManifest('running'))
       args.onOutput?.(absolute(done))
     }
     // The scene parts are joined only once every pass has finished. Until a join succeeds, its parts are the outputs.
+    // The joined clip replaces them in the manifest before they are deleted, so the manifest never lists a deleted part.
     for (const join of plan.joins) {
       throwIfAborted(signal)
-      const joined = await joinScenes(dir, join, completed, signal)
+      const { joined, parts } = await joinScenes(dir, join, completed, signal)
       addOutput(completed, joined)
       await writeManifest(manifestFile, makeManifest('running'))
       args.onOutput?.(absolute(joined))
+      const warning = await removeParts(parts, { dir, what: 'scene part', removeFile: args.removeFile })
+      if (warning) warn({ unsettled: [], other: [warning] })
     }
     throwIfAborted(signal)
     const scenes = sceneExports(plan.scenes, completed, dir)
@@ -334,18 +343,24 @@ export function addOutput<T extends Pick<CompletedPass, 'sceneId' | 'request'>>(
 const JOINED = 'joined'
 
 /**
- * Joins the finished parts of `join` into its clip without re-encoding and deletes them. The joined clip's frames,
- * segments and recoveries are the parts' totals. If the join fails or `signal` aborts it, the parts are kept, and a
- * failure names them in the fix.
+ * Joins the finished parts of `join` into its clip without re-encoding. Returns the joined clip, whose frames,
+ * segments and recoveries are the parts' totals, and the parts' absolute paths for the caller to delete. If the join
+ * fails or `signal` aborts it, the parts are kept, and a failure names them in the fix.
  */
-async function joinScenes(dir: string, join: PlannedJoin, completed: CompletedPass[], signal: AbortSignal | undefined): Promise<CompletedPass> {
+async function joinScenes(
+  dir: string,
+  join: PlannedJoin,
+  completed: CompletedPass[],
+  signal: AbortSignal | undefined,
+): Promise<{ joined: CompletedPass; parts: string[] }> {
   const parts = join.parts.map((part) => {
     const pass = completed.find((p) => p.path === part)
     if (!pass) throw new Error(`The part ${part} was not rendered.`)
     return pass
   })
+  const files = parts.map((pass) => path.join(dir, pass.path))
   await joinParts({
-    parts: parts.map((pass) => path.join(dir, pass.path)),
+    parts: files,
     out: path.join(dir, join.path),
     codec: MEDIA[join.kind].codec,
     kept: 'scene clips',
@@ -353,7 +368,7 @@ async function joinScenes(dir: string, join: PlannedJoin, completed: CompletedPa
   })
   const sum = (key: 'frames' | 'segments' | 'recoveries') => parts.reduce((total, pass) => total + pass[key], 0)
   const frames = sum('frames')
-  return {
+  const joined: CompletedPass = {
     sceneId: JOINED,
     request: join.request,
     layer: 'all',
@@ -365,6 +380,7 @@ async function joinScenes(dir: string, join: PlannedJoin, completed: CompletedPa
     segments: sum('segments'),
     recoveries: sum('recoveries'),
   }
+  return { joined, parts: files }
 }
 
 /** Scenes whose map, route and signs layers all finished, with absolute media paths and clip-local markers. */

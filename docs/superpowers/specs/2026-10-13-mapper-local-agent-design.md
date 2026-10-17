@@ -260,8 +260,9 @@ describe the layered export unless they say otherwise.
     version>`.
   - One `resolveSeaPaths` call fetches at most 2,500 new tiles. The budget
     counts only tiles fetched from OpenFreeMap; tiles already on disk don't
-    count. Past it, the legs still to route are routed without tiles and
-    marked unverified, and the next call carries on.
+    count. The leg that runs out is routed on the tiles from its completed
+    rounds, legs that start after the budget is spent get none, and all of
+    them are marked unverified. The next call carries on.
 - **Determinism.** A routed leg is cached in `.mapper/paths.json` and never
   routed again until its stops, via points or `ROUTER_VERSION` change. The
   studio, previews and renders all read that one entry, so they agree.
@@ -274,16 +275,25 @@ describe the layered export unless they say otherwise.
   down, the budget used up, or 12 rounds without settling), the leg is routed
   on Natural Earth plus the tiles it did get, and is **unverified**.
   - The path says why (`unverified: 'offline' | 'budget' | 'unsettled'`) and
-    the cache keeps it with a retry time 60 seconds on.
-  - A leg stopped by the budget or the network is routed on the tiles from
-    completed rounds only, so unverified results are repeatable too.
+    the cache keeps it with a retry time, counted from when its routing
+    finished: 60 seconds for `offline` and `budget`, a day for `unsettled`.
+    An unsettled route depends only on its inputs and the planet build, so
+    routing it again sooner gives the same path.
+  - A leg stopped by the budget or the network is routed on the tiles from its
+    completed rounds only, never on part of a round. The route still depends
+    on when the network failed and, for the budget, on the order of the legs,
+    so it isn't final: it's routed again once its retry time has come.
   - Offline, one resolve waits for the network once, not once per leg. The
-    router remembers a network failure for 60 s, the same minute an
-    unverified path waits before it is routed again.
-  - A studio left open on such a project retries every 60 seconds. When a
+    router remembers a network failure for 60 s from when the failure came
+    back, which can be minutes after the request went out. That's the same
+    minute an unverified path waits before it is routed again.
+  - A studio left open on a project with an `offline` or `budget` route
+    retries every 60 seconds; one with only `unsettled` routes doesn't. When a
     fixed route reaches an open studio without an edit, the server sends it
     with origin `paths`. The studio updates the drawn route and keeps its undo
     history. `paths` is refused as a client id.
+  - The studio's legs panel notes each unverified leg and why. The note goes
+    when a fixed route arrives.
   - Nothing hangs: tile requests keep the proxy's 30-second timeout and
     retries.
 - **Validation** uses the router's own land, so it sees the tile land too.
@@ -590,10 +600,13 @@ render; warnings don't. It checks:
 - Schema errors.
 - `sea-crosses-land`: a sea leg whose path crosses land (sampled against the
   water grid). Sea checks run only when sea paths are given.
-- `sea-fallback`: a sea leg that fell back to `line`.
+- `sea-fallback`: a sea leg that fell back to `line`. When the network or the
+  budget left it unverified, its fix says to wait, since Mapper routes it
+  again by itself, not to edit the leg.
 - `sea-unverified`: a sea leg routed without all the OpenFreeMap tiles it
-  needed (offline, over the tile budget, or unsettled after 12 rounds). The
-  message gives the reason. The route may cross small islands.
+  needed (offline, over the tile budget, or unsettled after 12 rounds),
+  whether it found a route or fell back. The message gives the reason. The
+  route may cross small islands.
 - `sea-stop-far`: a stop more than 2 km from the water its sea route starts
   or ends in, so the line crosses land to reach it. A stop that ends one leg
   and starts the next is warned once, for the worse gap.

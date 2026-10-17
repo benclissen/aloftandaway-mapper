@@ -71,12 +71,15 @@ page.
   from the water its route starts or ends in, so the line crosses land to reach
   it. Put a ferry or cruise stop on the quay, not in the town centre, or add a
   via point at the harbour mouth.
-  `sea-unverified` means the route was checked against Natural Earth's coarser
-  land outlines only, because OpenFreeMap's water couldn't be had (no network,
-  too many tiles at once, or the route kept finding new islands). It may cross
-  small islands. Mapper routes the leg again by itself within a minute of the
-  network coming back; validate again then. A render that uses such a route
-  finishes with a warning.
+  `sea-unverified` means the route wasn't checked against all of OpenFreeMap's
+  water. With no network, or too many tiles at once, it was checked against
+  Natural Earth's coarser land outlines only, and it may cross small islands.
+  Don't edit the leg for that, even if it also reports `sea-fallback`: once a
+  minute has passed, the next call (or a studio left open) routes it again, so
+  validate again then. If the route kept finding new islands, it was only
+  partly checked; add a via point over open water to steer it. Mapper tries
+  that one again only after a day. A render that uses an unverified route
+  finishes with a warning, and the studio's legs panel notes it.
 - Air legs follow the great circle, bowed toward the nearer pole so even short
   flights curve (at least 15% of their length). Via points split an air leg
   into arcs that meet at corners.

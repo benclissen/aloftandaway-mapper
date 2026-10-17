@@ -213,3 +213,6 @@ neither needed profiling. The router parameters were left as they are.
 route is routing and decoding, and the memory pass (0.95 s) shows decoding is only about a tenth of it. Cold is
 bound by the network: 485 tiles took 44 s of summed request time over 4 requests at once, about 11 s of wall time.
 Rounds cost little on top of that, since each round fetches only the tiles the new route needs.
+
+**Memory.** A decoded tile is about 49 KB (32 KB of pixel bits and 17 KB of block sums). `SeaWater` keeps at most
+1,500 of them, so its tile memory tops out at about 73 MB.

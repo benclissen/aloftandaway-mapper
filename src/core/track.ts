@@ -383,26 +383,45 @@ export function trackKey(id: string): string {
   return `track:${id}`
 }
 
+type Cut = { index: number; km: number }
+
 /**
  * The point of `points`, from `lo` on, where a leg should end at `at`: the nearest point in the first run of
  * consecutive points within `TRACK_NEAR_KM` of it, or the nearest point from `lo` on when none comes that close. With
- * no points from `lo` on, the last point. Stops scanning at the end of the first run, so it costs O(points) at most.
+ * no points from `lo` on, the last point.
+ *
+ * `from`, the stop the leg leaves, is given when searching for a leg's end. Then a run that's already under way at
+ * `lo`, because the two stops are close, counts only if it gets nearer `at` than half the distance between the stops:
+ * the track has made its way over to `at`. Otherwise the track hasn't left yet, as on a loop that ends where it
+ * began, so the next run counts instead, or this one when there's no other. The scan stops at the end of the run it
+ * takes, so it costs O(points) at most.
  */
-function cutAt(points: LngLat[], at: LngLat, lo: number): { index: number; km: number } {
-  let best = { index: Math.max(Math.min(lo, points.length - 1), 0), km: Infinity }
-  let inRun = false
-  for (let k = Math.max(lo, 0); k < points.length; k++) {
-    const km = haversineKm(at, points[k]!)
-    const near = km <= TRACK_NEAR_KM
-    if (inRun && !near) break
-    if (near && !inRun) {
-      // The first run starts here: what was nearest before it no longer counts.
-      inRun = true
-      best = { index: k, km }
-    } else if (km < best.km) best = { index: k, km }
+function cutAt(points: LngLat[], at: LngLat, lo: number, from?: LngLat): Cut {
+  const n = points.length
+  let k = Math.max(lo, 0)
+  // The run under way at `lo`, if there is one.
+  let early: Cut | undefined
+  if (from !== undefined) {
+    for (; k < n; k++) {
+      const km = haversineKm(at, points[k]!)
+      if (km > TRACK_NEAR_KM) break
+      if (!early || km < early.km) early = { index: k, km }
+    }
+    if (early && early.km < haversineKm(from, at) / 2) return early
   }
-  if (best.km === Infinity && points.length > 0) best.km = haversineKm(at, points[best.index]!)
-  return best
+  let run: Cut | undefined
+  let nearest: Cut | undefined
+  for (; k < n; k++) {
+    const km = haversineKm(at, points[k]!)
+    if (km <= TRACK_NEAR_KM) {
+      if (!run || km < run.km) run = { index: k, km }
+    } else if (run) break
+    else if (!nearest || km < nearest.km) nearest = { index: k, km }
+  }
+  const found = run ?? early ?? nearest
+  if (found) return found
+  const index = Math.max(Math.min(lo, n - 1), 0)
+  return { index, km: n > 0 ? haversineKm(at, points[index]!) : Infinity }
 }
 
 /**
@@ -410,9 +429,11 @@ function cutAt(points: LngLat[], at: LngLat, lo: number): { index: number; km: n
  * starts at, the previous leg's `end` when both follow this track; without it, `from` is searched for from index 0.
  * `end` is searched for from `start + 1` on: the nearest point in the first run of points within `TRACK_NEAR_KM` of
  * `to`, or the nearest point when none comes that close. Taking the first run cuts a port called at twice at its
- * first call, and a cruise that ends where it began at its end. `gapKm` is how far `from` and `to` are from the
- * points at `start` and `end`. Distances are great-circle, so a track across 180° needs no unwrapping. `points` must
- * hold at least one point.
+ * first call, and a cruise that ends where it began at its end. When the stops are close enough that the track starts
+ * inside `to`'s circle, that first run counts only if the track gets nearer `to` than half the stops' distance;
+ * otherwise the leg runs on to where the track comes back, so a loop from a stop back to it isn't cut on the way out
+ * (see `cutAt`). `gapKm` is how far `from` and `to` are from the points at `start` and `end`. Distances are
+ * great-circle, so a track across 180° needs no unwrapping. `points` must hold at least one point.
  */
 export function cutTrack(
   points: LngLat[],
@@ -421,6 +442,6 @@ export function cutTrack(
   start?: number,
 ): { start: number; end: number; gapKm: [number, number] } {
   const first = start === undefined ? cutAt(points, from, 0) : { index: start, km: haversineKm(from, points[start]!) }
-  const last = cutAt(points, to, first.index + 1)
+  const last = cutAt(points, to, first.index + 1, from)
   return { start: first.index, end: last.index, gapKm: [first.km, last.km] }
 }

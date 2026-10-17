@@ -187,7 +187,7 @@ test('an agent edit to another scene clears history and keeps the tab', async ()
   }
 }, 60_000)
 
-test('a version 1 file opens in the studio and is saved as version 2', async () => {
+test('a version 1 file opens in the studio and is saved as version 3', async () => {
   const folder = path.join(tmp, 'legacy')
   await mkdir(folder, { recursive: true })
   const file = path.join(folder, 'mapper.json')

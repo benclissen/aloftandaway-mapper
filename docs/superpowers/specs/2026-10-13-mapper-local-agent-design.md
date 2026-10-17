@@ -379,8 +379,9 @@ describe the layered export unless they say otherwise.
   `{"version":1,"name"?:string,"points":[[lng,lat],…]}` as compact JSON with
   coordinates rounded to 6 decimals. The id is the first 12 hex characters of
   the SHA-256 of that text, so importing the same track again reuses the file.
-  Files are written once, never changed, and never deleted, since another
-  scene may use the same one.
+  A file is written when it's missing or its text isn't exactly what the id
+  stands for, so importing again repairs a damaged file. Otherwise it's left
+  alone, and it's never deleted, since another scene may use the same one.
 - **Thinned once, at import.** Each stay collapses to one point at its centre.
   Douglas-Peucker then runs in Mercator from a 10 m tolerance, doubling until
   at most `MAX_TRACK_POINTS` (10,000) remain. The first point, the last point
@@ -399,8 +400,15 @@ describe the layered export unless they say otherwise.
   each stop: the first run of points within `TRACK_NEAR_KM` (2) of the stop,
   then the nearest point in that run. The first run handles a ship that calls
   at one port twice and a cruise that ends where it started. A leg that
-  follows another leg of the same track starts where that leg ended. If no
-  point is within 2 km, the nearest one is used and `track-stop-far` warns.
+  follows another leg of the same track starts where that leg ended, and its
+  end is looked for after its start. When the two stops are close, the track
+  may still be within 2 km of the end stop when the leg leaves. That run
+  counts only if the track gets nearer the end stop than half the distance
+  between the two stops. Otherwise the track hasn't left yet, so the leg ends
+  in the next run, or in this one if there's no other. So a day loop from a hotel back to
+  it follows the whole loop, and a short hop to a stop nearby still ends on
+  the way out. If no point is within 2 km, the nearest one is used and
+  `track-stop-far` warns.
 - **Adding or removing a stop keeps the track.** A new leg from a to b is a
   track leg of T, with no via points, when the old legs leaving a and arriving
   at b are both track legs of T. That covers inserting a stop on a track leg

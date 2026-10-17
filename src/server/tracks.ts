@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { trackKey, type LngLat, type Project, type SeaPath, type SeaPaths } from '../core/index.js'
+import { MAX_LAT, trackKey, type LngLat, type Project, type SeaPath, type SeaPaths } from '../core/index.js'
 import { writeFileAtomic } from './atomic.js'
 
 /** Recorded tracks live here, next to mapper.json, one file per track. */
@@ -11,8 +11,8 @@ const round6 = (x: number): number => Math.round(x * 1e6) / 1e6
 
 /**
  * Stores `track` as `tracks/<id>.json` in `folder` and returns its id: the first 12 hex characters of the SHA-256 of
- * the file's text, so the same points always give the same id and file. The file is written only if it isn't there,
- * and never changed afterwards.
+ * the file's text, so the same points always give the same id and file. The file is written when it isn't there, or
+ * when its text isn't exactly that text, so importing again repairs a damaged file. An intact file is left alone.
  */
 export async function writeTrack(folder: string, track: { name?: string; points: LngLat[] }): Promise<string> {
   const points = track.points.map(([lng, lat]) => [round6(lng), round6(lat)])
@@ -20,14 +20,15 @@ export async function writeTrack(folder: string, track: { name?: string; points:
   const id = createHash('sha256').update(text).digest('hex').slice(0, 12)
   const dir = path.join(path.resolve(folder), TRACKS_DIR)
   const file = path.join(dir, `${id}.json`)
-  if (await stat(file).then(() => false, () => true)) {
+  const found = await readFile(file, 'utf8').catch(() => undefined)
+  if (found !== text) {
     await mkdir(dir, { recursive: true })
     await writeFileAtomic(file, text)
   }
   return id
 }
 
-/** The last read of each track file, with the file's change time and size at that moment. `path` is empty if invalid. */
+/** The last read of each track file, stamped with its `mtimeNs` and size. `path` is undefined if it was unusable. */
 const memo = new Map<string, { stamp: string; path: LngLat[] | undefined }>()
 /** Track files already reported as missing or unreadable, so each is logged once. */
 const reported = new Set<string>()
@@ -38,7 +39,7 @@ function report(file: string, why: string): void {
   console.error(`Mapper could not use the recorded track ${file}: ${why}`)
 }
 
-/** True when `p` is a `[lng, lat]` pair of finite numbers in range. */
+/** True when `p` is a `[lng, lat]` pair of finite numbers in range, up to the importers' latitude limit, `MAX_LAT`. */
 function validPoint(p: unknown): p is LngLat {
   return (
     Array.isArray(p) &&
@@ -48,7 +49,7 @@ function validPoint(p: unknown): p is LngLat {
     Number.isFinite(p[0]) &&
     Number.isFinite(p[1]) &&
     Math.abs(p[0]) <= 180 &&
-    Math.abs(p[1]) <= 90
+    Math.abs(p[1]) <= MAX_LAT
   )
 }
 

@@ -10,9 +10,9 @@ import { creditLine, doneSummary, leftover, statusSummary, TOOLS } from '../../s
 import { startRenderJob, type RenderStatus } from '../../src/render/jobs.js'
 import { contactSheet, previewFrame } from '../../src/render/preview.js'
 import { loadProject, saveProject } from '../../src/server/store.js'
-import { TRACKS_DIR, writeTrack } from '../../src/server/tracks.js'
-import type { LngLat } from '../../src/core/index.js'
-import { syntheticCruise } from '../fixtures/tracks.js'
+import { readTrackPaths, TRACKS_DIR, writeTrack } from '../../src/server/tracks.js'
+import { buildRoute, haversineKm, type LngLat } from '../../src/core/index.js'
+import { syntheticCruise, syntheticLoop } from '../fixtures/tracks.js'
 
 // The real job runs; the spy records what the render tool asked for.
 vi.mock('../../src/render/jobs.js', async (importOriginal) => {
@@ -616,6 +616,7 @@ describe('tools', () => {
       for (const word of ['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene']) expect(update).toContain(word)
       for (const words of ['0-based', 'scene id', 'appends', 'copyLookFrom is an id or 1-based position']) expect(update).toContain(words)
       expect(update).not.toContain('restore_scene')
+      expect(update).toContain("A leg symbol alone sets its mode, unless it's a track leg.")
     })
 
     test('preview_frame and preview_contact_sheet take a scene', async () => {
@@ -1100,7 +1101,45 @@ describe('render summaries', () => {
       const sc = result.structuredContent as unknown as TrackResult
       expect(sc.project.scenes[0]!.stops.map((s) => s.name)).toEqual(['Track start', 'Track end'])
       expect(sc.import.stops[0]).not.toHaveProperty('arrive')
-      expect(text(result)).toContain('2 stops (0 stays of 120 min or more)')
+      expect(text(result)).toContain('2 stops (no stays looked for: not every point has a time).')
+      expect(text(result)).not.toContain('0 stays')
+    })
+
+    test('import_track ends mode asked for says it used the first and last points', async () => {
+      const { folder, file } = await setup('trk-ends-asked', 'cruise.csv', syntheticCruise().csv)
+      const result = await call('import_track', { folder, path: file, stops: 'ends' })
+      expect(result.isError, text(result)).toBeFalsy()
+      expect(text(result)).toMatch(/, 2 stops \(first and last points\)\./)
+      expect(text(result)).not.toContain('stays of')
+    })
+
+    test('import_track follows a day loop that ends where it began', async () => {
+      // 3 h at the hotel, a 40 km drive round, and 3 h back at the hotel: two stops a few metres apart.
+      const loop = syntheticLoop()
+      const { folder, file } = await setup('trk-loop', 'loop.csv', loop.csv)
+      const result = await call('import_track', { folder, path: file })
+      expect(result.isError, text(result)).toBeFalsy()
+      const sc = result.structuredContent as unknown as TrackResult
+      expect(sc.import.stops).toHaveLength(2)
+      expect(text(result)).toContain('2 stops (2 stays of 120 min or more)')
+      const project = await loadProject(folder)
+      const leg = buildRoute(project.scenes[0]!, await readTrackPaths(folder, project)).legs[0]!
+      expect(leg.drawnAs).toBe('track')
+      // Every kept point is on the leg: the first and last are the stops, and the rest lie between them.
+      expect(leg.path).toHaveLength(sc.import.points)
+      let km = 0
+      for (let k = 1; k < leg.path.length; k++) km += haversineKm(leg.path[k - 1]!, leg.path[k]!)
+      expect(km).toBeGreaterThan(loop.lengthKm * 0.95)
+      expect(km).toBeLessThan(loop.lengthKm * 1.1)
+    })
+
+    test('import_track refuses a track choice for a CSV', async () => {
+      const { folder, file } = await setup('trk-csv-track', 'cruise.csv', syntheticCruise().csv)
+      const result = await call('import_track', { folder, path: file, track: 1 })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toContain('Error: track picks a track in a GPX file')
+      expect(text(result)).toContain('Fix: Leave out track')
+      await expect(readdir(path.join(folder, TRACKS_DIR))).rejects.toThrow()
     })
 
     test('import_track refuses stays without times', async () => {
@@ -1119,6 +1158,7 @@ describe('render summaries', () => {
       const sc = result.structuredContent as unknown as TrackResult & { import: { badTimes?: number } }
       expect(sc.import.skippedRows).toBe(1)
       expect(sc.import.badTimes).toBe(2)
+      expect(text(result)).toContain("2 stops (no stays looked for: 2 of the track's times can't be read).")
       const refused = await call('import_track', { folder, path: file, stops: 'stays' })
       expect(refused.isError).toBe(true)
       expect(text(refused)).toContain("times can't be read")

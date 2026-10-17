@@ -201,11 +201,16 @@ reuses the same file. `symbol` sets the transport of every leg, for example
 
   Rows with a bad coordinate are skipped and counted in the result. Rows may
   come in any order. If any time is missing or unreadable, `stops: 'stays'` is
-  refused with a fix: repair the times, or pass `stops: 'ends'`.
+  refused with a fix: repair the times, or pass `stops: 'ends'`. Without
+  `stops`, such a file gets `ends`, and the summary says why no stays were
+  looked for. `track` picks a track in a GPX file and is refused for a CSV.
 - `stops: 'stays'` (the default when every point has a time) makes a stop
   wherever the track stayed within 1 km for `minStayMinutes` (default 120),
   plus the first and last points. `stops: 'ends'` makes only the first and last.
-  Lower `minStayMinutes` for short calls, raise it to ignore traffic stops.
+  Lower `minStayMinutes` for short calls, raise it to ignore traffic stops. A
+  loop that ends where it began, such as a day out from a hotel, gives two
+  stops at the same place and one leg round the whole loop. Validation warns
+  `same-place` for it; keep both stops, since merging them drops the leg.
 - Stops are named after a GPX waypoint within 1 km, otherwise `Stop 1`,
   `Stop 2`. The result lists each stop with its arrival and departure times.
   Match those to the itinerary, then rename with `update_project`'s
@@ -225,9 +230,10 @@ reuses the same file. `symbol` sets the transport of every leg, for example
   ```json
   { "op": "insert_stop", "index": 2, "stop": { "name": "Rhodes", "at": [28.2278, 36.4349] } }
   ```
-- Validation: `track-missing` is an error (the file in `tracks/` is gone; put it
-  back or import again). `track-stop-far` is a warning: a stop is more than
-  2 km from the track, so the line jumps to it. Move the stop onto the track.
+- Validation: `track-missing` is an error (the file in `tracks/` is gone or
+  damaged; put it back, or import the same file again to rewrite it).
+  `track-stop-far` is a warning: a stop is more than 2 km from the track, so
+  the line jumps to it. Move the stop onto the track.
 - A track leg takes no via points, and the studio shows it read-only.
 - Timing uses distance only. The recorded times don't set the clip's pace.
 

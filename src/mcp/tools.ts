@@ -259,9 +259,13 @@ function importLine(imported: GpxImport): string {
   return `${head}; skipped ${plural(skipped.length, 'waypoint')} more than 2 km from the track (${list}).`
 }
 
-function trackLine(imported: TrackImport, minStayMinutes: number): string {
-  const { recorded, points, stops, stays } = imported
-  return `Imported a recorded track: ${recorded} points kept as ${points.length}, ${stops.length} stops (${stays} stays of ${minStayMinutes} min or more).`
+/**
+ * The summary line for `import_track`. `how` says where the stops came from: the stays found, the first and last
+ * points when `ends` was asked for, or why no stays were looked for when the track's times ruled them out.
+ */
+function trackLine(imported: TrackImport, how: string): string {
+  const { recorded, points, stops } = imported
+  return `Imported a recorded track: ${recorded} points kept as ${points.length}, ${stops.length} stops (${how}).`
 }
 
 // Errors
@@ -568,6 +572,7 @@ export const TOOLS: ToolDef<any>[] = [
       let waypoints: { name: string; at: LngLat }[] | undefined
       let skippedRows = 0
       let imported: TrackImport
+      let mode: 'stays' | 'ends'
       try {
         if (path.extname(file).toLowerCase() === '.gpx') {
           const gpx = parseGpx(text)
@@ -576,22 +581,32 @@ export const TOOLS: ToolDef<any>[] = [
           recorded = recordedFromGpx(line)
           waypoints = gpx.waypoints
         } else {
+          if (track !== undefined) {
+            throw new ToolError('track picks a track in a GPX file only, and this is a CSV file.', 'Leave out track for a CSV file.')
+          }
           const { skippedRows: skipped, ...csv } = parseTrackCsv(text)
           recorded = csv
           skippedRows = skipped
         }
-        imported = trackToStops(recorded, { stops: stops ?? (recorded.times ? 'stays' : 'ends'), minStayMinutes, waypoints })
+        mode = stops ?? (recorded.times ? 'stays' : 'ends')
+        imported = trackToStops(recorded, { stops: mode, minStayMinutes, waypoints })
       } catch (e) {
         if (e instanceof GpxError || e instanceof TrackError) throw new ToolError(e.message, e.fix)
         throw e
       }
+      const how =
+        mode === 'stays'
+          ? `${imported.stays} stays of ${minStayMinutes} min or more`
+          : stops === 'ends'
+            ? 'first and last points'
+            : `no stays looked for: ${recorded.badTimes ? `${recorded.badTimes} of the track's times can't be read` : 'not every point has a time'}`
       // The folder and scene are checked before anything is written, so a bad call leaves no tracks/ folder behind.
       assertAbsolute(folder)
       resolveScene(await loadProject(folder), ref)
       // The track file goes down first, so the project never names a file that isn't there.
       const id = await writeTrack(folder, { name: recorded.name, points: imported.points })
       const project = await mutateProject(folder, (p) => importTrack(p, { scene: ref, stops: imported.stops.map(({ name, at }) => ({ name, at })), track: id, symbol }))
-      const result = await withChange(folder, project, resolveScene(project, ref).scene.id, { note: trackLine(imported, minStayMinutes) })
+      const result = await withChange(folder, project, resolveScene(project, ref).scene.id, { note: trackLine(imported, how) })
       return {
         summary: result.summary,
         data: {
@@ -613,7 +628,7 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'update_project',
     description:
-      "Edit a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. scene (id or 1-based position; default first) picks the scene to edit. 'sceneSet' patches its name, timing, look and camera; null removes a key. timing.length fixes the scene's length in seconds and works out travel. look.theme: aloftandaway, aloftandaway-warm, paper, light, dark, nautical, atlas, outdoor, satellite, monochrome, blank. look.terrain: true adds hill shading and 3D relief. look.symbolStyle: badge, badge-line, icon. follow.pitch is 0-60. 'ops' edits stops, legs, via points and scenes: add_scene { index?, name?, copyLookFrom? } appends unless index is set; duplicate_scene, remove_scene, move_scene { id, index } take a scene id. Op indexes are 0-based; copyLookFrom is an id or 1-based position. A leg symbol alone sets its mode. Coordinates are [lng, lat]. The folder must be absolute.",
+      "Edit a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. scene (id or 1-based position; default first) picks the scene. 'sceneSet' patches its name, timing, look and camera; null removes a key. timing.length fixes the length in seconds; travel follows. look.theme: aloftandaway, aloftandaway-warm, paper, light, dark, nautical, atlas, outdoor, satellite, monochrome, blank. look.terrain: true adds hill shading and 3D relief. look.symbolStyle: badge, badge-line, icon. follow.pitch is 0-60. 'ops' edits stops, legs, via points and scenes: add_scene { index?, name?, copyLookFrom? } appends unless index is set; duplicate_scene, remove_scene, move_scene { id, index } take a scene id. Op indexes are 0-based; copyLookFrom is an id or 1-based position. A leg symbol alone sets its mode, unless it's a track leg. Coordinates are [lng, lat]. The folder must be absolute.",
     input: z.strictObject({ folder, ...ProjectPatchSchema.shape }),
     async run({ folder, set, scene: ref, sceneSet, ops }) {
       // The scene is found before the patch runs, so a scene op that moves it can't change which scene the result names.

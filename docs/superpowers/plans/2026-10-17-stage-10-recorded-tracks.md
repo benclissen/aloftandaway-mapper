@@ -27,7 +27,7 @@
 - **Why not `.mapper/`:** that folder is cache you can delete, and a track is source data.
 - **File:** `tracks/<id>.json` is `{"version":1,"name"?:string,"points":[[lng,lat],…]}`. It is compact JSON with coordinates rounded to 6 decimals.
 - **Id:** `id` is the first 12 hex characters of the SHA-256 of that text. Re-importing the same file gives the same id and doesn't write a second copy.
-- **Lifetime:** files are written once and never changed. Mapper never deletes them, because another scene may use the same file.
+- **Lifetime:** a file is written when it's missing or its text isn't exactly the text its id stands for, so importing again repairs a damaged file. An intact file is left alone. Mapper never deletes them, because another scene may use the same file.
 
 **3. Thinned once, at import.**
 - **Stays:** each stay's points collapse to one point at the stay's centre.
@@ -45,9 +45,10 @@
 **5. Each leg's stretch is found, not stored.** For leg *i* of track T in `buildRoute`:
 - **Start index:** if leg *i − 1* is a track leg of T, the start index `s` is where that leg ended. Otherwise `s` is found by the same search as the end, from index 0, for stop *i*.
 - **End index:** among the points from `s + 1` on, take the first run of consecutive points within `TRACK_NEAR_KM = 2` of stop *i + 1*, and the point in that run nearest to it.
+- **When the track starts inside the end stop's circle** (the run is under way at `s + 1`, because the stops are close): that run counts only if its nearest point to stop *i + 1* is closer than half the distance between stops *i* and *i + 1*. Otherwise the track hasn't left yet, so the end is in the next run, or in this one when there's no other. A loop from a stop back to it follows the whole loop, and a short hop to a stop nearby still ends on the way out, even with the stop dragged a little off the track.
 - **When no run is near:** the end is the nearest point from `s + 1` on, and the gap is reported.
 - **The path:** `[stop i, points s+1 … e−1, stop i+1]`, unwrapped in travel order like every other leg.
-- **Why this works:** "first run" handles a ship that calls at the same port twice, and a cruise that ends where it started.
+- **Why this works:** "first run" handles a ship that calls at the same port twice, and a cruise that ends where it started. Skipping a run the leg starts in handles a day loop with only two stops.
 
 **6. Adding or removing a stop keeps the track.**
 - **The rule:** a new leg from a to b is a track leg of T, with no via points, when both the old leg leaving a and the old leg arriving at b are track legs of T. That covers inserting a stop on a track leg (both are the same old leg) and removing a stop between two parts of T. It also inherits `symbol` when both old legs have the same one.
@@ -353,7 +354,7 @@
   - **`track`:** GPX only, the same as in `import_gpx`.
   - **`stops`:** defaults to `stays` when the track has times, and to `ends` otherwise.
 - **Result:** `data.import = { track: id, file: 'tracks/<id>.json', recorded, points, skippedRows, stops: [{ name, at, arrive?, depart? }] }`, plus the usual project result.
-- **Summary note:** `` `Imported a recorded track: ${recorded} points kept as ${points}, ${n} stops (${stays} stays of ${minStayMinutes} min or more).` ``
+- **Summary note:** `` `Imported a recorded track: ${recorded} points kept as ${points}, ${n} stops (${stays} stays of ${minStayMinutes} min or more).` `` In `ends` mode the bracket says instead `first and last points` when `ends` was asked for, or why no stays were looked for: `no stays looked for: N of the track's times can't be read` or `no stays looked for: not every point has a time`. `track` with a CSV is refused.
 - **Description** (under 600 characters): `Read a recorded GPS or AIS track from a local .gpx or .csv (lng,lat,time columns) into the scene's stops, replacing them. Legs follow the recorded points exactly; the track is kept in tracks/ in the project folder. stops: 'stays' (default when every point has a time) puts a stop wherever the track stayed within 1 km for minStayMinutes (default 120); 'ends' uses the first and last points. Stops come back with arrival and departure times; rename them with update_stop. symbol sets every leg. path and folder must be absolute.`
 
 - [ ] **Step 1: Write the failing tests.**

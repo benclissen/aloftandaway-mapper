@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
@@ -50,11 +50,24 @@ test('a track file is compact with 6 decimals', async () => {
   expect(await readFile(file(unnamed), 'utf8')).toBe('{"version":1,"points":[[10.123457,55.5],[11,56],[12.5,57.25]]}')
 })
 
-test('a file that is already there is left alone', async () => {
+test('an intact track file is not written again', async () => {
   const id = await writeTrack(folder, { points: POINTS })
-  await writeFile(file(id), 'kept')
+  const before = await stat(file(id), { bigint: true })
   expect(await writeTrack(folder, { points: POINTS })).toBe(id)
-  expect(await readFile(file(id), 'utf8')).toBe('kept')
+  const after = await stat(file(id), { bigint: true })
+  // An atomic write renames a new file into place, so the same inode and change time mean nothing was written.
+  expect(after.ino).toBe(before.ino)
+  expect(after.mtimeNs).toBe(before.mtimeNs)
+})
+
+test('importing again repairs a corrupt track file', async () => {
+  const id = await writeTrack(folder, { points: POINTS })
+  const good = await readFile(file(id), 'utf8')
+  await writeFile(file(id), good.slice(0, 20))
+  expect(await readTrackPaths(folder, projectUsing(id))).toEqual({})
+  expect(await writeTrack(folder, { points: POINTS })).toBe(id)
+  expect(await readFile(file(id), 'utf8')).toBe(good)
+  expect(Object.keys(await readTrackPaths(folder, projectUsing(id)))).toEqual([trackKey(id)])
 })
 
 test('readTrackPaths reads the tracks a project uses', async () => {
@@ -82,6 +95,8 @@ test('a corrupt or missing track file has no entry', async () => {
     '000000000004': JSON.stringify({ version: 1, points: [[1, 2], [3, 95]] }),
     '000000000005': JSON.stringify({ version: 1, points: [[1, 2], [3, 'x']] }),
     '000000000006': JSON.stringify({ version: 1, points: [[1, 2], [181, 3]] }),
+    // Beyond the importers' latitude limit, where Mercator runs off to infinity.
+    '000000000007': JSON.stringify({ version: 1, points: [[1, 2], [3, 89]] }),
   }
   for (const [id, text] of Object.entries(bad)) await writeFile(file(id), text)
   const ids = [...Object.keys(bad), '00000000000a']

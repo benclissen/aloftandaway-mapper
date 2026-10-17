@@ -29,6 +29,7 @@ import {
   type XY,
 } from '../../src/core/index.js'
 import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
+import { syntheticLoop } from '../fixtures/tracks.js'
 
 describe('geo', () => {
   test('clampLat keeps a latitude inside the schema, which stops short of MapLibre\'s 85.051129', () => {
@@ -653,6 +654,39 @@ describe('track legs', () => {
     const legs = buildRoute(scene, seaPaths).legs
     expect(legs[0]!.path).toEqual([A, [0.1, 0.05], [0.2, 0.05], B])
     expect(legs[1]!.path).toEqual([B, [0.3, -0.05], [0.1, -0.05], A])
+  })
+
+  test('a loop with two stops follows the whole loop', () => {
+    // As import_track's ends mode gives it: a stop on the first point and one on the last, a few metres apart. The
+    // track starts inside the end stop's circle, so the end is where it comes back, not where it leaves.
+    const { points, lengthKm } = syntheticLoop({ stayMinutes: 0 })
+    const { scene, seaPaths } = onTrack([points[0]!, points.at(-1)!], points)
+    const r = buildRoute(scene, seaPaths)
+    const leg = r.legs[0]!
+    expect(leg.drawnAs).toBe('track')
+    expect(leg.path).toEqual(points)
+    expect(leg.track!.stopGapKm).toEqual([0, 0])
+    let km = 0
+    for (let k = 1; k < leg.path.length; k++) km += haversineKm(leg.path[k - 1]!, leg.path[k]!)
+    expect(km).toBeGreaterThan(lengthKm * 0.98)
+    expect(km).toBeLessThan(lengthKm * 1.02)
+    expect(r.length).toBe(leg.length)
+  })
+
+  test('a short hop from near the start still ends at the first arrival', () => {
+    // A to C along the equator and back 220 m north of it. B is 1.6 km from A, so the track starts inside B's circle,
+    // and it passes B again on the way back. The leg to B ends on the way out, with B on a point or dragged 100 m off.
+    const out: LngLat[] = []
+    const back: LngLat[] = []
+    for (let k = 0; k <= 200; k++) out.push([k * 0.001, 0])
+    for (let k = 199; k >= 0; k--) back.push([k * 0.001, 0.002])
+    const points = [...out, ...back]
+    for (const B of [[0.014, 0], [0.014, 0.0009]] as LngLat[]) {
+      const { scene, seaPaths } = onTrack([[0, 0], B, [0.2, 0]], points)
+      const legs = buildRoute(scene, seaPaths).legs
+      expect(legs[0]!.path).toEqual([[0, 0], ...points.slice(1, 14), B])
+      expect(legs[1]!.path).toEqual([B, ...points.slice(15, 200), [0.2, 0]])
+    }
   })
 
   test('a stop far from the track reports the gap', () => {

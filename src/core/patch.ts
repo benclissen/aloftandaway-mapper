@@ -22,6 +22,7 @@ import {
   type ViaPoint,
   type StopInput,
 } from './schema.js'
+import { sceneTravel } from './timeline.js'
 import { BLANK_SCENE_NAME, SceneRefSchema, applySceneOp, resolveScene, type SceneRef } from './scenes.js'
 
 // Ops and patches
@@ -227,6 +228,18 @@ function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown, prefix: (string |
   throw new ProjectError(zodIssues(result.error).map((i): ProjectIssue => ({ ...i, path: [...prefix, ...i.path] })))
 }
 
+// Fixed length
+
+/** Writes each fixed-length scene's leftover travel into `timing.travel`, so the file reads true. */
+export function fitLength(project: Project): Project {
+  const scenes = project.scenes.map((scene) => {
+    if (scene.timing.length === undefined) return scene
+    const travel = Math.round(sceneTravel(scene) * 1e6) / 1e6
+    return travel === scene.timing.travel ? scene : { ...scene, timing: { ...scene.timing, travel } }
+  })
+  return { ...project, scenes }
+}
+
 // setStops
 
 /**
@@ -251,7 +264,7 @@ export function setStops(
     if (symbol) symbols.set(stop.id, symbol)
   }
   work.scenes[at] = { ...scene, stops, legs: syncLegs(old, stops, { leaving, symbols, fallback: legMode }) }
-  return parseProject(work)
+  return fitLength(parseProject(work))
 }
 
 // applyPatch
@@ -364,5 +377,5 @@ export function applyPatch(project: Project, patch: ProjectPatch): Project {
     if (isSceneOp(op)) work = applySceneOp(work, op, i, newStopId)
     else edit((scene) => applyOp(scene, op, i), i)
   })
-  return parseProject(work)
+  return fitLength(parseProject(work))
 }

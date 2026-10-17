@@ -10,6 +10,7 @@ import {
   mergePatch,
   newStopId,
   setStops,
+  buildTimeline,
   type LngLat,
   type Project,
   type StopInput,
@@ -580,5 +581,57 @@ describe('scene ops', () => {
     for (const name of ['insert_stop', 'update_stop', 'remove_stop', 'update_leg', 'insert_via', 'remove_via', 'scene_note']) {
       expect(isSceneOp({ op: name })).toBe(false)
     }
+  })
+})
+
+describe('a fixed length', () => {
+  // Holds 1 and 2, pauses 1.5 and 1.5, a length of 8 s: travel is 2 s.
+  const fixed = (length: number | undefined = 8): Project => {
+    const p = stopsAt([[0, 0], [10, 0], [20, 0]], { timing: { holdStart: 1, travel: 99, holdEnd: 2, ...(length ? { length } : {}) } })
+    sceneOf(p).stops[0]!.pause = 1.5
+    sceneOf(p).stops[1]!.pause = 1.5
+    return p
+  }
+  const frames = (p: Project) => buildTimeline(sceneOf(p), p.output.fps, buildRoute(sceneOf(p))).totalFrames
+
+  test('length holds when a pause changes', () => {
+    const start = applyPatch(fixed(), { sceneSet: { timing: { length: 8 } } })
+    expect(sceneOf(start).timing.travel).toBe(2)
+    const id = sceneOf(start).stops[1]!.id
+    const p = applyPatch(start, { ops: [{ op: 'update_stop', id, changes: { pause: 3 } }] })
+    expect(sceneOf(p).timing.travel).toBe(0.5)
+    expect(sceneOf(p).timing.length).toBe(8)
+    expect(frames(p)).toBe(200)
+  })
+
+  test('a pause that overruns the length is refused', () => {
+    const p = stopsAt([[0, 0], [10, 0]], { timing: { holdStart: 1, travel: 1, holdEnd: 2, length: 4 } })
+    const id = sceneOf(p).stops[0]!.id
+    const e = failure(() => applyPatch(p, { ops: [{ op: 'update_stop', id, changes: { pause: 2 } }] }))
+    expect(e.issues).toEqual([
+      {
+        path: ['scenes', 0, 'timing', 'length'],
+        message: 'the holds and pauses add up to 5 s, more than the length of 4 s. Shorten them, or clear timing.length with null',
+      },
+    ])
+  })
+
+  test('null clears the length, and travel keeps its last value', () => {
+    const start = applyPatch(fixed(), { sceneSet: { timing: { length: 8 } } })
+    const p = applyPatch(start, { sceneSet: { timing: { length: null } } })
+    expect(sceneOf(p).timing).toEqual({ holdStart: 1, travel: 2, holdEnd: 2 })
+    expect(sceneOf(p).timing).not.toHaveProperty('length')
+  })
+
+  test('setStops refits the length', () => {
+    const start = applyPatch(fixed(), { sceneSet: { timing: { length: 8 } } })
+    const p = setStops(start, { stops: [{ name: 'A', at: [0, 0], pause: 2 }, { name: 'B', at: [5, 0] }, { name: 'C', at: [9, 0], pause: 1 }] })
+    expect(sceneOf(p).timing.travel).toBe(2)
+    expect(frames(p)).toBe(200)
+  })
+
+  test('travel is rounded to 1e-6', () => {
+    const p = applyPatch(fixed(), { sceneSet: { timing: { length: 8.1234567 } } })
+    expect(sceneOf(p).timing.travel).toBe(2.123457)
   })
 })

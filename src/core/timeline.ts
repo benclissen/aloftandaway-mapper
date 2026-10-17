@@ -33,6 +33,16 @@ export function legSeconds(lengths: number[], travel: number): number[] {
   }
 }
 
+/**
+ * The seconds a scene spends travelling. With `timing.length` set, that is whatever is left of the length after the
+ * holds and pauses (so a stored `travel` that has gone stale is ignored); otherwise it is `timing.travel`.
+ */
+export function sceneTravel(scene: Scene): number {
+  const { length, holdStart, holdEnd, travel } = scene.timing
+  if (length === undefined) return travel
+  return Math.max(0, length - holdStart - holdEnd - scene.stops.reduce((sum, s) => sum + s.pause, 0))
+}
+
 export function ease(kind: Camera['easing'], t: number): number {
   return kind === 'smooth' ? t * t * (3 - 2 * t) : t
 }
@@ -68,12 +78,13 @@ export interface Timeline {
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi)
 
 export function buildTimeline(scene: Scene, fps: Fps, route: Route): Timeline {
-  const { holdStart, travel, holdEnd } = scene.timing
+  const { holdStart, holdEnd, length } = scene.timing
+  const travel = sceneTravel(scene)
   const { stops } = scene
   const toFrame = (seconds: number) => Math.round((seconds * fps.num) / fps.den)
   const rate = fpsValue(fps)
 
-  const total = holdStart + travel + stops.reduce((sum, s) => sum + s.pause, 0) + holdEnd
+  const total = length ?? holdStart + travel + stops.reduce((sum, s) => sum + s.pause, 0) + holdEnd
 
   // Boundaries in seconds, accumulated in order and only then turned into frames.
   const lengths = route.legs.map((leg) => leg.length)

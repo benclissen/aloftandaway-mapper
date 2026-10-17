@@ -174,6 +174,17 @@ describe('tools', () => {
     expect(lines.find((l) => l.startsWith('1. Piraeus'))).not.toContain('sharp')
   })
 
+  test('the summary marks a fixed length', async () => {
+    const folder = path.join(tmp, 'fixed-length')
+    await call('create_project', { folder, name: 'Fixed' })
+    const set = await call('set_stops', { folder, stops: STOPS })
+    expect(text(set)).toMatch(/\d+ s \(\d+ frames\)/)
+    expect(text(set)).not.toContain('fixed length')
+    const updated = await call('update_project', { folder, sceneSet: { timing: { length: 8 } } })
+    expect(updated.isError, text(updated)).toBeFalsy()
+    expect(text(updated)).toContain('8.0 s (200 frames, fixed length)')
+  })
+
   test('a landlocked sea leg reports the fallback', async () => {
     const folder = path.join(tmp, 'landlocked')
     await call('create_project', { folder, name: 'Landlocked' })

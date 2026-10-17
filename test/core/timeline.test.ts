@@ -5,6 +5,7 @@ import {
   ease,
   formatTimecode,
   legSeconds,
+  sceneTravel,
   SIGN_FADE_SECONDS,
   type Project,
 } from '../../src/core/index.js'
@@ -257,6 +258,37 @@ describe('buildTimeline', () => {
     expect(last.head.at).toEqual(sceneOf(p).stops.at(-1)!.at)
     expect(last.distance).toBe(route.length)
     expect(tl.durationSeconds).toBe(tl.totalFrames / 25)
+  })
+})
+
+describe('a fixed length', () => {
+  // Holds 1 and 2, and two pauses of 1.5, so 3 s of travel is left over when the length is 8 s.
+  const fixed = (timing: Record<string, number>, fps?: { num: number; den: number }) => {
+    const p = stopsAt([[0, 0], [10, 0], [20, 0]], { timing: { holdStart: 1, travel: 5, holdEnd: 2, ...timing } })
+    sceneOf(p).stops[0]!.pause = 1.5
+    sceneOf(p).stops[1]!.pause = 1.5
+    if (fps) p.output.fps = fps
+    return p
+  }
+
+  test('sceneTravel is the stored travel without a length, and the rest of the length with one', () => {
+    expect(sceneTravel(sceneOf(fixed({})))).toBe(5)
+    expect(sceneTravel(sceneOf(fixed({ length: 8 })))).toBe(2)
+    expect(sceneTravel(sceneOf(fixed({ length: 3 })))).toBe(0)
+  })
+
+  test('length 8 at 25 fps is 200 frames', () => {
+    const p = fixed({ length: 8 })
+    expect(sceneTravel(sceneOf(p))).toBe(2)
+    expect(timelineOf(p).tl.totalFrames).toBe(200)
+  })
+
+  test('length 8 at 30000/1001 is 240 frames', () => {
+    expect(timelineOf(fixed({ length: 8 }, { num: 30000, den: 1001 })).tl.totalFrames).toBe(240)
+  })
+
+  test('a stale travel is ignored', () => {
+    expect(timelineOf(fixed({ length: 8, travel: 99 })).tl.totalFrames).toBe(200)
   })
 })
 

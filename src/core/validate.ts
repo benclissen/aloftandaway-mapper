@@ -4,7 +4,7 @@ import { buildRoute } from './route.js'
 import { THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
 import { NO_LAND_DATA, STOP_FAR_KM, STRAIGHT_LINE, UNVERIFIED_CAUSE, type SeaPaths } from './sea.js'
 import { signBox, signLift, signText } from './signs.js'
-import { buildTimeline, formatTimecode, legSeconds, SIGN_FADE_SECONDS } from './timeline.js'
+import { buildTimeline, formatTimecode, legSeconds, sceneTravel, SIGN_FADE_SECONDS } from './timeline.js'
 
 export interface Issue {
   code: string
@@ -149,7 +149,7 @@ function validateScene(
 
     const seconds = legSeconds(
       route.legs.map((leg) => leg.length),
-      timing.travel,
+      sceneTravel(scene),
     )
     seconds.forEach((s, i) => {
       if (s < MIN_LEG_SECONDS) {
@@ -157,7 +157,7 @@ function validateScene(
           code: 'short-leg',
           message: `${legName(i)} lasts ${+s.toFixed(2)} s`,
           path: ['legs', i],
-          fix: `Raise timing.travel with update_project sceneSet, or merge ${nameOf(i)} and ${nameOf(i + 1)} into one stop.`,
+          fix: `Raise ${timing.length === undefined ? 'timing.travel' : 'timing.length'} with update_project sceneSet, or merge ${nameOf(i)} and ${nameOf(i + 1)} into one stop.`,
         })
       }
     })

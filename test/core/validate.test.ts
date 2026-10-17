@@ -82,6 +82,20 @@ describe('validateProject', () => {
     expect(legs[0]!.fix).toBeTruthy()
   })
 
+  test('short-leg on a fixed-length scene says raise timing.length', () => {
+    const project = stopsAt(
+      [
+        [23.6466, 37.942],
+        [25.3289, 37.4467],
+        [25.4317, 36.4166],
+      ],
+      { timing: { holdStart: 1, travel: 10, holdEnd: 2, length: 4 } },
+    )
+    const legs = validateProject(project).warnings.filter((w) => w.code === 'short-leg')
+    expect(legs).toHaveLength(2)
+    expect(legs[0]!.fix).toMatch(/^Raise timing\.length/)
+  })
+
   test('zoom-above-max names a stored shot by its path', () => {
     const project = stopsAt([
       [23.6466, 37.942],

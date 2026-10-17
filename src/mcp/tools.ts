@@ -138,7 +138,7 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
     }))
     blocks.push([
       ...(many ? [`${sceneLabel(project, index)} (id ${scene.id})`] : []),
-      `${many ? '' : `${project.name}: `}${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
+      `${many ? '' : `${project.name}: `}${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}${scene.timing.length === undefined ? '' : ', fixed length'}), ${width}×${height}.`,
       `Style: ${scene.look.theme}, terrain ${scene.look.terrain ? 'on' : 'off'}.`,
       ...(scene.stops.length
         ? scene.stops.map((s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}${s.sharp ? ' · sharp' : ''}`)
@@ -531,7 +531,7 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'update_project',
     description:
-      "Change a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. scene (an id, or a 1-based position; default the first) picks the scene that sceneSet and the stop, leg and via ops change. 'sceneSet' patches its name, timing, look and camera; null removes a key. look.theme: aloftandaway, aloftandaway-warm, paper, light, dark, nautical, atlas, outdoor, satellite, monochrome, blank. look.terrain: true adds hill shading and 3D elevation. look.symbolStyle: badge, badge-line, icon. follow.pitch is 0 to 60. 'ops' edits stops, legs and via points, and scenes: add_scene { index?, name?, copyLookFrom? } appends unless index is given; duplicate_scene, remove_scene and move_scene { id, index } take a scene id. Op indexes are 0-based; copyLookFrom is an id or 1-based position. A leg symbol alone sets its usual mode. Coordinates are [lng, lat]. The folder must be absolute.",
+      "Edit a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. scene (id or 1-based position; default the first) picks the scene to edit. 'sceneSet' patches its name, timing, look and camera. timing.length fixes the scene's length in seconds and works out travel; null clears it. look.theme: aloftandaway, aloftandaway-warm, paper, light, dark, nautical, atlas, outdoor, satellite, monochrome, blank. look.terrain: true adds hill shading and 3D relief. look.symbolStyle: badge, badge-line, icon. follow.pitch is 0-60. 'ops' edits stops, legs, via points and scenes: add_scene { index?, name?, copyLookFrom? } appends unless index is set; duplicate_scene, remove_scene, move_scene { id, index } take a scene id. Op indexes are 0-based; copyLookFrom is an id or 1-based position. A leg symbol alone sets its mode. Coordinates are [lng, lat]. The folder must be absolute.",
     input: z.strictObject({ folder, ...ProjectPatchSchema.shape }),
     async run({ folder, set, scene: ref, sceneSet, ops }) {
       // The scene is found before the patch runs, so a scene op that moves it can't change which scene the result names.

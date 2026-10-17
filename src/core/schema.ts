@@ -258,6 +258,16 @@ export const ProjectSchema = z
           message: `expected ${expectedLegs} legs for ${scene.stops.length} stops, got ${scene.legs.length}`,
         })
       }
+      if (scene.timing.length !== undefined) {
+        const fixed = scene.timing.holdStart + scene.timing.holdEnd + scene.stops.reduce((sum, s) => sum + s.pause, 0)
+        if (fixed > scene.timing.length) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['scenes', i, 'timing', 'length'],
+            message: `the holds and pauses add up to ${+fixed.toFixed(3)} s, more than the length of ${+scene.timing.length.toFixed(3)} s. Shorten them, or clear timing.length with null`,
+          })
+        }
+      }
       scene.legs.forEach((leg, j) => {
         if (leg.mode !== 'track') return
         if (leg.track === undefined) {

@@ -762,6 +762,20 @@ describe('track legs', () => {
     }
   })
 
+  test('an imported track more than half way round goes the way it was logged', () => {
+    // 200° east along 60° S, logged once a degree with each longitude in [-180, 180]. The ends, 170° and 10°, are only
+    // 160° apart going west.
+    const logged: LngLat[] = Array.from({ length: 201 }, (_, i) => [((170 + i + 180) % 360) - 180, -60])
+    const imported = trackToStops({ points: logged }, { stops: 'ends', minStayMinutes: 120 })
+    expect(imported.stops.map((s) => s.at)).toEqual([[170, -60], [10, -60]])
+    const { scene, seaPaths } = onTrack(imported.stops.map((s) => s.at), imported.points)
+    const leg = buildRoute(scene, seaPaths).legs[0]!
+    expect(leg.drawnAs).toBe('track')
+    expect(leg.path[0]).toEqual([170, -60])
+    expect(leg.path.at(-1)).toEqual([370, -60])
+    for (let k = 1; k < leg.path.length; k++) expect(leg.path[k]![0]).toBeGreaterThan(leg.path[k - 1]![0])
+  })
+
   test('a track leg across 180° is continuous', () => {
     const points: LngLat[] = []
     for (let k = 0; k <= 40; k++) {

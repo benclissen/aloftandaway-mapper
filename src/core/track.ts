@@ -35,6 +35,8 @@ export const SAME_PLACE_KM = 0.5
 
 /** Douglas-Peucker starts at this tolerance. */
 const THIN_KM = 0.01
+/** Thinning keeps a point at least every this many degrees of longitude, so no stored edge loses its way round. */
+const WIND_DEG = 90
 /** Once round the equator, in the same units as `haversineKm`. */
 const WORLD_KM = 2 * haversineKm([0, 0], [180, 0])
 
@@ -268,19 +270,34 @@ export function findStays(track: RecordedTrack, minStayMs: number): Stay[] {
  * `points` thinned by Douglas-Peucker in Mercator, with every index in `keep`, the first and the last always kept. The
  * tolerance starts at 10 m on the ground at the mean latitude and doubles until at most `max` points remain, or only
  * the kept ones do. Longitudes are unwrapped first, so a track across 180° thins as one line.
+ *
+ * The points are stored wrapped, and the route unwraps each one to the turn nearest the one before, so an edge of 180°
+ * or more would come back the wrong way round. So a point is also kept wherever the track has gone `WIND_DEG` (90°) of
+ * longitude from the last such point: every point between two of them is within 90° of the first, so any edge between
+ * them spans less than 180°.
  */
 export function thinTrack(points: LngLat[], keep: ReadonlySet<number>, max: number = MAX_TRACK_POINTS): LngLat[] {
   const n = points.length
   if (n <= 2) return points.slice()
-  const anchors = [...new Set([0, n - 1, ...[...keep].filter((i) => Number.isInteger(i) && i >= 0 && i < n)])].sort((a, b) => a - b)
   const xy: XY[] = []
+  const lngs: number[] = []
   let prev = points[0]![0]
   let latSum = 0
   for (const p of points) {
     prev = unwrapLng(prev, p[0])
+    lngs.push(prev)
     xy.push(toXY([prev, p[1]]))
     latSum += p[1]
   }
+  const winding: number[] = []
+  for (let from = 0, k = 1; k < n; k++) {
+    if (Math.abs(lngs[k]! - lngs[from]!) < WIND_DEG) continue
+    // The last point still within 90°, and this one too when the track went 90° or more in one step.
+    if (k - 1 > from) winding.push((from = k - 1))
+    if (Math.abs(lngs[k]! - lngs[from]!) >= WIND_DEG) winding.push((from = k))
+  }
+  const wanted = [0, n - 1, ...winding, ...[...keep].filter((i) => Number.isInteger(i) && i >= 0 && i < n)]
+  const anchors = [...new Set(wanted)].sort((a, b) => a - b)
   // One Mercator world unit is WORLD_KM × cos(latitude) on the ground.
   let tolerance = THIN_KM / (WORLD_KM * Math.cos(((latSum / n) * Math.PI) / 180))
   for (;;) {

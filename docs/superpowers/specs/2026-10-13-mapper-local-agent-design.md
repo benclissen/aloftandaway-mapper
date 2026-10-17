@@ -385,7 +385,9 @@ describe the layered export unless they say otherwise.
 - **Thinned once, at import.** Each stay collapses to one point at its centre.
   Douglas-Peucker then runs in Mercator from a 10 m tolerance, doubling until
   at most `MAX_TRACK_POINTS` (10,000) remain. The first point, the last point
-  and each stay's point are always kept.
+  and each stay's point are always kept, and so is a point at least every 90°
+  of longitude, so a track more than half way round the world still unwraps
+  the way it went.
 - **Stops come from where the track stood still** (`stops: 'stays'`, the
   default when every point has a time). A stay is a run of points within
   `STAY_RADIUS_KM` (1) of the run's first point that lasts at least

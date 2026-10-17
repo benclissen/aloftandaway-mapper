@@ -13,6 +13,7 @@ import {
   trackToStops,
   type LngLat,
   type RecordedTrack,
+  unwrapLng,
 } from '../../src/core/index.js'
 import { lcg, syntheticCruise } from '../fixtures/tracks.js'
 
@@ -421,5 +422,23 @@ describe('thinTrack', () => {
       return [lng > 180 ? lng - 360 : lng, -17]
     })
     expect(thinTrack(points, new Set())).toHaveLength(2)
+  })
+
+  it('a track more than half way round keeps its way round', () => {
+    // 200° east along 60° S, from 170° through 180° to 10°. A straight line in Mercator, so Douglas-Peucker alone keeps
+    // only the ends, and 170° to 10° unwraps the short way, 160° west.
+    const points: LngLat[] = Array.from({ length: 201 }, (_, i) => [((170 + i + 180) % 360) - 180, -60])
+    const out = thinTrack(points, new Set())
+    expect(out[0]).toBe(points[0])
+    expect(out.at(-1)).toBe(points[200])
+    let lng = out[0]![0]
+    for (const p of out.slice(1)) {
+      const next = unwrapLng(lng, p[0])
+      expect(next - lng).toBeGreaterThan(0)
+      expect(next - lng).toBeLessThan(180)
+      lng = next
+    }
+    expect(lng).toBe(370)
+    expect(out.length).toBeLessThan(10)
   })
 })

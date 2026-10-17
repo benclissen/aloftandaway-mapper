@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fromVectorTileJs, type VectorTileLike } from '@maplibre/vt-pbf'
@@ -133,6 +133,9 @@ async function tempDir(name: string): Promise<string> {
 }
 
 interface World {
+  /** The fake's tile folder for BUILD at zoom 12, and the store's: `<dir>/<x>/<y>.pbf`. */
+  served: string
+  cached: string
   fake: FakeTiles
   store: TileStore
   water: SeaWater
@@ -151,8 +154,11 @@ async function world(tiles: Map<string, Uint8Array>, opts: { maxRounds?: number 
   }
   const fake = await startFakeTiles(root)
   opened.push(() => fake.close())
-  const store = createTileStore({ cacheDir: await tempDir('cache'), upstream: fake.url, retryDelaysMs: [] })
+  const cacheDir = await tempDir('cache')
+  const store = createTileStore({ cacheDir, upstream: fake.url, retryDelaysMs: [] })
   return {
+    served: path.join(root, BUILD, String(WATER_ZOOM)),
+    cached: path.join(cacheDir, 'tiles', 'planet', BUILD, String(WATER_ZOOM)),
     fake,
     store,
     water: createSeaWater({ store, ...opts }),
@@ -376,6 +382,7 @@ describe('SeaWater.route', () => {
         clock += 125_000
         throw new Error('timed out')
       },
+      async forget() {},
       async planetBuild() {
         calls.build++
         if (tilesFail) return BUILD
@@ -419,6 +426,7 @@ describe('SeaWater.route', () => {
         }
         return empty
       },
+      async forget() {},
       async planetBuild() {
         builds++
         return BUILD
@@ -437,6 +445,29 @@ describe('SeaWater.route', () => {
     const next = await water.route(FROM, TO, [], coastBase, budget())
     expect(builds).toBe(before + 1)
     expect(next.water).toMatchObject({ build: BUILD })
+  })
+
+  it("a tile that doesn't decode is fetched again", async () => {
+    const good = waterBut(TX, TY, [ISLAND])
+    const w = await world(new Map([[`${TX}/${TY}`, Uint8Array.of(255)]]))
+    let clock = 0
+    const water = createSeaWater({ store: w.store, now: () => clock })
+    // The server sends bad bytes: the route is unverified, and the bytes aren't kept.
+    expect((await water.route(FROM, TO, [], coastBase, budget())).unverified).toBe('offline')
+    const cachedFile = path.join(w.cached, String(TX), `${TY}.pbf`)
+    await expect(stat(cachedFile)).rejects.toThrow()
+    // Once it sends good ones, the next due route verifies.
+    await writeFile(path.join(w.served, String(TX), `${TY}.pbf`), good)
+    clock += 61_000
+    const fixed = await water.route(FROM, TO, [], coastBase, budget())
+    expect(fixed.water).toMatchObject({ build: BUILD })
+    expect(densePath(fixed.path, 0.01).filter((p) => inRect(p, ISLAND))).toEqual([])
+    // Bad bytes on disk are dropped and fetched again in the same route.
+    await writeFile(cachedFile, Uint8Array.of(255))
+    const asks = (): number => w.tileRequests().filter((key) => key === `${TX}/${TY}`).length
+    const before = asks()
+    expect(await createSeaWater({ store: w.store }).route(FROM, TO, [], coastBase, budget())).toEqual(fixed)
+    expect(asks()).toBe(before + 1)
   })
 
   it('a tunnel is not water', async () => {

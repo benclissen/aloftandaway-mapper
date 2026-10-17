@@ -57,6 +57,7 @@ function counted(store: TileStore): { store: TileStore; stats: { ms: number; get
   return {
     stats,
     store: {
+      forget: (subpath) => store.forget(subpath),
       planetBuild: () => store.planetBuild(),
       async get(subpath, opts) {
         const start = performance.now()

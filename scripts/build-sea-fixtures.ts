@@ -65,7 +65,8 @@ function recording(store: TileStore): TileStore & { asked: Set<string> } {
   const asked = new Set<string>()
   return {
     asked,
-    planetBuild: () => store.planetBuild(),
+    forget: (subpath) => store.forget(subpath),
+      planetBuild: () => store.planetBuild(),
     async get(subpath, opts) {
       asked.add(subpath)
       return store.get(subpath, opts)

@@ -137,16 +137,22 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
 
   /**
    * One tile, fetched and decoded, or undefined when it couldn't be had; whether its bytes came from disk; and whether
-   * a failure was the network's (no answer after the store's retries, or a 5xx) rather than the tile's.
+   * a failure was the network's (no answer after the store's retries, or a 5xx) rather than the tile's. Bytes that
+   * don't decode are dropped from the disk cache, so a later fetch gets the tile again; from disk, that's tried now.
    */
-  async function fetchTile(build: string, key: string): Promise<{ tile: Decoded | undefined; fromCache: boolean; down: boolean }> {
+  async function fetchTile(
+    build: string,
+    key: string,
+    again = false,
+  ): Promise<{ tile: Decoded | undefined; fromCache: boolean; down: boolean }> {
     const fail = (e: unknown, down: boolean, fromCache = false) => {
       console.error(`Mapper sea router: could not read tile ${WATER_ZOOM}/${key} of ${build}:`, e)
       return { tile: undefined, fromCache, down }
     }
+    const subpath = `planet/${build}/${WATER_ZOOM}/${key}.pbf`
     let reply: TileReply
     try {
-      reply = await store.get(`planet/${build}/${WATER_ZOOM}/${key}.pbf`, { use: 'download' })
+      reply = await store.get(subpath, { use: 'download' })
     } catch (e) {
       return fail(e, true)
     }
@@ -155,6 +161,8 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
     try {
       return { tile: decodeWater(reply.body), fromCache: reply.fromCache, down: false }
     } catch (e) {
+      await store.forget(subpath)
+      if (reply.fromCache && !again) return fetchTile(build, key, true)
       return fail(e, false, reply.fromCache)
     }
   }

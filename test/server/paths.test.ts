@@ -427,6 +427,7 @@ test('a failed network is remembered for a minute', async () => {
       state.attempts++
       return { status: 204, body: Buffer.alloc(0), fromCache: false }
     },
+    async forget() {},
     async planetBuild() {
       state.attempts++
       if (!state.online) throw new Error('offline')

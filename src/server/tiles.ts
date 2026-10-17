@@ -72,6 +72,8 @@ export interface TileStore {
    * `download` (the sea router) 4, as OpenFreeMap asks. A path the proxy wouldn't serve answers 400.
    */
   get(subpath: string, opts?: { use: 'view' | 'download' }): Promise<TileReply>
+  /** Deletes a subpath's bytes from the disk cache, as when they turn out not to decode, so the next get fetches them. */
+  forget(subpath: string): Promise<void>
   /** The build segment of the planet TileJSON's tile URL, such as `20261011_080001_pt`. */
   planetBuild(): Promise<string>
 }
@@ -316,6 +318,12 @@ export function createTileStore(opts: TileStoreOptions): TileStore {
 
   return {
     get,
+    async forget(subpath) {
+      const segments = parseSubpath(subpath)
+      const file = segments && cachePath(segments)
+      if (!file) return
+      await rm(file, { force: true }).catch((e: unknown) => console.error(`Mapper tile cache: could not delete ${file}:`, e))
+    },
     async planetBuild() {
       const reply = await get('planet', { use: 'download' })
       if (reply.status !== 200) throw new Error(`Could not read the tile server's TileJSON (status ${reply.status}).`)

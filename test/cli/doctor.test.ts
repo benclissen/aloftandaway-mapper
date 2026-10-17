@@ -11,6 +11,7 @@ const healthy = (): Probes => ({
   freeBytes: async () => 200e9,
   fcpxmlDtd: async () => '/Applications/Final Cut Pro.app/FCPXMLv1_11.dtd',
   land: async () => ({ version: 'ne-10m-5.1.2', rings: 4000 }),
+  seaWater: async () => '20261011_080001_pt',
 })
 
 const find = (checks: Awaited<ReturnType<typeof runDoctor>>, name: string) => {
@@ -21,10 +22,10 @@ const find = (checks: Awaited<ReturnType<typeof runDoctor>>, name: string) => {
 
 test('healthy machine: every check is ok and the exit code is 0', async () => {
   const checks = await runDoctor(healthy())
-  expect(checks.map((c) => c.name)).toEqual(['Node', 'ffmpeg', 'ProRes encoder', 'H.264 encoder', 'Chrome', 'WebGL', 'Disk', 'FCPXML validation', 'Land data'])
+  expect(checks.map((c) => c.name)).toEqual(['Node', 'ffmpeg', 'ProRes encoder', 'H.264 encoder', 'Chrome', 'WebGL', 'Disk', 'FCPXML validation', 'Land data', 'Sea water'])
   expect(checks.every((c) => c.ok)).toBe(true)
   expect(doctorExitCode(checks)).toBe(0)
-  expect(formatChecks(checks)).toMatch(/All 9 checks passed/)
+  expect(formatChecks(checks)).toMatch(/All 10 checks passed/)
 })
 
 test('ffmpeg missing: error with the brew fix and exit code 1', async () => {
@@ -172,4 +173,31 @@ test('land data that will not load is an error with the reinstall fix', async ()
     fix: 'Reinstall Mapper, or run npm run build:land in its folder.',
   })
   expect(doctorExitCode(checks)).toBe(1)
+})
+
+test('sea water: the detail names the planet build', async () => {
+  const checks = await runDoctor(healthy())
+  expect(find(checks, 'Sea water')).toEqual({
+    name: 'Sea water',
+    ok: true,
+    level: 'warn',
+    detail: 'OpenFreeMap planet build 20261011_080001_pt',
+  })
+})
+
+test('sea water unreachable is a warning, not a failure', async () => {
+  const checks = await runDoctor({
+    ...healthy(),
+    seaWater: async () => {
+      throw new Error('connect ECONNREFUSED')
+    },
+  })
+  expect(find(checks, 'Sea water')).toMatchObject({
+    ok: false,
+    level: 'warn',
+    detail: "OpenFreeMap couldn't be reached; sea routes will be checked against Natural Earth only until it can.",
+  })
+  expect(doctorExitCode(checks)).toBe(0)
+  expect(formatChecks(checks)).toMatch(/^! Sea water +OpenFreeMap couldn't be reached/m)
+  expect(formatChecks(checks)).toMatch(/1 warning\./)
 })

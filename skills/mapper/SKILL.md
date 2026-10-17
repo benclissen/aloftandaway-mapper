@@ -60,12 +60,26 @@ page.
   `remove_via` deletes it.
 - Mark a stop or a via point `sharp` for a corner. Without it, the line curves
   through.
-- Sea legs route around land over the water. If validation reports
-  `sea-fallback`, the leg couldn't be routed (or the stop is more than 30 km
+- Sea legs route over the water the map draws, so a route stays off the islands
+  you can see. The first route through an archipelago fetches map tiles and can
+  take several seconds, up to about 20 s for a long one. After that it is
+  cached. If validation reports `sea-fallback`, the leg couldn't be routed (or the stop is more than 30 km
   from the sea, or Mapper's land data couldn't be loaded) and is drawn as a
   straight line. If it reports
   `sea-crosses-land`, a via point has pulled the route ashore. Add via points
-  over open water to fix either.
+  over open water to fix either. `sea-stop-far` means a stop is more than 2 km
+  from the water its route starts or ends in, so the line crosses land to reach
+  it. Put a ferry or cruise stop on the quay, not in the town centre, or add a
+  via point at the harbour mouth.
+  `sea-unverified` means the route wasn't checked against all of OpenFreeMap's
+  water. With no network, or too many tiles at once, it was checked against
+  Natural Earth's coarser land outlines only, and it may cross small islands.
+  Don't edit the leg for that, even if it also reports `sea-fallback`: once a
+  minute has passed, the next call (or a studio left open) routes it again, so
+  validate again then. If the route kept finding new islands, it was only
+  partly checked; add a via point over open water to steer it. Mapper tries
+  that one again only after a day. A render that uses an unverified route
+  finishes with a warning, and the studio's legs panel notes it.
 - Air legs follow the great circle, bowed toward the nearer pole so even short
   flights curve (at least 15% of their length). Via points split an air leg
   into arcs that meet at corners.
@@ -78,7 +92,8 @@ page.
   pitch, or 0). Missing `zoom` is the fitted zoom + 3, capped at the theme's
   maximum. `get_project` shows the resolved values as `resolvedFollow`.
 - Computed sea paths are cached in `<project>/.mapper/paths.json`. The cache is
-  safe to delete; Mapper recomputes the paths on the next read.
+  safe to delete; Mapper recomputes the paths on the next read, which fetches
+  map tiles again for any tiles no longer on disk.
 - Set the transport per leg with `update_leg`, for example
   `{ "op": "update_leg", "index": 1, "changes": { "symbol": "ferry" } }`. A
   symbol without a mode also sets that transport's usual mode (a ferry sails,
@@ -328,8 +343,9 @@ Some looks need more lines:
 - `satellite` adds `Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016), CC BY 4.0`.
 - Elevation data adds `Terrain: USGS, Copernicus EU-DEM, NOAA ETOPO1 and others`. That is
   `look.terrain: true`, and also `outdoor`, which always shades hills.
-- `blank` with terrain off needs no credit. It shows no map data (its sea routing data is
-  Natural Earth, which is public domain).
+- `blank` with terrain off and no sea legs needs no credit, since it shows no
+  map data. A `blank` scene with a sea leg needs the map credit above: the
+  route is drawn from OpenStreetMap water data.
 
 By default the short lines are burned into the bottom-right of the video, but
 the full text still belongs in the video description. If the project's

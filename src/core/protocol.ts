@@ -13,9 +13,16 @@ export const MAX_TERRAIN_SETTLES = 4
 
 /**
  * Messages the server sends to the studio. `origin` is the client id of the studio whose patch made this version, when
- * a studio made it; a version written any other way (the agent, the CLI) has none.
+ * a studio made it; a version written any other way (the agent, the CLI) has none. `PATHS_ORIGIN` marks a message
+ * about a version the studio already has, sent because its sea routes changed.
  */
 export type ServerMessage = { type: 'project'; project: Project; seaPaths: SeaPaths; origin?: string }
+
+/**
+ * The `origin` of a message that only updates sea routes: an unverified route that was checked again. Nothing in the
+ * project changed, so the studio keeps its undo history. No client may use it as its id.
+ */
+export const PATHS_ORIGIN = 'paths'
 
 /** The server's answer to a patch: the saved project, and the `updatedAt` of the version the patch was applied to. */
 export interface PatchResponse {

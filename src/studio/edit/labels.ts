@@ -1,4 +1,4 @@
-import type { LegMode, SymbolKind, ThemeId } from '../../core/index.js'
+import { UNVERIFIED_CAUSE, type LegMode, type SeaPath, type SymbolKind, type ThemeId } from '../../core/index.js'
 
 export const SYMBOL_LABELS: Record<SymbolKind, string> = {
   none: 'None',
@@ -39,4 +39,14 @@ export const THEME_NAMES: Record<ThemeId, string> = {
   satellite: 'Satellite',
   monochrome: 'Monochrome',
   blank: 'Blank',
+}
+
+/**
+ * The legs panel's note for a sea route that wasn't fully checked against the map's water. The network and the budget
+ * clear by themselves, and the server pushes the checked route; an unsettled route stays as it is.
+ */
+export function unverifiedNote(why: NonNullable<SeaPath['unverified']>): string {
+  return why === 'unsettled'
+    ? `Only partly checked: ${UNVERIFIED_CAUSE[why]}. It may cross small islands near the ones it found.`
+    : `Checked against Natural Earth only: ${UNVERIFIED_CAUSE[why]}. Mapper checks it again by itself.`
 }

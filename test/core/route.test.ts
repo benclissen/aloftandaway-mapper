@@ -445,7 +445,7 @@ describe('sea and air legs', () => {
     const { scene, cached, seaPaths } = greekSea()
     const leg = buildRoute(scene, seaPaths).legs[0]!
     expect(leg.drawnAs).toBe('sea')
-    expect(leg.sea).toEqual({ status: 'ok' })
+    expect(leg.sea).toEqual({ status: 'ok', stopGapKm: cached.stopGapKm })
     expect(leg.path).toHaveLength(cached.path.length)
     expect(leg.xy).toHaveLength(cached.path.length)
     expect(leg.cum).toHaveLength(cached.path.length)
@@ -533,7 +533,7 @@ describe('sea and air legs', () => {
     const crossesLand: LngLat = [24.5, 37.5]
     const leg = buildRoute(scene, { [key]: { ...cached, crossesLand } }).legs[0]!
     expect(leg.drawnAs).toBe('sea')
-    expect(leg.sea).toEqual({ status: 'ok', crossesLand })
+    expect(leg.sea).toEqual({ status: 'ok', crossesLand, stopGapKm: cached.stopGapKm })
   })
 
   test('draws an air leg as an arc with knots at its via points', () => {

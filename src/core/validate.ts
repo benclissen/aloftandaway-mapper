@@ -2,7 +2,7 @@ import { cameraAt, projectToLayout, resolveShots } from './camera.js'
 import { haversineKm } from './geo.js'
 import { buildRoute } from './route.js'
 import { THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
-import { NO_LAND_DATA, type SeaPaths } from './sea.js'
+import { NO_LAND_DATA, STOP_FAR_KM, UNVERIFIED_CAUSE, type SeaPaths } from './sea.js'
 import { signBox, signLift, signText } from './signs.js'
 import { buildTimeline, formatTimecode, legSeconds, SIGN_FADE_SECONDS } from './timeline.js'
 
@@ -88,6 +88,25 @@ function signOverlaps(
 
 /** A zoom for a message, rounded up to 2 decimals and trimmed, so a value over the maximum never reads as the maximum. */
 const zoomText = (zoom: number): string => String(Math.ceil(zoom * 100 - 1e-9) / 100)
+
+/** What to do about each reason a sea path is unverified. */
+const UNVERIFIED_FIX = {
+  offline: 'Reconnect to the internet; Mapper routes the leg again by itself within a minute. Then validate again.',
+  budget: 'Validate again in a minute; Mapper carries on where it stopped.',
+  unsettled: 'Add a via point over open water with insert_via to steer it.',
+} as const
+
+/**
+ * What to do about a sea leg that fell back. One the network or the budget left unverified is routed again by itself
+ * once the tiles can be had, so it only needs waiting for, not an edit.
+ */
+function fallbackFix(sea: { reason?: string; unverified?: keyof typeof UNVERIFIED_FIX }): string {
+  if (sea.reason === NO_LAND_DATA) {
+    return 'Reinstall Mapper, or run npm run build:land in its folder, then reopen the project. The leg is drawn as a straight line until then.'
+  }
+  if (sea.unverified === 'offline' || sea.unverified === 'budget') return `${UNVERIFIED_FIX[sea.unverified]} It is drawn as a straight line until then.`
+  return "Add via points over open water with insert_via to guide it, move the stop nearer the coast, or set the leg's mode to 'line' with update_leg. It is drawn as a straight line until then."
+}
 
 /** Checks one scene, the `index`th. Issue paths are relative to the scene. */
 function validateScene(
@@ -198,10 +217,7 @@ function validateScene(
             code: 'sea-fallback',
             message: `${legName(i)} has no sea route: ${leg.sea.reason ?? 'routing failed'}`,
             path: ['legs', i, 'mode'],
-            fix:
-              leg.sea.reason === NO_LAND_DATA
-                ? 'Reinstall Mapper, or run npm run build:land in its folder, then reopen the project. The leg is drawn as a straight line until then.'
-                : "Add via points over open water with insert_via to guide it, move the stop nearer the coast, or set the leg's mode to 'line' with update_leg. It is drawn as a straight line until then.",
+            fix: fallbackFix(leg.sea),
           })
         }
       })
@@ -216,6 +232,36 @@ function validateScene(
           })
         }
       })
+      route.legs.forEach((leg, i) => {
+        const why = leg.sea?.unverified
+        if (!why) return
+        warnings.push({
+          code: 'sea-unverified',
+          message:
+            why === 'unsettled'
+              ? `${legName(i)}'s sea route was only partly checked, because ${UNVERIFIED_CAUSE[why]}. It may cross small islands near the ones it found.`
+              : `${legName(i)}'s sea route was checked against Natural Earth only, because ${UNVERIFIED_CAUSE[why]}. It may cross small islands.`,
+          path: ['legs', i],
+          fix: UNVERIFIED_FIX[why],
+        })
+      })
+      // A stop can be the end of one sea leg and the start of the next: it is warned once, for the worse gap.
+      const far = new Map<number, { km: number; end: 'starts' | 'ends' }>()
+      route.legs.forEach((leg, i) => {
+        const gaps = leg.sea?.status === 'ok' ? leg.sea.stopGapKm : undefined
+        if (!gaps) return
+        ;([[i, gaps[0], 'starts'], [i + 1, gaps[1], 'ends']] as const).forEach(([stop, km, end]) => {
+          if (km > STOP_FAR_KM && km > (far.get(stop)?.km ?? 0)) far.set(stop, { km, end })
+        })
+      })
+      for (const [stop, { km, end }] of [...far].sort((a, b) => a[0] - b[0])) {
+        warnings.push({
+          code: 'sea-stop-far',
+          message: `${nameOf(stop)} is ${km.toFixed(1)} km from the water its sea route ${end} in, so the line crosses land to reach it.`,
+          path: ['stops', stop],
+          fix: 'Move the stop to the quay with update_stop, or add a via point at the harbour mouth with insert_via.',
+        })
+      }
     }
     warnings.push(...signOverlaps(scene, aspect, fps, route, nameOf))
   }

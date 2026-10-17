@@ -5,9 +5,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { WebSocket } from 'ws'
-import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, seaLegKey, STALE_BASE_MESSAGE, validateProject, type LandSource, type LngLat, type Project, type ServerMessage } from '../../src/core/index.js'
+import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, PATHS_ORIGIN, routeSea, seaLegKey, STALE_BASE_MESSAGE, validateProject, type LandSource, type LngLat, type Project, type ServerMessage, type ViaPoint } from '../../src/core/index.js'
 import { PROJECT_FILE, createProject, loadProject, mutateProject, saveProject } from '../../src/server/store.js'
-import { getServer, startServer, type MapperServer } from '../../src/server/server.js'
+import type { SeaWater } from '../../src/server/sea-water.js'
+import { getServer, startServer, type MapperServer, type ServerOptions } from '../../src/server/server.js'
 
 let tmp: string
 let studioDir: string
@@ -105,6 +106,26 @@ function rejection(url: string, headers: Record<string, string> = {}): Promise<n
   })
 }
 
+/**
+ * A sea router on the land alone, which says each leg was checked, or that it couldn't be while offline (or, with
+ * `why`, for that reason).
+ */
+function fakeWater(state: { online: boolean; why?: 'offline' | 'unsettled' } = { online: true }): SeaWater & { calls: number } {
+  const fake = {
+    calls: 0,
+    async route(from: LngLat, to: LngLat, via: ViaPoint[], base: LandSource) {
+      fake.calls++
+      const routed = routeSea(from, to, via, base)
+      const why = state.why ?? 'offline'
+      // Offline, the path is a little different, as a Natural Earth route would be.
+      return state.online
+        ? { ...routed, water: { build: 'b1', tiles: 1, rounds: 1 } }
+        : { ...routed, path: [...routed.path], stopGapKm: [1, 1] as [number, number], unverified: why, water: { unverified: why } }
+    },
+  }
+  return fake
+}
+
 beforeEach(async () => {
   tmp = await mkdtemp(path.join(os.tmpdir(), 'mapper-server-'))
   studioDir = path.join(tmp, 'studio')
@@ -129,7 +150,8 @@ beforeEach(async () => {
     ],
   })
   project = saved
-  server = await startServer({ studioDir, cacheDir: path.join(tmp, 'cache') })
+  // Never the real tile store: offline, its retries would hold up every sea route for the folder.
+  server = await startServer({ studioDir, cacheDir: path.join(tmp, 'cache'), water: fakeWater() })
   key = await server.registerProject(folder)
 })
 
@@ -448,6 +470,19 @@ describe('websocket sync', () => {
     ws.close()
   })
 
+  test("a client can't claim the paths origin", async () => {
+    const { ws, next } = await connect()
+    try {
+      await next()
+      await patchProject({ set: { name: 'Claimed' } }, { 'X-Mapper-Client': PATHS_ORIGIN })
+      const message = await next(1000)
+      expect(message.project.name).toBe('Claimed')
+      expect('origin' in message).toBe(false)
+    } finally {
+      ws.close()
+    }
+  })
+
   test('outside writes broadcast with no origin', async () => {
     const { ws, next } = await connect()
     await next()
@@ -536,8 +571,8 @@ describe('sea paths', () => {
   let seaKey: string
   let seaUrl: (suffix?: string) => string
 
-  async function seaServer(land: () => Promise<LandSource>): Promise<void> {
-    sea = await startServer({ studioDir, cacheDir: path.join(tmp, 'cache2'), land })
+  async function seaServer(land: () => Promise<LandSource>, extra: Partial<ServerOptions> = {}): Promise<void> {
+    sea = await startServer({ studioDir, cacheDir: path.join(tmp, 'cache2'), land, water: fakeWater(), ...extra })
     seaKey = await sea.registerProject(folder)
     seaUrl = (suffix = '') => `${sea.base}api/projects/${seaKey}${suffix}`
   }
@@ -589,10 +624,133 @@ describe('sea paths', () => {
     try {
       expect(((await next()) as any).seaPaths).toEqual({})
       await mutateProject(folder, withSeaLeg)
-      const message = (await next()) as any
+      // The leg is routed before the message goes out, which can take over a second while the whole suite runs.
+      const message = (await next(5000)) as any
       expect(message.seaPaths[legKey].status).toBe('ok')
     } finally {
       ws.close()
+    }
+  })
+
+  test('an open studio gets the upgraded path', async () => {
+    // Only the sea server watches the folder, so no other server rewrites its path cache.
+    await server.close()
+    await saveProject(folder, withSeaLeg(await loadProject(folder)))
+    const state = { online: false }
+    const water = fakeWater(state)
+    let clock = 0
+    await seaServer(async () => island(), { water, retryMs: 40, now: () => clock })
+    const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
+    const { ws, next, messages } = await connect(url)
+    try {
+      const first = (await next()) as any
+      expect(first.seaPaths[legKey].unverified).toBe('offline')
+      // Within the minute the cache keeps the unverified path, and nothing changes, so nothing is sent.
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      expect(water.calls).toBe(1)
+      expect(messages).toEqual([])
+      // Back online, and the minute is up: the next retry routes it again and pushes the new path.
+      state.online = true
+      clock = 61_000
+      const upgraded = (await next(2000)) as any
+      expect(upgraded.type).toBe('project')
+      expect(upgraded.project.updatedAt).toBe(first.project.updatedAt)
+      expect(upgraded.seaPaths[legKey].unverified).toBeUndefined()
+      expect(upgraded.seaPaths[legKey].status).toBe('ok')
+      // A paths-only update names itself, so the studio keeps its undo history.
+      expect(upgraded.origin).toBe(PATHS_ORIGIN)
+      expect(water.calls).toBe(2)
+      // Verified now, so the retries stop.
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      expect(water.calls).toBe(2)
+      expect(messages).toEqual([])
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('the retry timer stops when the studio closes', async () => {
+    // Only the sea server watches the folder, so no other server rewrites its path cache.
+    await server.close()
+    await saveProject(folder, withSeaLeg(await loadProject(folder)))
+    const water = fakeWater({ online: false })
+    // Each call is a minute after the last, so every retry routes the leg again.
+    let clock = 0
+    await seaServer(async () => island(), { water, retryMs: 20, now: () => (clock += 61_000) })
+    const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+    const first = await connect(url)
+    await first.next()
+    await wait(200)
+    expect(water.calls).toBeGreaterThan(2)
+    // Offline each time, with the same path, so nothing new was sent.
+    expect(first.messages).toEqual([])
+    await new Promise<void>((resolve) => {
+      first.ws.once('close', () => resolve())
+      first.ws.close()
+    })
+    await wait(60)
+    const settled = water.calls
+    await wait(200)
+    expect(water.calls).toBe(settled)
+
+    // A new studio starts it again, and closing the server stops it.
+    const second = await connect(url)
+    await second.next()
+    await wait(100)
+    expect(water.calls).toBeGreaterThan(settled + 1)
+    await sea.close()
+    const closed = water.calls
+    await wait(200)
+    expect(water.calls).toBe(closed)
+  })
+
+  test("an open studio showing only unsettled routes doesn't keep retrying", async () => {
+    // Only the sea server watches the folder, so no other server rewrites its path cache.
+    await server.close()
+    await saveProject(folder, withSeaLeg(await loadProject(folder)))
+    const water = fakeWater({ online: false, why: 'unsettled' })
+    // Each call is more than a day after the last, so any retry would route the leg again.
+    let clock = 0
+    await seaServer(async () => island(), { water, retryMs: 20, now: () => (clock += 25 * 60 * 60 * 1000) })
+    const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
+    const { ws, next, messages } = await connect(url)
+    try {
+      expect(((await next()) as any).seaPaths[legKey].unverified).toBe('unsettled')
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      expect(water.calls).toBe(1)
+      expect(messages).toEqual([])
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('a paths-only update goes only to studios still showing the old path', async () => {
+    // Only the sea server watches the folder, so no other server rewrites its path cache.
+    await server.close()
+    await saveProject(folder, withSeaLeg(await loadProject(folder)))
+    const state = { online: false }
+    let clock = 0
+    await seaServer(async () => island(), { water: fakeWater(state), retryMs: 40, now: () => clock })
+    const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
+    const old = await connect(url)
+    try {
+      expect(((await old.next()) as any).seaPaths[legKey].unverified).toBe('offline')
+      state.online = true
+      clock = 61_000
+      // A studio opened now gets the new path straight away, and doesn't hear it again.
+      const fresh = await connect(url)
+      try {
+        expect(((await fresh.next()) as any).seaPaths[legKey].unverified).toBeUndefined()
+        expect(((await old.next(2000)) as any).seaPaths[legKey].unverified).toBeUndefined()
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        expect(fresh.messages).toEqual([])
+      } finally {
+        fresh.ws.close()
+      }
+    } finally {
+      old.ws.close()
     }
   })
 

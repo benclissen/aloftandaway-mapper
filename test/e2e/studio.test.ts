@@ -1,14 +1,27 @@
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import type { Map as MapLibreMap } from 'maplibre-gl'
 import type { Page, Route, WebSocketRoute } from 'playwright'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { applyPatch, buildRoute, buildTimeline, formatTimecode, pointAt, type LngLat, type Project, type Scene } from '../../src/core/index.js'
+import { resolveSeaPaths } from '../../src/server/paths.js'
+import { createSeaWater } from '../../src/server/sea-water.js'
 import { loadProject, mutateProject } from '../../src/server/store.js'
+import { createTileStore } from '../../src/server/tiles.js'
 import { greekIslands, pacific, projectWithScenes, sceneOf, twoScenes } from '../fixtures/projects.js'
 import { closeAll, flatTerrainTile, openStudioPage } from './helpers.js'
+import { startSeaFixtures, type SeaFixtures } from './sea-fixtures.js'
 
-afterAll(closeAll)
+/** Serves the committed water tiles, so a sea leg here doesn't reach OpenFreeMap. Started before the studio server is. */
+let seaFixtures: SeaFixtures
+beforeAll(async () => {
+  seaFixtures = await startSeaFixtures()
+})
+afterAll(async () => {
+  await closeAll()
+  await seaFixtures?.close()
+})
 
 const VIEWPORT = { width: 1280, height: 800 }
 
@@ -504,6 +517,28 @@ describe('legs panel and style picker', () => {
     await page.waitForSelector('[data-testid="stage"][data-selected-leg="2"]')
     expect(await page.getByTestId('leg-row-2').getAttribute('aria-selected')).toBe('true')
   })
+})
+
+test('the legs panel says when a sea route was checked offline', async () => {
+  const project = wholeRoute(greekIslands())
+  sceneOf(project).legs[0]!.mode = 'sea'
+  // The leg is routed with OpenFreeMap out of reach, as it would be with no network, before the studio opens on it.
+  const cache = await mkdtemp(path.join(os.tmpdir(), 'mapper-offline-tiles-'))
+  const offline = createSeaWater({ store: createTileStore({ cacheDir: cache, upstream: 'http://127.0.0.1:9', retryDelaysMs: [] }) })
+  const studio = await openStudioPage(project, VIEWPORT, async (_page, folder) => {
+    const paths = await resolveSeaPaths(folder, project, { water: offline })
+    expect(Object.values(paths).map((p) => p.unverified)).toEqual(['offline'])
+  })
+  try {
+    const note = studio.page.getByTestId('leg-unverified-0')
+    await note.waitFor({ timeout: 10_000 })
+    expect(await note.textContent()).toBe("Checked against Natural Earth only: OpenFreeMap couldn't be reached. Mapper checks it again by itself.")
+    // Only the sea leg has one.
+    expect(await studio.page.locator('[data-testid^="leg-unverified-"]').count()).toBe(1)
+  } finally {
+    await studio.close()
+    await rm(cache, { recursive: true, force: true })
+  }
 })
 
 describe('undo and redo', () => {

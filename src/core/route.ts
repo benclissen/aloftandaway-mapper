@@ -2,7 +2,7 @@ import { airPath } from './air.js'
 import { dist, lerp, sampleChain, type Control } from './curve.js'
 import { toLngLat, toXY, unwrapLng, headingDeg, type XY } from './geo.js'
 import type { LegMode, LngLat, Scene, SymbolKind } from './schema.js'
-import { seaLegKey, type SeaPaths } from './sea.js'
+import { seaLegKey, type SeaPath, type SeaPaths } from './sea.js'
 
 export interface RouteLeg {
   mode: LegMode
@@ -21,9 +21,16 @@ export interface RouteLeg {
   knots: number[]
   /**
    * On every sea leg. `pending` until its sea path has been routed; `fallback` when routing failed, with the
-   * reason. Both are drawn as lines. `crossesLand` is where an `ok` path first crosses land.
+   * reason. Both are drawn as lines. `crossesLand` is where an `ok` path first crosses land; `unverified` and
+   * `stopGapKm` are the path's own (see `SeaPath`).
    */
-  sea?: { status: 'ok' | 'fallback' | 'pending'; reason?: string; crossesLand?: LngLat }
+  sea?: {
+    status: 'ok' | 'fallback' | 'pending'
+    reason?: string
+    crossesLand?: LngLat
+    unverified?: SeaPath['unverified']
+    stopGapKm?: SeaPath['stopGapKm']
+  }
 }
 
 export interface Route {
@@ -138,7 +145,11 @@ export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
     if (cached?.status !== 'ok') {
       const leg = lineChain(i, i)[0]!
       leg.sea = cached
-        ? { status: 'fallback', ...(cached.reason !== undefined && { reason: cached.reason }) }
+        ? {
+            status: 'fallback',
+            ...(cached.reason !== undefined && { reason: cached.reason }),
+            ...(cached.unverified && { unverified: cached.unverified }),
+          }
         : { status: 'pending' }
       return leg
     }
@@ -151,7 +162,12 @@ export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
       path[k] = j === 0 ? start : [nearestTurn(c[0], path[k]![0]), c[1]]
     })
     const leg = finishLeg('sea', 'sea', path, path.map(toXY), [...cached.knots])
-    leg.sea = { status: 'ok', ...(cached.crossesLand && { crossesLand: cached.crossesLand }) }
+    leg.sea = {
+      status: 'ok',
+      ...(cached.crossesLand && { crossesLand: cached.crossesLand }),
+      ...(cached.unverified && { unverified: cached.unverified }),
+      ...(cached.stopGapKm && { stopGapKm: cached.stopGapKm }),
+    }
     return leg
   }
 

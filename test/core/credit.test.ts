@@ -9,7 +9,7 @@ import {
   sceneCredit,
   usesElevation,
 } from '../../src/core/index.js'
-import { emptyProject, sceneOf } from '../fixtures/projects.js'
+import { emptyProject, greekIslands, sceneOf } from '../fixtures/projects.js'
 
 function sceneWith(look: { theme?: string; terrain?: boolean }) {
   const scene = structuredClone(sceneOf(emptyProject()))
@@ -36,6 +36,29 @@ describe('map credit per scene', () => {
   test('blank has no credit', () => {
     expect(sceneCredit(sceneWith({ theme: 'blank', terrain: false }))).toEqual([])
     expect(sceneCredit(sceneWith({ theme: 'blank', terrain: true }))).toEqual([TERRAIN_CREDIT])
+  })
+
+  /** A blank scene of three stops whose legs have the given modes. */
+  const blankLegs = (terrain: boolean, ...modes: ('sea' | 'air' | 'line')[]) => {
+    const scene = structuredClone(sceneOf(greekIslands()))
+    Object.assign(scene.look, { theme: 'blank', terrain })
+    modes.forEach((mode, i) => (scene.legs[i] = { ...scene.legs[i]!, mode }))
+    return scene
+  }
+
+  test('a blank scene with a sea leg carries the map credit', () => {
+    const scene = blankLegs(false, 'air', 'sea')
+    expect(sceneCredit(scene)).toEqual([MAP_CREDIT])
+    expect(sceneCredit(scene, 'written')).toEqual([MAP_CREDIT])
+    const withTerrain = blankLegs(true, 'sea', 'air')
+    expect(sceneCredit(withTerrain)).toEqual([MAP_CREDIT, TERRAIN_CREDIT])
+    expect(projectCredit({ scenes: [scene] }, 'written')).toEqual([MAP_CREDIT])
+  })
+
+  test('a blank scene without a sea leg still has no credit', () => {
+    const scene = blankLegs(false, 'air', 'line')
+    expect(sceneCredit(scene)).toEqual([])
+    expect(sceneCredit(scene, 'written')).toEqual([])
   })
 
   test('outdoor shades hills from elevation data, so it credits terrain even with terrain off', () => {

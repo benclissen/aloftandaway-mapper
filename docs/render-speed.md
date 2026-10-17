@@ -176,3 +176,43 @@ not (largest differences outside the credit box 0, 4 and 2).
 
 The CPU overlay wasn't run for 1,000 loads, since there was nothing for it to fix. If the glitch shows up again,
 rerun with `--cold-every 1`, first on the default overlay and then with `--cpu-overlay`.
+
+## Sea routing (Stage 8, Task 9)
+
+`npm run bench:sea` routes five sea legs through `SeaWater` against live OpenFreeMap and times each three ways. Cold
+starts from an empty temp cache directory, so every tile is fetched. Disk uses the same directory with a new tile
+store and a new `SeaWater`, so tiles come off disk and are decoded again. Memory runs the same `SeaWater` a second
+time, with its decoded tiles. Every route gets its own cache directory and a fresh budget of 2,500 tiles, and the
+legs have no via points. Add `-- --profile` for a column counting the tile `get` calls and the time spent in them,
+summed over the up to 4 requests in flight. Without network it prints one line and exits 0.
+
+Run on 2026-10-17: Apple M6, macOS 27.0.1, Node 26.11.1. Every route came back verified.
+
+| Route | Pass | Tiles | Rounds | Seconds | Fetched | Tile gets (n, summed s) |
+|---|---|---|---|---|---|---|
+| Stockholm–Sandhamn | cold | 34 | 1 | 0.49 | 34 | 34, 0.83 |
+| Stockholm–Sandhamn | disk | 34 | 1 | 0.20 | 0 | 34, 0.05 |
+| Stockholm–Sandhamn | memory | 34 | 1 | 0.17 | 0 | 0, 0.00 |
+| Stockholm–Mariehamn | cold | 144 | 4 | 2.00 | 144 | 144, 3.84 |
+| Stockholm–Mariehamn | disk | 144 | 4 | 0.99 | 0 | 144, 0.18 |
+| Stockholm–Mariehamn | memory | 144 | 4 | 0.89 | 0 | 0, 0.00 |
+| Stockholm–Helsinki | cold | 485 | 7 | 12.58 | 485 | 485, 44.27 |
+| Stockholm–Helsinki | disk | 485 | 7 | 1.07 | 0 | 485, 0.34 |
+| Stockholm–Helsinki | memory | 485 | 7 | 0.95 | 0 | 0, 0.00 |
+| Bergen–Geiranger | cold | 302 | 4 | 8.91 | 302 | 302, 32.81 |
+| Bergen–Geiranger | disk | 302 | 4 | 0.48 | 0 | 302, 0.25 |
+| Bergen–Geiranger | memory | 302 | 4 | 0.39 | 0 | 0, 0.00 |
+| Piraeus–Mykonos | cold | 54 | 2 | 0.50 | 54 | 54, 1.15 |
+| Piraeus–Mykonos | disk | 54 | 2 | 0.19 | 0 | 54, 0.03 |
+| Piraeus–Mykonos | memory | 54 | 2 | 0.18 | 0 | 0, 0.00 |
+
+**Budgets.** From disk, Stockholm–Mariehamn took 0.99 s (budget 6 s) and Stockholm–Helsinki 1.07 s (budget 10 s), so
+neither needed profiling. The router parameters were left as they are.
+
+**Where the time goes.** From disk the tile reads add up to 0.34 s of the 1.07 s for Helsinki, so most of a warm
+route is routing and decoding, and the memory pass (0.95 s) shows decoding is only about a tenth of it. Cold is
+bound by the network: 485 tiles took 44 s of summed request time over 4 requests at once, about 11 s of wall time.
+Rounds cost little on top of that, since each round fetches only the tiles the new route needs.
+
+**Memory.** A decoded tile is about 49 KB (32 KB of pixel bits and 17 KB of block sums). `SeaWater` keeps at most
+1,500 of them, so its tile memory tops out at about 73 MB.

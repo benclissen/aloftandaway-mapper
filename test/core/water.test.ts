@@ -10,10 +10,13 @@ import {
   landIndex,
   nearestByRegion,
   snapToWater,
+  tileLand,
   toXY,
   waterGrid,
   waterGridAt,
+  withTiles,
   type Box,
+  type LandSource,
   type LngLat,
   type WaterGrid,
   type XY,
@@ -184,6 +187,27 @@ describe('water grid', () => {
     expect(cellAt(g, [g.x0, g.y0 + g.rows * g.cell + g.cell])).toBeUndefined()
     const i = 5 * g.cols + 7
     expect(cellAt(g, cellCentre(g, i))).toBe(i)
+  })
+
+  it('with no tiles the grid is exactly today\'s', () => {
+    const none = (land: LandSource) => withTiles(land, tileLand(new Map()), `${land.version}+none`)
+    const shipped = landIndex(decodeLand(readFileSync(new URL('../../data/land-10m.bin', import.meta.url))))
+    const [, minY] = toXY([0, -15])
+    const [, maxY] = toXY([0, -20])
+    const cases: [LandSource, Box, number][] = [
+      [source([square(20, 30, 21, 31)]), boxOf(18.5, 28.5, 22.5, 32.5), 256],
+      [source([square(19, 29, 23, 33), square(20, 30, 22, 32)]), boxOf(18, 28, 24, 34), 256],
+      [shipped, { minX: 0.99, minY, maxX: 1.02, maxY }, 512],
+    ]
+    for (const [land, box, side] of cases) {
+      const today = waterGrid(land, box, side)
+      const tiled = waterGrid(none(land), box, side)
+      expect(tiled.land).toEqual(today.land)
+      expect(tiled.solid).toEqual(today.solid)
+      expect(tiled.cost).toEqual(today.cost)
+      const frame = { x0: today.x0, y0: today.y0, cell: today.cell, cols: today.cols, rows: today.rows }
+      expect(waterGridAt(none(land), frame).land).toEqual(today.land)
+    }
   })
 
   it('works on unwrapped boxes', () => {

@@ -12,7 +12,7 @@ or copy.
 
 ## Status
 
-Stages 1 to 6 (agent-driven MVP, Final Cut export, route editing, routes, look, scenes) built. What works today:
+Stages 1 to 8 (agent-driven MVP, Final Cut export, route editing, routes, look, scenes, a fix pass, sea routes against OpenFreeMap water) built. What works today:
 
 - An MCP server and CLI. The agent creates a project, sets stops, validates,
   previews, opens the studio and renders.
@@ -66,16 +66,34 @@ Cursor.
 
 ## Routes
 
-Sea legs route around land over the water, using Natural Earth 1:10m land
-outlines (public domain) shipped in `data/land-10m.bin`. A stop more than
-30 km from the sea, or a leg with no route found, is drawn as a straight line
-with a `sea-fallback` warning. Via points are forced waypoints: a route pulled
-ashore by one gets a `sea-crosses-land` warning. Air legs follow the
-great circle, bowed toward the nearer pole so even short flights curve (at
-least 15% of their length). The follow camera keeps the moving
-symbol in view, with its zoom, orientation and look-ahead set in the scene's
-camera. `import_gpx` turns a local GPX file into stops and via points. Land
-data credit: [Natural Earth](https://www.naturalearthdata.com/), see
+Sea legs route around land over the water the map draws. Near the coast,
+Mapper reads the water from the same OpenFreeMap tiles the map is drawn from,
+so a route stays off every island you can see. On the open sea, where no tile
+is needed, it uses Natural Earth 1:10m land outlines (public domain), shipped
+in `data/land-10m.bin`. The first route through an archipelago fetches map
+tiles, which takes several seconds (Stockholm to Helsinki took 12.6 s, and a
+slow connection can add more). After that the route is cached in the project,
+and the tiles come from disk if it is ever routed again, in about a second. Numbers are in
+[docs/render-speed.md](docs/render-speed.md#sea-routing-stage-8-task-9).
+
+- Offline, a route is checked against Natural Earth only. It is flagged
+  `sea-unverified` and may cross small islands, and the studio's legs panel
+  notes it. Once a minute has passed, the next call, or a studio left open,
+  routes it again.
+- A stop more than 30 km from the sea, or a leg with no route found, is drawn
+  as a straight line with a `sea-fallback` warning. A stop more than 2 km from
+  the water its route starts or ends in gets `sea-stop-far`: put the stop on
+  the quay, not in the town centre.
+- Via points are forced waypoints: a route pulled ashore by one gets a
+  `sea-crosses-land` warning.
+- A `blank` scene with a sea leg carries the map credit, since the route is
+  drawn from OpenStreetMap data.
+
+Air legs follow the great circle, bowed toward the nearer pole so even short
+flights curve (at least 15% of their length). The follow camera keeps the
+moving symbol in view, with its zoom, orientation and look-ahead set in the
+scene's camera. `import_gpx` turns a local GPX file into stops and via points.
+Land data credit: [Natural Earth](https://www.naturalearthdata.com/), see
 [data/README.md](data/README.md).
 
 ## Look

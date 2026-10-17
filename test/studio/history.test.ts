@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import { applyPatch, type PatchResponse, type Project, type ProjectPatch } from '../../src/core/index.js'
-import { EditHistory, EditQueue, OutsideWrites, redoPatch, scenesAround } from '../../src/studio/edit/history.js'
+import { applyPatch, PATHS_ORIGIN, type PatchResponse, type Project, type ProjectPatch } from '../../src/core/index.js'
+import { EditHistory, EditQueue, OutsideWrites, pathsUpdate, redoPatch, scenesAround } from '../../src/studio/edit/history.js'
 import { greekIslands, twoScenes } from '../fixtures/projects.js'
 
 const SCENE = 'a0000000-0000-4000-8000-000000000001'
@@ -203,5 +203,28 @@ describe('OutsideWrites', () => {
     outside.saw(T2)
     outside.saw(T0)
     expect(outside.since(T1)).toBe(true)
+  })
+})
+
+describe('pathsUpdate', () => {
+  const at = (updatedAt: string): Project => ({ ...greekIslands(), updatedAt })
+  const shown = at('2026-01-01T00:00:01.000Z')
+
+  test('new routes for the version on screen only change the routes', () => {
+    expect(pathsUpdate(PATHS_ORIGIN, at(shown.updatedAt), shown)).toBe('paths')
+  })
+
+  test('routes of a version already replaced are dropped', () => {
+    expect(pathsUpdate(PATHS_ORIGIN, at('2026-01-01T00:00:00.000Z'), shown)).toBe('drop')
+  })
+
+  test('a newer version, or nothing on screen yet, is an ordinary message', () => {
+    expect(pathsUpdate(PATHS_ORIGIN, at('2026-01-01T00:00:02.000Z'), shown)).toBe('project')
+    expect(pathsUpdate(PATHS_ORIGIN, shown, undefined)).toBe('project')
+  })
+
+  test('other origins are ordinary messages, even for the same version', () => {
+    expect(pathsUpdate(undefined, at(shown.updatedAt), shown)).toBe('project')
+    expect(pathsUpdate('abc', at(shown.updatedAt), shown)).toBe('project')
   })
 })

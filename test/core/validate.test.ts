@@ -334,10 +334,144 @@ describe('validateProject', () => {
       ])
     })
 
+    describe('sea-unverified', () => {
+      const unverifiedFor = (unverified: 'offline' | 'budget' | 'unsettled') => {
+        const { project, key, from, to } = seaProject()
+        const seaPaths: SeaPaths = { [key]: { status: 'ok', path: [from, to], knots: [0, 1], unverified } }
+        return validateProject(project, { seaPaths }).warnings.filter((w) => w.code === 'sea-unverified')
+      }
+
+      test.each([
+        [
+          'offline',
+          "was checked against Natural Earth only, because OpenFreeMap couldn't be reached. It may cross small islands.",
+          'Reconnect to the internet; Mapper routes the leg again by itself within a minute. Then validate again.',
+        ],
+        [
+          'budget',
+          'was checked against Natural Earth only, because the project needed more map tiles at once than Mapper fetches in one go. It may cross small islands.',
+          'Validate again in a minute; Mapper carries on where it stopped.',
+        ],
+        [
+          'unsettled',
+          'was only partly checked, because it kept finding new islands. It may cross small islands near the ones it found.',
+          'Add a via point over open water with insert_via to steer it.',
+        ],
+      ] as const)('warns for %s', (reason, says, fix) => {
+        expect(unverifiedFor(reason)).toEqual([
+          {
+            code: 'sea-unverified',
+            message: `Leg 1 (Piraeus → Mykonos)'s sea route ${says}`,
+            path: ['scenes', 0, 'legs', 0],
+            fix,
+          },
+        ])
+      })
+
+      test('a leg that fell back while unverified says to wait, not to edit', () => {
+        const { project, key } = seaProject()
+        const fellBack = (unverified: 'offline' | 'budget' | 'unsettled') =>
+          validateProject(project, {
+            seaPaths: { [key]: { status: 'fallback', reason: 'No sea route found between Piraeus and Mykonos', path: [], knots: [], unverified } },
+          }).warnings.filter((w) => w.code === 'sea-fallback' || w.code === 'sea-unverified')
+        expect(fellBack('offline')).toEqual([
+          {
+            code: 'sea-fallback',
+            message: 'Leg 1 (Piraeus → Mykonos) has no sea route: No sea route found between Piraeus and Mykonos',
+            path: ['scenes', 0, 'legs', 0, 'mode'],
+            fix: 'Reconnect to the internet; Mapper routes the leg again by itself within a minute. Then validate again. It is drawn as a straight line until then.',
+          },
+          {
+            code: 'sea-unverified',
+            message: "Leg 1 (Piraeus → Mykonos)'s sea route was checked against Natural Earth only, because OpenFreeMap couldn't be reached. It may cross small islands.",
+            path: ['scenes', 0, 'legs', 0],
+            fix: 'Reconnect to the internet; Mapper routes the leg again by itself within a minute. Then validate again.',
+          },
+        ])
+        const budget = fellBack('budget')
+        expect(budget.map((w) => w.code)).toEqual(['sea-fallback', 'sea-unverified'])
+        expect(budget[0]!.fix).toBe('Validate again in a minute; Mapper carries on where it stopped. It is drawn as a straight line until then.')
+        // An unsettled leg won't settle by waiting, so the fallback still says how to steer it.
+        const unsettled = fellBack('unsettled')
+        expect(unsettled.map((w) => w.code)).toEqual(['sea-fallback', 'sea-unverified'])
+        expect(unsettled[0]!.fix).toContain('insert_via')
+      })
+
+      test('names the leg by its number', () => {
+        const project = greekIslands()
+        const scene = sceneOf(project)
+        scene.legs[1] = { ...scene.legs[1]!, mode: 'sea' }
+        const key = seaLegKey(scene.stops[1]!.at, scene.stops[2]!.at, [])
+        const seaPaths: SeaPaths = { [key]: { status: 'ok', path: [scene.stops[1]!.at, scene.stops[2]!.at], knots: [0, 1], unverified: 'offline' } }
+        const [found] = validateProject(project, { seaPaths }).warnings.filter((w) => w.code === 'sea-unverified')
+        expect(found?.message.startsWith("Leg 2 (")).toBe(true)
+        expect(found?.path).toEqual(['scenes', 0, 'legs', 1])
+      })
+
+      test('a verified path has none', () => {
+        const { project, key, from, to } = seaProject()
+        const seaPaths: SeaPaths = { [key]: { status: 'ok', path: [from, to], knots: [0, 1] } }
+        expect(codes(validateProject(project, { seaPaths }).warnings)).not.toContain('sea-unverified')
+      })
+    })
+
+    describe('sea-stop-far', () => {
+      const withGap = (stopGapKm?: [number, number]) => {
+        const { project, key, from, to } = seaProject()
+        const seaPaths: SeaPaths = { [key]: { status: 'ok', path: [from, to], knots: [0, 1], ...(stopGapKm && { stopGapKm }) } }
+        return validateProject(project, { seaPaths }).warnings.filter((w) => w.code === 'sea-stop-far')
+      }
+      const fix = 'Move the stop to the quay with update_stop, or add a via point at the harbour mouth with insert_via.'
+
+      test('warns for a start stop more than 2 km from its water', () => {
+        expect(withGap([4.23, 0])).toEqual([
+          {
+            code: 'sea-stop-far',
+            message: 'Piraeus is 4.2 km from the water its sea route starts in, so the line crosses land to reach it.',
+            path: ['scenes', 0, 'stops', 0],
+            fix,
+          },
+        ])
+      })
+
+      test('warns for an end stop, with the route ending in the water', () => {
+        expect(withGap([0, 12])).toEqual([
+          expect.objectContaining({
+            message: 'Mykonos is 12.0 km from the water its sea route ends in, so the line crosses land to reach it.',
+            path: ['scenes', 0, 'stops', 1],
+          }),
+        ])
+      })
+
+      test('2 km is allowed, and no gap means none', () => {
+        expect(withGap([2, 2])).toEqual([])
+        expect(withGap([0, 0])).toEqual([])
+        expect(withGap(undefined)).toEqual([])
+      })
+
+      test('a stop far from two adjacent legs is warned once, for the worse gap', () => {
+        const project = greekIslands()
+        const scene = sceneOf(project)
+        scene.legs[0] = { ...scene.legs[0]!, mode: 'sea' }
+        scene.legs[1] = { ...scene.legs[1]!, mode: 'sea' }
+        const [a, b, c] = scene.stops.map((s) => s.at)
+        const seaPaths: SeaPaths = {
+          [seaLegKey(a!, b!, [])]: { status: 'ok', path: [a!, b!], knots: [0, 1], stopGapKm: [0, 3] },
+          [seaLegKey(b!, c!, [])]: { status: 'ok', path: [b!, c!], knots: [0, 1], stopGapKm: [5, 0] },
+        }
+        const found = validateProject(project, { seaPaths }).warnings.filter((w) => w.code === 'sea-stop-far')
+        expect(found).toHaveLength(1)
+        expect(found[0]!.path).toEqual(['scenes', 0, 'stops', 1])
+        expect(found[0]!.message).toBe(`${scene.stops[1]!.name} is 5.0 km from the water its sea route starts in, so the line crosses land to reach it.`)
+      })
+    })
+
     test('skips sea checks without seaPaths', () => {
       const { project } = seaProject()
       expect(codes(validateProject(project).warnings)).not.toContain('sea-fallback')
       expect(codes(validateProject(project).warnings)).not.toContain('sea-crosses-land')
+      expect(codes(validateProject(project).warnings)).not.toContain('sea-unverified')
+      expect(codes(validateProject(project).warnings)).not.toContain('sea-stop-far')
     })
 
     test('warns once when two signs overlap', () => {

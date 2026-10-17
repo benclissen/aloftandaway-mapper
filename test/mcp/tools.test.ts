@@ -4,7 +4,7 @@ import path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { createMcpServer } from '../../src/mcp/server.js'
 import { creditLine, doneSummary, leftover, statusSummary, TOOLS } from '../../src/mcp/tools.js'
 import { startRenderJob, type RenderStatus } from '../../src/render/jobs.js'
@@ -22,6 +22,24 @@ vi.mock('../../src/render/preview.js', async (importOriginal) => ({
   previewFrame: vi.fn(),
   contactSheet: vi.fn(),
 }))
+
+// Sea legs come back unverified at once: the router's store gives up on the refused upstream without waiting to retry.
+// Its cache is a fresh folder, removed after the file's tests.
+const noTiles = vi.hoisted(() => ({ dir: '' }))
+vi.mock('../../src/server/sea-water.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/server/sea-water.js')>()
+  const { createTileStore } = await import('../../src/server/tiles.js')
+  const { mkdtemp } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  noTiles.dir = await mkdtemp(join(tmpdir(), 'mapper-tools-test-no-tiles-'))
+  const store = createTileStore({ cacheDir: noTiles.dir, upstream: 'http://127.0.0.1:9', retryDelaysMs: [] })
+  const water = actual.createSeaWater({ store })
+  return { ...actual, seaWater: () => water }
+})
+afterAll(async () => {
+  if (noTiles.dir) await rm(noTiles.dir, { recursive: true, force: true })
+})
 
 const STOPS = [
   { name: 'Piraeus', at: [23.6466, 37.942] },
@@ -124,6 +142,23 @@ describe('tools', () => {
     expect(text(set)).not.toContain('sea route failed')
     const data = set.structuredContent as { validation: { warnings: { code: string }[] } }
     expect(data.validation.warnings.map((w) => w.code)).not.toContain('not-available-yet')
+  })
+
+  test('validate_project warns that an offline sea route is unverified', async () => {
+    const folder = path.join(tmp, 'sea-unverified')
+    await call('create_project', { folder, name: 'Sea' })
+    await call('set_stops', { folder, stops: STOPS.slice(0, 2), legMode: 'sea' })
+    const result = await call('validate_project', { folder })
+    const { warnings } = result.structuredContent as { warnings: { code: string; message: string; path: unknown[]; fix: string }[] }
+    const found = warnings.filter((w) => w.code === 'sea-unverified')
+    expect(found).toEqual([
+      expect.objectContaining({
+        message: "Leg 1 (Piraeus → Mykonos)'s sea route was checked against Natural Earth only, because OpenFreeMap couldn't be reached. It may cross small islands.",
+        path: ['scenes', 0, 'legs', 0],
+        fix: expect.stringContaining('Reconnect to the internet'),
+      }),
+    ])
+    expect(text(result)).toContain("- warning sea-unverified: Leg 1 (Piraeus → Mykonos)'s sea route was checked against Natural Earth only")
   })
 
   test('a sharp stop ends its summary line in · sharp', async () => {

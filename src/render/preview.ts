@@ -14,13 +14,14 @@ import {
   type Project,
   type Scene,
   type SceneRef,
+  type SeaPaths,
   type Timeline,
 } from '../core/index.js'
 import { resolveSeaPaths } from '../server/paths.js'
 import { loadProject } from '../server/store.js'
 import { launchBrowser } from './chrome.js'
 import { LOAD_TIMEOUT_MS, RenderPage } from './page.js'
-import { describeWarnings } from './warnings.js'
+import { describeWarnings, seaWarningLines } from './warnings.js'
 
 const DEFAULT_PREVIEW_WIDTH = 960
 const DEFAULT_SHEET_WIDTH = 1920
@@ -69,9 +70,13 @@ export interface ContactSheetResult extends ScenePreview {
   frames: { frame: number; seconds: number }[]
 }
 
-/** `warnings` for the previewed frames in `unsettled`, or nothing when there are none. */
-function previewWarnings(unsettled: number[]): Pick<ScenePreview, 'warnings'> {
-  return unsettled.length > 0 ? { warnings: describeWarnings({ unsettled, other: [] }) } : {}
+/**
+ * `warnings` for the previewed frames in `unsettled` and the scene's unverified sea legs (`sea`), or nothing when there
+ * are none. The result names its scene, so the lines don't.
+ */
+function previewWarnings(unsettled: number[], sea: string[]): Pick<ScenePreview, 'warnings'> {
+  const warnings = describeWarnings({ unsettled, other: sea })
+  return warnings.length > 0 ? { warnings } : {}
 }
 
 function scenePreview(project: Project, index: number): ScenePreview {
@@ -177,6 +182,8 @@ interface Loaded {
   index: number
   timeline: Timeline
   page: RenderPage
+  /** The project's sea paths, as the page was loaded with them. */
+  seaPaths: SeaPaths
 }
 
 /**
@@ -195,7 +202,7 @@ async function withProject<T>(folder: string, ref: SceneRef | undefined, frameWi
   const { page, entry } = await pageFor(aspect)
   try {
     await withTimeout(page.load(project, frameWidth(aspect) / layoutSize(aspect).width, { scene: scene.id, seaPaths }), LOAD_TIMEOUT_MS, 'load the scene')
-    return await use({ project, scene, index, timeline, page })
+    return await use({ project, scene, index, timeline, page, seaPaths })
   } catch (e) {
     evict(aspect, entry, page)
     throw e
@@ -247,11 +254,11 @@ export async function previewFrame(args: { folder: string; at: PreviewAt; width?
   const at = PreviewAtSchema.parse(args.at)
   assertWholeNumber('width', width)
   return exclusive(async () => {
-    const { frame, png, fps, name, shown } = await withProject(args.folder, args.scene, () => width, async ({ project, index, timeline, page }) => {
+    const { frame, png, fps, name, shown } = await withProject(args.folder, args.scene, () => width, async ({ project, scene, index, timeline, page, seaPaths }) => {
       const frame = resolveFrame(at, timeline)
       const { settled } = await page.renderFrame(frame)
       const png = await page.capturePng()
-      const shown = { ...scenePreview(project, index), ...previewWarnings(settled ? [] : [frame]) }
+      const shown = { ...scenePreview(project, index), ...previewWarnings(settled ? [] : [frame], seaWarningLines(scene, seaPaths)) }
       return { frame, png, fps: fpsValue(timeline.fps), name: frameFile(project, index, frame), shown }
     })
     const file = path.join(await previewsDir(args.folder), name)
@@ -314,7 +321,7 @@ export async function contactSheet(args: { folder: string; count?: number; width
   const cellWidth = Math.floor((width - SHEET_GAP * (columns + 1)) / columns)
   if (cellWidth < 1) throw new RangeError(`width ${width} is too small for ${count} frames in ${columns} columns.`)
   return exclusive(async () => {
-    const { frames, cells, fps, prefix, shown } = await withProject(args.folder, args.scene, () => cellWidth, async ({ project, scene, index, timeline, page }) => {
+    const { frames, cells, fps, prefix, shown } = await withProject(args.folder, args.scene, () => cellWidth, async ({ project, scene, index, timeline, page, seaPaths }) => {
       const last = timeline.totalFrames - 1
       const frames = Array.from({ length: count }, (_, i) => (count === 1 ? 0 : Math.round((i * last) / (count - 1))))
       const cells: { dataUrl: string; caption: string }[] = []
@@ -326,7 +333,7 @@ export async function contactSheet(args: { folder: string; count?: number; width
         cells.push({ dataUrl: `data:image/png;base64,${png.toString('base64')}`, caption: frameCaption(project, scene, timeline, frame) })
       }
       const prefix = project.scenes.length > 1 ? `scene${index + 1}-` : ''
-      const shown = { ...scenePreview(project, index), ...previewWarnings([...unsettled]) }
+      const shown = { ...scenePreview(project, index), ...previewWarnings([...unsettled], seaWarningLines(scene, seaPaths)) }
       return { frames, cells, fps: fpsValue(timeline.fps), prefix, shown }
     })
 

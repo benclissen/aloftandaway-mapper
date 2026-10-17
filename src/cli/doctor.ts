@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { launchBrowser } from '../render/chrome.js'
 import { findFcpxmlDtd } from '../render/fcpxml-validation.js'
 import { loadLandData } from '../server/land.js'
+import { tileStore } from '../server/tiles.js'
 
 export interface Check {
   name: string
@@ -33,6 +34,8 @@ export interface Probes {
   fcpxmlDtd(): Promise<string | undefined>
   /** Loads the shipped land data. Throws when it is missing or bad. */
   land(): Promise<{ version: string; rings: number }>
+  /** Reads OpenFreeMap's TileJSON through the tile store and returns the planet build. Throws when it can't be read. */
+  seaWater(): Promise<string>
 }
 
 const MIN_NODE_MAJOR = 22
@@ -93,6 +96,8 @@ export const realProbes: Probes = {
     const data = await loadLandData()
     return { version: data.version, rings: data.rings.length }
   },
+
+  seaWater: () => tileStore({ cacheDir: cacheDir(), upstream: process.env.MAPPER_TILE_UPSTREAM || undefined }).planetBuild(),
 }
 
 const gb = (bytes: number) => `${(bytes / GB).toFixed(1)} GB`
@@ -106,7 +111,7 @@ async function attempt<T>(probe: () => Promise<T> | T, fallback: T): Promise<T> 
   }
 }
 
-/** Checks the machine: Node, ffmpeg with ProRes, Chrome with GPU WebGL, and disk. */
+/** Checks the machine: Node, ffmpeg with ProRes, Chrome with GPU WebGL, disk, and the sea routing data. */
 export async function runDoctor(probes: Probes = realProbes): Promise<Check[]> {
   const checks: Check[] = []
 
@@ -223,6 +228,16 @@ export async function runDoctor(probes: Probes = realProbes): Promise<Check[]> {
     level: 'error',
     detail: land ? `${land.version}, ${land.rings.toLocaleString('en-US')} rings` : 'could not load the land data',
     ...(land ? {} : { fix: 'Reinstall Mapper, or run npm run build:land in its folder.' }),
+  })
+
+  // Sea water: the basemap's water is what sea routes are checked against. Without it they fall back to Natural Earth.
+  const build = await attempt(() => probes.seaWater(), null)
+  checks.push({
+    name: 'Sea water',
+    ok: build !== null,
+    level: 'warn',
+    detail: build !== null ? `OpenFreeMap planet build ${build}` : "OpenFreeMap couldn't be reached; sea routes will be checked against Natural Earth only until it can.",
+    ...(build !== null ? {} : { fix: 'Check the internet connection. Sea routes made until then are routed again by themselves once OpenFreeMap can be reached.' }),
   })
 
   return checks

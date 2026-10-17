@@ -137,6 +137,23 @@ describe('tools', () => {
     expect(data.validation.warnings.map((w) => w.code)).not.toContain('not-available-yet')
   })
 
+  test('validate_project warns that an offline sea route is unverified', async () => {
+    const folder = path.join(tmp, 'sea-unverified')
+    await call('create_project', { folder, name: 'Sea' })
+    await call('set_stops', { folder, stops: STOPS.slice(0, 2), legMode: 'sea' })
+    const result = await call('validate_project', { folder })
+    const { warnings } = result.structuredContent as { warnings: { code: string; message: string; path: unknown[]; fix: string }[] }
+    const found = warnings.filter((w) => w.code === 'sea-unverified')
+    expect(found).toEqual([
+      expect.objectContaining({
+        message: "Leg 1 (Piraeus → Mykonos)'s sea route was checked against Natural Earth only, because OpenFreeMap couldn't be reached. It may cross small islands.",
+        path: ['scenes', 0, 'legs', 0],
+        fix: expect.stringContaining('Reconnect to the internet'),
+      }),
+    ])
+    expect(text(result)).toContain("- warning sea-unverified: Leg 1 (Piraeus → Mykonos)'s sea route was checked against Natural Earth only")
+  })
+
   test('a sharp stop ends its summary line in · sharp', async () => {
     const folder = path.join(tmp, 'sharp-stop')
     await call('create_project', { folder, name: 'Sharp' })

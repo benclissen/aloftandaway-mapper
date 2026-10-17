@@ -55,6 +55,16 @@ export interface SeaPath {
 
 export type SeaPaths = Record<string, SeaPath>
 
+/** Why a path is unverified, as the end of "checked against Natural Earth only, because …" in validation and renders. */
+export const UNVERIFIED_CAUSE: Record<NonNullable<SeaPath['unverified']>, string> = {
+  offline: "OpenFreeMap couldn't be reached",
+  budget: 'the project needed more map tiles at once than Mapper fetches in one go',
+  unsettled: 'the route kept finding new islands',
+}
+
+/** A stop farther than this many km from the water its sea route starts or ends in has a line across land to reach it. */
+export const STOP_FAR_KM = 2
+
 const FNV_OFFSET = 0xcbf29ce484222325n
 const FNV_PRIME = 0x100000001b3n
 const MASK_64 = 0xffffffffffffffffn

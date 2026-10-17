@@ -1,3 +1,5 @@
+import { buildRoute, UNVERIFIED_CAUSE, type Scene, type SeaPaths } from '../core/index.js'
+
 /**
  * What went wrong in a render without failing it. `unsettled` are frames whose camera height over terrain never held
  * still, numbered within their scene. `other` are finished lines, for anything else.
@@ -41,4 +43,18 @@ function unsettledLine(frames: number[]): string {
   return frames.length === 1
     ? `Frame ${list}: the camera height over terrain hadn't settled, so this frame may differ slightly between renders and between layers.`
     : `Frames ${list}: the camera height over terrain hadn't settled, so these frames may differ slightly between renders and between layers.`
+}
+
+/**
+ * One line for each sea leg of `scene` whose path was routed without all the basemap's water: the leg's number and
+ * why. Known before any frame is drawn. `label` (e.g. `Scene 2 of 2 · Sail`) prefixes each line on a project of
+ * several scenes, as it does the unsettled frames' line.
+ */
+export function seaWarningLines(scene: Scene, seaPaths: SeaPaths, label?: string): string[] {
+  return buildRoute(scene, seaPaths).legs.flatMap((leg, i) => {
+    const why = leg.sea?.status === 'ok' ? leg.sea.unverified : undefined
+    if (!why) return []
+    const line = `Leg ${i + 1}: the sea route was checked against Natural Earth only (${UNVERIFIED_CAUSE[why]}), so it may cross small islands.`
+    return [label ? `${label}: ${line[0]!.toLowerCase()}${line.slice(1)}` : line]
+  })
 }

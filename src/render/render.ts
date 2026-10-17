@@ -25,7 +25,7 @@ import type { CompletedPass, LayerRequest, MediaKind, PlannedJoin, PlannedScene,
 import { buildManifest, renderedFrames, writeManifest, type ExportManifest } from './manifest.js'
 import { publishFcpxml, type PublishedFcpxml } from './publish.js'
 import { errorMessage, joinParts, MEDIA, removeParts, renderPass, throwIfAborted } from './render-pass.js'
-import { describeWarnings, mergeWarnings, NO_WARNINGS, type RenderWarnings } from './warnings.js'
+import { describeWarnings, mergeWarnings, NO_WARNINGS, seaWarningLines, type RenderWarnings } from './warnings.js'
 
 /** Progress fps is averaged over this many frames. */
 const FPS_WINDOW = 25
@@ -217,6 +217,8 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     warnings.set(sceneId, mergeWarnings(warnings.get(sceneId) ?? NO_WARNINGS, found))
     args.onWarnings?.(warningLines())
   }
+  /** The sea paths used without all the basemap's water are known up front, so they are warned about from the start. */
+  for (const scene of plan.scenes) warn({ unsettled: [], other: seaWarningLines(scene.scene, seaPaths, label(scene)) }, scene.id)
   const makeManifest = (status: ExportManifest['status'], extra: { renderFps?: number; error?: string } = {}): ExportManifest =>
     buildManifest({
       project: snapshot,

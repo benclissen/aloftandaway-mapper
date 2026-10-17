@@ -65,7 +65,14 @@ page.
   from the sea, or Mapper's land data couldn't be loaded) and is drawn as a
   straight line. If it reports
   `sea-crosses-land`, a via point has pulled the route ashore. Add via points
-  over open water to fix either.
+  over open water to fix either. `sea-stop-far` means a stop is more than 2 km
+  from the water its route starts or ends in, so the line crosses land to reach
+  it: move the stop to the quay or add a via point at the harbour mouth.
+  `sea-unverified` means the route was checked against Natural Earth only,
+  because OpenFreeMap's water couldn't be had (no network, too many tiles at
+  once, or the route kept finding new islands). It may cross small islands.
+  Mapper routes the leg again by itself within a minute of the network coming
+  back; validate again then.
 - Air legs follow the great circle, bowed toward the nearer pole so even short
   flights curve (at least 15% of their length). Via points split an air leg
   into arcs that meet at corners.
@@ -328,8 +335,9 @@ Some looks need more lines:
 - `satellite` adds `Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016), CC BY 4.0`.
 - Elevation data adds `Terrain: USGS, Copernicus EU-DEM, NOAA ETOPO1 and others`. That is
   `look.terrain: true`, and also `outdoor`, which always shades hills.
-- `blank` with terrain off needs no credit. It shows no map data (its sea routing data is
-  Natural Earth, which is public domain).
+- `blank` with terrain off and no sea legs needs no credit, since it shows no
+  map data. A `blank` scene with a sea leg needs the map credit above: the
+  route is drawn from OpenStreetMap water data.
 
 By default the short lines are burned into the bottom-right of the video, but
 the full text still belongs in the video description. If the project's

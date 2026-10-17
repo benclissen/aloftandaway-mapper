@@ -1,5 +1,6 @@
 // 4K render-speed benchmark. Runs on its own, without Mapper code.
 // Usage: npm run bench:render [-- --frames 100 --write]
+//        npm run bench:render -- --track [--frames 100 --write]   (recorded-track case only)
 
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -18,6 +19,7 @@ interface Bench {
   ready: Promise<void>;
   size(): [number, number];
   frame(i: number, n: number): Promise<number>;
+  cpu(): number[];
   readPixelsGL(): number;
   readComposite(): number;
   sendWS(url: string): Promise<number>;
@@ -37,6 +39,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, 'test-output', 'bench');
 const DOC = join(ROOT, 'docs', 'render-speed.md');
 const SECTION = '## Benchmark (Task 1)';
+const TRACK_SECTION = '## Recorded track (Stage 10)';
 const CSS_SIZE = { width: 1920, height: 1080 };
 const FPS = 25;
 const ARG_SETS: string[][] = [
@@ -131,9 +134,9 @@ async function startServer(): Promise<{ server: Server; wss: WebSocketServer; or
 
 const isSoftware = (renderer: string) => /swiftshader|llvmpipe/i.test(renderer);
 
-async function openBench(context: BrowserContext, origin: string, pixelRatio: number): Promise<Page> {
+async function openBench(context: BrowserContext, origin: string, pixelRatio: number, extra = ''): Promise<Page> {
   const page = await context.newPage();
-  await page.goto(`${origin}/bench/page.html?pixelRatio=${pixelRatio}`);
+  await page.goto(`${origin}/bench/page.html?pixelRatio=${pixelRatio}${extra}`);
   await waitReady(page);
   return page;
 }
@@ -364,27 +367,150 @@ function markdownTable(rows: [string, string, string][]): string {
   ].join('\n');
 }
 
-function writeDoc(section: string) {
+function writeDoc(section: string, heading = SECTION) {
   const header = '# Render speed\n\nMeasurements of how fast Mapper can render 4K map frames on the user\'s Mac.\n';
   const current = existsSync(DOC) ? readFileSync(DOC, 'utf8') : header;
-  const start = current.indexOf(SECTION);
+  const start = current.indexOf(heading);
   let next: string;
   if (start === -1) {
     next = `${current.trimEnd()}\n\n${section}\n`;
   } else {
-    const after = current.indexOf('\n## ', start + SECTION.length);
+    const after = current.indexOf('\n## ', start + heading.length);
     next = `${current.slice(0, start)}${section}\n${after === -1 ? '' : current.slice(after)}`;
   }
   writeFileSync(DOC, next);
 }
 
+// ---------- recorded track ----------
+
+/** The two routes the track case compares. Same ends, same camera; only the line's vertices differ. */
+const TRACK_CASES = [
+  { name: 'plain line', query: '' },
+  { name: 'track-10k', query: '&routePoints=10000&noise=100' },
+  // Ten times the limit, to show the bench can see a cost when there is one. Not part of the verdict.
+  { name: 'stress-100k', query: '&routePoints=100000&noise=100' },
+] as const;
+/** The most the track case may cost over the plain line before the thinning limit needs a second look. */
+const TRACK_LIMIT = 0.1;
+
+interface TrackRow {
+  pixelRatio: number;
+  name: string;
+  samples: number[][];
+  /** Main-thread ms per frame for the route slice and the `setData` call (the worker's tiling comes after it), one array per run. */
+  cpu: number[][];
+}
+
+/**
+ * Times a warm pass of the frame loop for the plain line and for a 10,000-point noisy line, alternating them so a
+ * slow moment on the machine hits both: a throw-away warm-up of the plain line, then plain, track, plain, track.
+ */
+async function trackBench(frames: number, write: boolean): Promise<void> {
+  const { server, wss, origin } = await startServer();
+  const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ARG_SETS[0] });
+  try {
+    const rows: TrackRow[] = [];
+    for (const pixelRatio of [1, 2]) {
+      const context = await browser.newContext({ viewport: CSS_SIZE });
+      const measured = TRACK_CASES.map((c) => ({ pixelRatio, name: c.name, samples: [] as number[][], cpu: [] as number[][] }));
+      log(`Track: pixelRatio ${pixelRatio}, warm-up`);
+      const warmup = await openBench(context, origin, pixelRatio, TRACK_CASES[0].query);
+      await settlePass(warmup, frames);
+      await warmup.close();
+      for (let run = 1; run <= 2; run++) {
+        for (const [i, c] of TRACK_CASES.entries()) {
+          log(`Track: pixelRatio ${pixelRatio}, ${c.name}, run ${run}`);
+          const page = await openBench(context, origin, pixelRatio, c.query);
+          await settlePass(page, frames); // tiles for this page's route are cached by now, the first pass wakes the workers
+          await page.evaluate(() => globalThis.bench.cpu());
+          measured[i].samples.push(await settlePass(page, frames));
+          measured[i].cpu.push(await page.evaluate(() => globalThis.bench.cpu()));
+          await page.close();
+        }
+      }
+      rows.push(...measured);
+      await context.close();
+    }
+
+    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const table = [
+      '| Size | Route | Run | Median | Mean | p95 | Max | Route slice + setData (mean) |',
+      '|---|---|---|---|---|---|---|---|',
+      ...rows.flatMap((r) =>
+        r.samples.map((s, run) => {
+          const st = stats(s);
+          return `| ${r.pixelRatio === 2 ? '3840×2160' : '1920×1080'} | ${r.name} | ${run + 1} | ${ms(st.median)} | ${ms(mean(s))} | ${ms(st.p95)} | ${ms(st.max)} | ${(mean(r.cpu[run]!)).toFixed(2)} ms |`;
+        }),
+      ),
+    ];
+    const verdicts: string[] = [];
+    for (const pixelRatio of [1, 2]) {
+      const [plain, track] = rows.filter((r) => r.pixelRatio === pixelRatio);
+      const medianOf = (r: TrackRow) => mean(r.samples.map(median));
+      const meanOf = (r: TrackRow) => mean(r.samples.map(mean));
+      const size = pixelRatio === 2 ? '3840×2160' : '1920×1080';
+      const byMedian = medianOf(track) / medianOf(plain) - 1;
+      const byMean = meanOf(track) / meanOf(plain) - 1;
+      verdicts.push(
+        `- ${size}: track-10k against the plain line is ${(byMedian * 100).toFixed(1)}% by median (${ms(medianOf(track))} against ${ms(medianOf(plain))}) and ${(byMean * 100).toFixed(1)}% by mean (${ms(meanOf(track))} against ${ms(meanOf(plain))})${Math.max(byMedian, byMean) > TRACK_LIMIT ? `: OVER the ${TRACK_LIMIT * 100}% limit` : ''}`,
+      );
+    }
+    const over = verdicts.some((v) => v.includes('OVER'));
+    const reading = [
+      '',
+      'Frames settle on the display\'s 60 Hz tick, so the medians sit near 16 ms and the means near 17.7 ms whatever the',
+      'route: a change under a tick can\'t show. The last row of each size, a route of 100,000 points, is there to prove the',
+      'bench can see a cost: it lands on the next tick.',
+      over
+        ? 'A row is over the limit. The remedy is a lower `MAX_TRACK_POINTS`, which is the user\'s decision.'
+        : `Neither size is over the ${TRACK_LIMIT * 100}% limit, so \`MAX_TRACK_POINTS\` stays at 10,000.`,
+    ];
+    const body = [table.join('\n'), '', ...verdicts, ...reading].join('\n');
+    process.stdout.write(`${body}\n`);
+    if (write) {
+      writeDoc(
+        [
+          TRACK_SECTION,
+          '',
+          '`npm run bench:render -- --track` times the frame loop with a route of 256 points on a straight line (the plain',
+          'line the Task 1 benchmark uses) against one of 10,000 points, each moved up to 100 m off the line: the most a',
+          'recorded track can carry (`MAX_TRACK_POINTS`). Both draw the way the studio does, by slicing the path to the head',
+          'and calling `setData` on every frame. Each pass is a warm 100 frame settle (jump the camera, set the route, wait for',
+          'idle) over the same Piraeus to Rhodes sweep, taken after a warm-up pass and a first pass of that route. The routes',
+          'alternate, so a slow moment on the machine hits both. Needs the network, for the map style.',
+          '',
+          `- Date: ${new Date().toISOString().slice(0, 10)}`,
+          `- Machine: ${machine()}`,
+          `- Frames per pass: ${frames}`,
+          '',
+          body,
+          '',
+        ].join('\n'),
+        TRACK_SECTION,
+      );
+      log(`Wrote ${DOC}`);
+    }
+  } finally {
+    await browser.close();
+    wss.close();
+    server.close();
+  }
+}
+
 // ---------- main ----------
 
 async function main() {
-  const { values } = parseArgs({ options: { frames: { type: 'string', default: '100' }, write: { type: 'boolean', default: false } } });
+  const { values } = parseArgs({
+    options: {
+      frames: { type: 'string', default: '100' },
+      write: { type: 'boolean', default: false },
+      track: { type: 'boolean', default: false },
+    },
+  });
   const frames = Number(values.frames);
   if (!Number.isInteger(frames) || frames < 2) throw new Error('--frames must be an integer of at least 2');
   mkdirSync(OUT_DIR, { recursive: true });
+  if (values.track) return trackBench(frames, values.write);
 
   const { server, wss, origin, wsUrl, inbox } = await startServer();
   const rows: [string, string, string][] = [];

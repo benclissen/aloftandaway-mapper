@@ -23,9 +23,13 @@ import * as maplibregl from '/node_modules/maplibre-gl/dist/maplibre-gl.mjs';
 const STYLE = 'https://tiles.openfreemap.org/styles/positron';
 const PIRAEUS = { center: [23.6466, 37.942], zoom: 6 };
 const RHODES = { center: [28.2278, 36.451], zoom: 8 };
-const ROUTE_POINTS = 256;
 
-const pixelRatio = Number(new URLSearchParams(location.search).get('pixelRatio') ?? 1);
+const params = new URLSearchParams(location.search);
+const pixelRatio = Number(params.get('pixelRatio') ?? 1);
+// How many vertices the route has, and how far (in metres) each is jittered off the straight line. The defaults are the
+// plain 256-point line; the recorded-track case asks for 10,000 points with noise.
+const ROUTE_POINTS = Number(params.get('routePoints') ?? 256);
+const NOISE_METRES = Number(params.get('noise') ?? 0);
 
 const map = new maplibregl.Map({
   container: 'map',
@@ -43,9 +47,22 @@ const map = new maplibregl.Map({
 const lerp = (a, b, t) => a + (b - a) * t;
 const lerpPoint = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
 
-// A straight Piraeus → Rhodes line, densified so setData carries a realistic vertex count.
-const route = Array.from({ length: ROUTE_POINTS }, (_, k) =>
-  lerpPoint(PIRAEUS.center, RHODES.center, k / (ROUTE_POINTS - 1)));
+// A Piraeus → Rhodes line, densified so setData carries a realistic vertex count. With noise, every vertex is moved by
+// up to NOISE_METRES east and north, like a logged track (a seeded generator, so every run draws the same line).
+let seed = 1;
+const rand = () => {
+  seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+  return seed / 2 ** 32;
+};
+const M_PER_DEG = 111320;
+const route = Array.from({ length: ROUTE_POINTS }, (_, k) => {
+  const [lng, lat] = lerpPoint(PIRAEUS.center, RHODES.center, k / (ROUTE_POINTS - 1));
+  if (!NOISE_METRES || k === 0 || k === ROUTE_POINTS - 1) return [lng, lat];
+  return [
+    lng + ((rand() * 2 - 1) * NOISE_METRES) / (M_PER_DEG * Math.cos((lat * Math.PI) / 180)),
+    lat + ((rand() * 2 - 1) * NOISE_METRES) / M_PER_DEG,
+  ];
+});
 
 function routeTo(t) {
   const end = t * (ROUTE_POINTS - 1);
@@ -111,6 +128,8 @@ function drained(ws) {
   });
 }
 
+const cpuMs = [];
+
 window.bench = {
   ready: new Promise((resolve) => map.once('load', () => {
     map.addSource('route', { type: 'geojson', data: routeTo(0) });
@@ -131,9 +150,16 @@ window.bench = {
     const start = performance.now();
     const settled = idle();
     map.jumpTo({ center: lerpPoint(PIRAEUS.center, RHODES.center, t), zoom: lerp(PIRAEUS.zoom, RHODES.zoom, t) });
+    const built = performance.now();
     map.getSource('route').setData(routeTo(t));
+    cpuMs.push(performance.now() - built);
     await settled;
     return performance.now() - start;
+  },
+
+  /** Main-thread time of each frame's route slice and setData call so far, in ms. It doesn't include the worker's tiling. */
+  cpu() {
+    return cpuMs.splice(0);
   },
 
   /** Turns the map into a transparent route layer: basemap hidden, line at 60% opacity. */

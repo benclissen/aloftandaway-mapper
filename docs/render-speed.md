@@ -216,3 +216,40 @@ Rounds cost little on top of that, since each round fetches only the tiles the n
 
 **Memory.** A decoded tile is about 49 KB (32 KB of pixel bits and 17 KB of block sums). `SeaWater` keeps at most
 1,500 of them, so its tile memory tops out at about 73 MB.
+
+## Recorded track (Stage 10)
+
+`npm run bench:render -- --track` times the frame loop with a route of 256 points on a straight line (the plain
+line the Task 1 benchmark uses) against one of 10,000 points, each moved up to 100 m off the line: the most a
+recorded track can carry (`MAX_TRACK_POINTS`). Both draw the way the studio does, by slicing the path to the head
+and calling `setData` on every frame. Each pass is a warm 100 frame settle (jump the camera, set the route, wait for
+idle) over the same Piraeus to Rhodes sweep, taken after a warm-up pass and a first pass of that route. The routes
+alternate, so a slow moment on the machine hits both. Needs the network, for the map style.
+
+- Date: 2026-10-17
+- Machine: Apple M6
+- Frames per pass: 100
+
+| Size | Route | Run | Median | Mean | p95 | Max | Route slice + setData (mean) |
+|---|---|---|---|---|---|---|---|
+| 1920×1080 | plain line | 1 | 16.1 ms | 17.6 ms | 32.4 ms | 33.3 ms | 0.01 ms |
+| 1920×1080 | plain line | 2 | 16.1 ms | 17.5 ms | 32.7 ms | 35.0 ms | 0.01 ms |
+| 1920×1080 | track-10k | 1 | 16.1 ms | 17.7 ms | 32.6 ms | 33.7 ms | 0.01 ms |
+| 1920×1080 | track-10k | 2 | 16.1 ms | 17.7 ms | 32.6 ms | 33.2 ms | 0.02 ms |
+| 1920×1080 | stress-100k | 1 | 32.7 ms | 30.9 ms | 51.2 ms | 51.6 ms | 0.02 ms |
+| 1920×1080 | stress-100k | 2 | 31.8 ms | 30.2 ms | 50.0 ms | 51.2 ms | 0.02 ms |
+| 3840×2160 | plain line | 1 | 16.0 ms | 17.4 ms | 32.0 ms | 33.1 ms | 0.02 ms |
+| 3840×2160 | plain line | 2 | 15.9 ms | 17.3 ms | 32.2 ms | 33.6 ms | 0.02 ms |
+| 3840×2160 | track-10k | 1 | 16.1 ms | 17.7 ms | 32.0 ms | 34.7 ms | 0.01 ms |
+| 3840×2160 | track-10k | 2 | 16.1 ms | 17.7 ms | 32.7 ms | 33.4 ms | 0.02 ms |
+| 3840×2160 | stress-100k | 1 | 32.7 ms | 30.6 ms | 49.5 ms | 51.4 ms | 0.03 ms |
+| 3840×2160 | stress-100k | 2 | 32.6 ms | 32.2 ms | 49.5 ms | 49.6 ms | 0.03 ms |
+
+- 1920×1080: track-10k against the plain line is 0.0% by median (16.1 ms against 16.1 ms) and 0.6% by mean (17.7 ms against 17.6 ms)
+- 3840×2160: track-10k against the plain line is 0.9% by median (16.1 ms against 16.0 ms) and 2.1% by mean (17.7 ms against 17.3 ms)
+
+Frames settle on the display's 60 Hz tick, so the medians sit near 16 ms and the means near 17.7 ms whatever the
+route: a change under a tick can't show. The last row of each size, a route of 100,000 points, is there to prove the
+bench can see a cost: it lands on the next tick.
+Neither size is over the 10% limit, so `MAX_TRACK_POINTS` stays at 10,000.
+

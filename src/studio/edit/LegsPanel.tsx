@@ -1,6 +1,6 @@
 import { SYMBOL_ICON, SYMBOLS, type LegMode, type ProjectPatch, type Route, type Scene, type SymbolKind } from '../../core/index.js'
 import { ICONS, type IconName } from '../stage/icons.js'
-import { MODE_LABELS, SYMBOL_LABELS } from './labels.js'
+import { MODE_LABELS, SYMBOL_LABELS, unverifiedNote } from './labels.js'
 
 const MODES = Object.keys(MODE_LABELS) as LegMode[]
 
@@ -111,6 +111,11 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
                 </p>
               )}
               {sea?.status === 'pending' && <p className="leg-note">Finding a sea route…</p>}
+              {sea?.unverified && (
+                <p className="leg-note" data-testid={`leg-unverified-${i}`}>
+                  {unverifiedNote(sea.unverified)}
+                </p>
+              )}
             </li>
             )
           })}

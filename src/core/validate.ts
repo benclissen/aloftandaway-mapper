@@ -96,6 +96,18 @@ const UNVERIFIED_FIX = {
   unsettled: 'Add a via point over open water with insert_via to steer it.',
 } as const
 
+/**
+ * What to do about a sea leg that fell back. One the network or the budget left unverified is routed again by itself
+ * once the tiles can be had, so it only needs waiting for, not an edit.
+ */
+function fallbackFix(sea: { reason?: string; unverified?: keyof typeof UNVERIFIED_FIX }): string {
+  if (sea.reason === NO_LAND_DATA) {
+    return 'Reinstall Mapper, or run npm run build:land in its folder, then reopen the project. The leg is drawn as a straight line until then.'
+  }
+  if (sea.unverified === 'offline' || sea.unverified === 'budget') return `${UNVERIFIED_FIX[sea.unverified]} It is drawn as a straight line until then.`
+  return "Add via points over open water with insert_via to guide it, move the stop nearer the coast, or set the leg's mode to 'line' with update_leg. It is drawn as a straight line until then."
+}
+
 /** Checks one scene, the `index`th. Issue paths are relative to the scene. */
 function validateScene(
   scene: Scene,
@@ -205,10 +217,7 @@ function validateScene(
             code: 'sea-fallback',
             message: `${legName(i)} has no sea route: ${leg.sea.reason ?? 'routing failed'}`,
             path: ['legs', i, 'mode'],
-            fix:
-              leg.sea.reason === NO_LAND_DATA
-                ? 'Reinstall Mapper, or run npm run build:land in its folder, then reopen the project. The leg is drawn as a straight line until then.'
-                : "Add via points over open water with insert_via to guide it, move the stop nearer the coast, or set the leg's mode to 'line' with update_leg. It is drawn as a straight line until then.",
+            fix: fallbackFix(leg.sea),
           })
         }
       })
@@ -224,11 +233,14 @@ function validateScene(
         }
       })
       route.legs.forEach((leg, i) => {
-        const why = leg.sea?.status === 'ok' ? leg.sea.unverified : undefined
+        const why = leg.sea?.unverified
         if (!why) return
         warnings.push({
           code: 'sea-unverified',
-          message: `${legName(i)}'s sea route was checked against Natural Earth only, because ${UNVERIFIED_CAUSE[why]}. It may cross small islands.`,
+          message:
+            why === 'unsettled'
+              ? `${legName(i)}'s sea route was only partly checked, because ${UNVERIFIED_CAUSE[why]}. It may cross small islands near the ones it found.`
+              : `${legName(i)}'s sea route was checked against Natural Earth only, because ${UNVERIFIED_CAUSE[why]}. It may cross small islands.`,
           path: ['legs', i],
           fix: UNVERIFIED_FIX[why],
         })

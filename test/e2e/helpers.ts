@@ -145,12 +145,13 @@ export async function openRenderPage(
 
 /**
  * Writes the project (with a fresh id, since the fixtures share one) to a temp folder, registers it and opens the
- * studio's edit mode at `viewport`. `beforeOpen` runs on the page before it goes to the studio, to route its requests.
+ * studio's edit mode at `viewport`. `beforeOpen` runs on the page and the saved folder before the page goes to the
+ * studio, to route its requests or seed the folder.
  */
 export async function openStudioPage(
   project: Project,
   viewport: { width: number; height: number },
-  beforeOpen?: (page: Page) => Promise<void>,
+  beforeOpen?: (page: Page, folder: string) => Promise<void>,
 ): Promise<{ page: Page; folder: string; project: Project; close(): Promise<void> }> {
   const { server, browser, tempDir } = await setup()
   const folder = await mkdtemp(path.join(tempDir, 'project-'))
@@ -160,7 +161,7 @@ export async function openStudioPage(
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1 })
   const page = await context.newPage()
   page.on('pageerror', (error) => process.stderr.write(`page error: ${error.message}\n`))
-  await beforeOpen?.(page)
+  await beforeOpen?.(page, folder)
   await page.goto(server.studioUrl(key))
   return { page, folder, project: saved, close: () => context.close() }
 }

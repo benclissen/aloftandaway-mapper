@@ -342,18 +342,59 @@ describe('validateProject', () => {
       }
 
       test.each([
-        ['offline', "because OpenFreeMap couldn't be reached.", 'Reconnect to the internet; Mapper routes the leg again by itself within a minute. Then validate again.'],
-        ['budget', "because the project needed more map tiles at once than Mapper fetches in one go.", 'Validate again in a minute; Mapper carries on where it stopped.'],
-        ['unsettled', 'because the route kept finding new islands.', 'Add a via point over open water with insert_via to steer it.'],
-      ] as const)('warns for %s', (reason, because, fix) => {
+        [
+          'offline',
+          "was checked against Natural Earth only, because OpenFreeMap couldn't be reached. It may cross small islands.",
+          'Reconnect to the internet; Mapper routes the leg again by itself within a minute. Then validate again.',
+        ],
+        [
+          'budget',
+          'was checked against Natural Earth only, because the project needed more map tiles at once than Mapper fetches in one go. It may cross small islands.',
+          'Validate again in a minute; Mapper carries on where it stopped.',
+        ],
+        [
+          'unsettled',
+          'was only partly checked, because it kept finding new islands. It may cross small islands near the ones it found.',
+          'Add a via point over open water with insert_via to steer it.',
+        ],
+      ] as const)('warns for %s', (reason, says, fix) => {
         expect(unverifiedFor(reason)).toEqual([
           {
             code: 'sea-unverified',
-            message: `Leg 1 (Piraeus → Mykonos)'s sea route was checked against Natural Earth only, ${because} It may cross small islands.`,
+            message: `Leg 1 (Piraeus → Mykonos)'s sea route ${says}`,
             path: ['scenes', 0, 'legs', 0],
             fix,
           },
         ])
+      })
+
+      test('a leg that fell back while unverified says to wait, not to edit', () => {
+        const { project, key } = seaProject()
+        const fellBack = (unverified: 'offline' | 'budget' | 'unsettled') =>
+          validateProject(project, {
+            seaPaths: { [key]: { status: 'fallback', reason: 'No sea route found between Piraeus and Mykonos', path: [], knots: [], unverified } },
+          }).warnings.filter((w) => w.code === 'sea-fallback' || w.code === 'sea-unverified')
+        expect(fellBack('offline')).toEqual([
+          {
+            code: 'sea-fallback',
+            message: 'Leg 1 (Piraeus → Mykonos) has no sea route: No sea route found between Piraeus and Mykonos',
+            path: ['scenes', 0, 'legs', 0, 'mode'],
+            fix: 'Reconnect to the internet; Mapper routes the leg again by itself within a minute. Then validate again. It is drawn as a straight line until then.',
+          },
+          {
+            code: 'sea-unverified',
+            message: "Leg 1 (Piraeus → Mykonos)'s sea route was checked against Natural Earth only, because OpenFreeMap couldn't be reached. It may cross small islands.",
+            path: ['scenes', 0, 'legs', 0],
+            fix: 'Reconnect to the internet; Mapper routes the leg again by itself within a minute. Then validate again.',
+          },
+        ])
+        const budget = fellBack('budget')
+        expect(budget.map((w) => w.code)).toEqual(['sea-fallback', 'sea-unverified'])
+        expect(budget[0]!.fix).toBe('Validate again in a minute; Mapper carries on where it stopped. It is drawn as a straight line until then.')
+        // An unsettled leg won't settle by waiting, so the fallback still says how to steer it.
+        const unsettled = fellBack('unsettled')
+        expect(unsettled.map((w) => w.code)).toEqual(['sea-fallback', 'sea-unverified'])
+        expect(unsettled[0]!.fix).toContain('insert_via')
       })
 
       test('names the leg by its number', () => {

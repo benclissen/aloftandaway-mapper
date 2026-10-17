@@ -46,15 +46,18 @@ function unsettledLine(frames: number[]): string {
 }
 
 /**
- * One line for each sea leg of `scene` whose path was routed without all the basemap's water: the leg's number and
- * why. Known before any frame is drawn. `label` (e.g. `Scene 2 of 2 · Sail`) prefixes each line on a project of
- * several scenes, as it does the unsettled frames' line.
+ * One line for each sea leg of `scene` whose path was routed without all the basemap's water, or fell back without
+ * it: the leg's number and why. Known before any frame is drawn. `label` (e.g. `Scene 2 of 2 · Sail`) prefixes each
+ * line on a project of several scenes, as it does the unsettled frames' line.
  */
 export function seaWarningLines(scene: Scene, seaPaths: SeaPaths, label?: string): string[] {
   return buildRoute(scene, seaPaths).legs.flatMap((leg, i) => {
-    const why = leg.sea?.status === 'ok' ? leg.sea.unverified : undefined
+    const why = leg.sea?.unverified
     if (!why) return []
-    const line = `Leg ${i + 1}: the sea route was checked against Natural Earth only (${UNVERIFIED_CAUSE[why]}), so it may cross small islands.`
+    const line =
+      why === 'unsettled'
+        ? `Leg ${i + 1}: the sea route was only partly checked (${UNVERIFIED_CAUSE[why]}), so it may cross small islands near the ones it found.`
+        : `Leg ${i + 1}: the sea route was checked against Natural Earth only (${UNVERIFIED_CAUSE[why]}), so it may cross small islands.`
     return [label ? `${label}: ${line[0]!.toLowerCase()}${line.slice(1)}` : line]
   })
 }

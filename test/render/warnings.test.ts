@@ -129,8 +129,18 @@ describe('unverified sea paths', () => {
 
   test('the cause is named for each reason, and a scene label leads on a multi-scene project', () => {
     expect(seaWarningLines(sailBySea('unsettled').sail, sailBySea('unsettled').seaPaths, 'Scene 2 of 2 · Sail')).toEqual([
-      'Scene 2 of 2 · Sail: leg 2: the sea route was checked against Natural Earth only (the route kept finding new islands), so it may cross small islands.',
+      'Scene 2 of 2 · Sail: leg 2: the sea route was only partly checked (it kept finding new islands), so it may cross small islands near the ones it found.',
     ])
+  })
+
+  test('a leg that fell back while unverified has the line too', () => {
+    const { sail } = sailBySea()
+    const [, from, to] = sail.stops.map((stop) => stop.at)
+    const fellBack: SeaPaths = { [seaLegKey(from!, to!, [])]: { status: 'fallback', reason: 'No sea route found', path: [], knots: [], unverified: 'offline' } }
+    expect(seaWarningLines(sail, fellBack)).toEqual([OFFLINE])
+    // One that fell back with every tile it needed has none.
+    const checked: SeaPaths = { [seaLegKey(from!, to!, [])]: { status: 'fallback', reason: 'No sea route found', path: [], knots: [] } }
+    expect(seaWarningLines(sail, checked)).toEqual([])
   })
 
   test('a verified path, a path not yet routed and a scene with no sea leg have none', () => {

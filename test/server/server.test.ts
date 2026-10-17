@@ -624,7 +624,8 @@ describe('sea paths', () => {
     try {
       expect(((await next()) as any).seaPaths).toEqual({})
       await mutateProject(folder, withSeaLeg)
-      const message = (await next()) as any
+      // The leg is routed before the message goes out, which can take over a second while the whole suite runs.
+      const message = (await next(5000)) as any
       expect(message.seaPaths[legKey].status).toBe('ok')
     } finally {
       ws.close()

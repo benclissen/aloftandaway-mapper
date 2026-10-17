@@ -8,6 +8,8 @@ export interface GpxLine {
   kind: 'track' | 'route'
   name?: string
   points: LngLat[]
+  /** Milliseconds since 1970 for each point, present only when every point kept has a readable `<time>`. */
+  times?: number[]
 }
 
 export interface Gpx {
@@ -83,8 +85,58 @@ function pointOf(node: Node): LngLat | undefined {
   return [lon, lat]
 }
 
-function pointsOf(nodes: Node[]): LngLat[] {
-  return nodes.map(pointOf).filter((p): p is LngLat => p !== undefined)
+const ISO_TIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:[.,](\d+))?)?(Z|[+-]\d{2}(?::?\d{2})?)?$/i
+/** The largest time a JavaScript Date holds, so that `toISOString` never throws. */
+const MAX_TIME_MS = 8.64e15
+
+/**
+ * An ISO 8601 date and time, `2026-06-01T06:00:00Z` or with an offset such as `+02:00`, in milliseconds since 1970.
+ * A time with no zone is undefined unless `utc` says to read it as UTC. Out-of-range fields are undefined too.
+ */
+export function parseIsoTime(text: string, opts: { utc?: boolean } = {}): number | undefined {
+  const m = ISO_TIME.exec(text.trim())
+  if (!m) return undefined
+  const [, y, mo, d, h, mi, sec, frac, zone] = m
+  if (zone === undefined && !opts.utc) return undefined
+  const [year, month, day, hour, minute, second] = [y, mo, d, h, mi, sec ?? '0'].map(Number) as [number, number, number, number, number, number]
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return undefined
+  // setUTCFullYear, unlike Date.UTC, doesn't read years 0 to 99 as 1900 to 1999.
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  date.setUTCHours(hour, minute, second, frac ? Number(frac.slice(0, 3).padEnd(3, '0')) : 0)
+  // 30 February rolls over into March, so check the day survived.
+  if (date.getUTCDate() !== day) return undefined
+  let ms = date.getTime()
+  if (zone !== undefined && zone.toUpperCase() !== 'Z') {
+    const digits = zone.slice(1).replace(':', '')
+    const [hours, minutes] = [Number(digits.slice(0, 2)), Number(digits.slice(2) || '0')]
+    if (hours > 18 || minutes > 59) return undefined
+    ms -= (zone[0] === '-' ? -1 : 1) * (hours * 60 + minutes) * 60_000
+  }
+  return Math.abs(ms) <= MAX_TIME_MS ? ms : undefined
+}
+
+/** The valid points of `nodes` and each one's `<time>`, read as UTC when it has no zone, as GPX says times are. */
+function pointsOf(nodes: Node[]): { points: LngLat[]; times: (number | undefined)[] } {
+  const points: LngLat[] = []
+  const times: (number | undefined)[] = []
+  for (const node of nodes) {
+    const p = pointOf(node)
+    if (!p) continue
+    points.push(p)
+    const time = textOf(node['time'])
+    times.push(time === undefined ? undefined : parseIsoTime(time, { utc: true }))
+  }
+  return { points, times }
+}
+
+/** A line, with `name` and `times` left out rather than undefined. Times are kept only when every point has one. */
+function lineOf(kind: GpxLine['kind'], name: string | undefined, parts: ReturnType<typeof pointsOf>[]): GpxLine {
+  const points = parts.flatMap((p) => p.points)
+  const times = parts.flatMap((p) => p.times)
+  const line: GpxLine = name === undefined ? { kind, points } : { kind, name, points }
+  if (times.every((t): t is number => t !== undefined)) line.times = times
+  return line
 }
 
 export function parseGpx(text: string): Gpx {
@@ -102,12 +154,12 @@ export function parseGpx(text: string): Gpx {
 
   const lines: GpxLine[] = []
   for (const trk of asNodes(gpx['trk'])) {
-    const points = asNodes(trk['trkseg']).flatMap((seg) => pointsOf(asNodes(seg['trkpt'])))
-    if (points.length >= 2) lines.push({ kind: 'track', name: textOf(trk['name']), points })
+    const line = lineOf('track', textOf(trk['name']), asNodes(trk['trkseg']).map((seg) => pointsOf(asNodes(seg['trkpt']))))
+    if (line.points.length >= 2) lines.push(line)
   }
   for (const rte of asNodes(gpx['rte'])) {
-    const points = pointsOf(asNodes(rte['rtept']))
-    if (points.length >= 2) lines.push({ kind: 'route', name: textOf(rte['name']), points })
+    const line = lineOf('route', textOf(rte['name']), [pointsOf(asNodes(rte['rtept']))])
+    if (line.points.length >= 2) lines.push(line)
   }
   const waypoints: Gpx['waypoints'] = []
   for (const wpt of asNodes(gpx['wpt'])) {
@@ -115,7 +167,7 @@ export function parseGpx(text: string): Gpx {
     const at = pointOf(wpt)
     if (name && at) waypoints.push({ name, at })
   }
-  return { lines: lines.map((l) => (l.name === undefined ? { kind: l.kind, points: l.points } : l)), waypoints }
+  return { lines, waypoints }
 }
 
 // Geometry
@@ -153,7 +205,7 @@ function distToSegment(p: XY, a: XY, b: XY): number {
 }
 
 /** Douglas-Peucker. Returns the indices kept, ends included. */
-function simplify(xy: XY[], tolerance: number): number[] {
+export function simplify(xy: XY[], tolerance: number): number[] {
   const keep = new Uint8Array(xy.length)
   keep[0] = 1
   keep[xy.length - 1] = 1

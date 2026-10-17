@@ -284,6 +284,11 @@ const MAX_FINE_SIDE = 2048
 const FINE_MARGIN = 4
 /** How far, in km, a fine stretch reaches past its tight cells, and a fine grid past the route cells it covers. */
 const FINE_ROOM_KM = 3
+/**
+ * The largest coarse cell, in km where the box comes nearest the equator. Three coarse cells of FINE_KM cells and
+ * their margin then fit in one fine grid, so fine cells stay at FINE_KM on legs that span half the world.
+ */
+const MAX_COARSE_KM = 25
 /** Stretches needing a fine grid that are this many open coarse cells apart or fewer share one. */
 const MERGE_GAP = 2 * FINE_MARGIN
 /** How many times a coarse route may be rejected by its fine grids before the leg falls back. */
@@ -339,7 +344,8 @@ function passage(land: LandSource, a: XY, b: XY, grow: number): Passage | Failur
     maxX: maxX + margin,
     maxY: Math.min(1, maxY + margin),
   }
-  const coarse = waterGrid(land, box)
+  const wide = Math.max(box.maxX - box.minX, box.maxY - box.minY) * kmPerUnit(Math.min(Math.max(0.5, box.minY), box.maxY))
+  const coarse = waterGrid(land, box, Math.max(1024, Math.ceil(wide / MAX_COARSE_KM)))
   const coarseMask = gridMask(coarse)
   // Only cells that are all land are shut to the coarse route, plus any its fine grids shut.
   const blocked = coarse.solid.slice()
@@ -541,8 +547,8 @@ function fineRun(
   const last = cells.length - 1
 
   // One lattice for every piece, so they share cell centres, with fine cells no bigger than FINE_KM where the
-  // stretch comes nearest the equator. Only if the coarse cells are too big for even the smallest piece do fine
-  // cells grow.
+  // stretch comes nearest the equator. MAX_COARSE_KM keeps the smallest piece in reach; only a stop box too big for
+  // it makes fine cells grow.
   let yLo = Infinity
   let yHi = -Infinity
   for (let t = Math.max(0, i - FINE_MARGIN); t <= Math.min(last, j + FINE_MARGIN); t++) {
@@ -553,8 +559,7 @@ function fineRun(
   const kmMost = kmPerUnit(Math.min(Math.max(0.5, yLo), yHi))
   let k = Math.max(1, Math.ceil((coarse.cell * kmMost) / FINE_KM))
   // Reach FINE_ROOM_KM past the tight cells in whole coarse cells, up to FINE_MARGIN of them, or as many as fit;
-  // failing even one, use bigger fine cells. The coarse grid is at most 1024 cells across, so at k = 2 one piece
-  // always fits (and at k = 1, whatever happens).
+  // failing even one, use bigger fine cells. At k = 1 one piece always fits.
   const most = Math.min(FINE_MARGIN, Math.max(1, Math.ceil(FINE_ROOM_KM / (coarse.cell * kmMost))))
   const plan = (room: boolean): Cut | undefined => {
     for (let m = most; m >= 1; m--) {

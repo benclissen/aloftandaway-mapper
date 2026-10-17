@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   allLand,
   decodeLand,
+  encodeLand,
   haversineKm,
   headingDeg,
   landIndex,
@@ -395,6 +396,18 @@ describe('routeSea', () => {
     expect(densePath(r.path, 0.01).filter((p) => src.isLand(p))).toEqual([])
     // The pieces join on a shared point without a kink.
     expect(hairpins(r)).toEqual([])
+  })
+
+  it('a leg across half the world keeps 50 m cells', () => {
+    // A 110 m channel along the equator through land from 80° S to 80° N, on a leg 179.8° long. Bigger fine cells
+    // would close it and send the route round the land's north end.
+    const h = 55 / 111320
+    const rect = ([w, s, e, n]: Rect): LngLat[] => [[w, s], [e, s], [e, n], [w, n]]
+    const src = landIndex(decodeLand(encodeLand('channel', [rect([-1, -80, 1, -h]), rect([-1, h, 1, 80])])))
+    const r = ok(routeSea([-89.9, 0], [89.9, 0], [], src))
+    expect(r.crossesLand).toBeUndefined()
+    expect(Math.max(...r.path.map((p) => Math.abs(p[1])))).toBeLessThan(h)
+    expect(densePath(r.path, 0.01).filter((p) => p[0] > -1.01 && p[0] < 1.01 && src.isLand(p))).toEqual([])
   })
 
   it('pieces join only on their shared water point', () => {

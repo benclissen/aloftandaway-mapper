@@ -561,6 +561,40 @@ describe('websocket sync', () => {
     }
   })
 
+  test('a save that changes only updatedAt is still broadcast', async () => {
+    const { ws, next } = await connect()
+    try {
+      const shown = await next()
+      const saved = await mutateProject(folder, (p) => p)
+      const message = await next(2000)
+      expect(message.project.updatedAt).toBe(saved.updatedAt)
+      expect(Date.parse(message.project.updatedAt)).toBeGreaterThan(Date.parse(shown.project.updatedAt))
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('an identical older file restored is restamped', async () => {
+    const { ws, next } = await connect()
+    try {
+      await next()
+      const file = path.join(folder, PROJECT_FILE)
+      await saveProject(folder, await loadProject(folder))
+      const v1Bytes = await readFile(file)
+      const v2 = await mutateProject(folder, (p) => p)
+      // Two quick saves can reach the studio as one.
+      let shown = await next(2000)
+      while (shown.project.updatedAt !== v2.updatedAt) shown = await next(2000)
+      await writeFile(file, v1Bytes)
+      const message = await next(2000)
+      expect(Date.parse(message.project.updatedAt)).toBeGreaterThan(Date.parse(v2.updatedAt))
+      expect('origin' in message).toBe(false)
+      expect((await loadProject(folder)).updatedAt).toBe(message.project.updatedAt)
+    } finally {
+      ws.close()
+    }
+  })
+
   test('an identical rewrite sends nothing and leaves the file alone', async () => {
     const { ws, next, messages } = await connect()
     try {

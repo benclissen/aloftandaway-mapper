@@ -513,9 +513,10 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   }
 
   /**
-   * Passes on the project on disk when its content changed. A version whose `updatedAt` isn't newer than the last one
-   * (a hand edit that kept it, or an older file restored) would be dropped by the studio, so it's saved again with a
-   * later one instead, and the watcher passes that on. Only `updatedAt` moving, or a reformat, sends nothing.
+   * Passes on the project on disk when it isn't the last version the server knew. A newer `updatedAt` is broadcast
+   * whatever the content, so the studios patch against it. The same `updatedAt` and content (an identical rewrite or a
+   * reformat) sends nothing. Anything else (a hand edit that kept `updatedAt`, or an older file restored) would be
+   * dropped by the studio, so it's saved again with a later `updatedAt`, and the watcher passes that on.
    */
   async function reload(entry: Registered): Promise<void> {
     let project
@@ -526,12 +527,8 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     }
     if (closed || projects.get(entry.key) !== entry) return
     const hash = projectHash(project)
-    const newer = Date.parse(project.updatedAt) > Date.parse(entry.lastUpdatedAt)
-    if (hash === entry.lastHash) {
-      if (newer) entry.lastUpdatedAt = project.updatedAt
-      return
-    }
-    if (!newer) {
+    if (project.updatedAt === entry.lastUpdatedAt && hash === entry.lastHash) return
+    if (!(Date.parse(project.updatedAt) > Date.parse(entry.lastUpdatedAt))) {
       // Leaves the file alone if anything wrote since it was read; that write fires its own change.
       const restamped = await restampProject(entry.folder, { hash, after: entry.lastUpdatedAt }).catch(() => undefined)
       // A change from outside the studio, even if a patch's version once had the same time.

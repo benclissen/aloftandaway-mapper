@@ -19,13 +19,16 @@ something that works.
 **Decision, 2026-10-14:** the default render is one flattened H.264 MP4
 (`all.mp4`). Layered ProRes plus FCPXML stays as an option (`layers`), and a
 flattened ProRes master is `codec: 'prores'`. Stage 2 is complete for the
-default path. The Final Cut import check is an outstanding acceptance item for
-the optional layered export only, and does not block later stages.
+default path. The Final Cut import check for the optional layered export
+passed on 2026-10-17 (see below).
 
-**Stage 6, built:** the Final Cut import check for a two-scene layered export
-is pending the user's import of that export. It has not been checked yet, so
-stage 6's last "Done when" line is unconfirmed. The Stage 2 import check above
-is still outstanding too.
+**Final Cut import, passed 2026-10-17:** the user imported a two-scene
+layered export (the Stage 7 check project) into Final Cut Pro 12.4. It gave two
+compound clips back to back on one timeline, each with map, route and signs on
+separate lanes. That confirms stage 6's last "Done when" line and Stage 2's
+import check. The finer checks in
+[final-cut-export.md](final-cut-export.md) (halos, colour, roles, markers,
+frame rate, relink) weren't reported one by one.
 
 Out of scope for now: connecting to trip-data APIs (the agent fetches the
 data and passes stops in), hosting, a full manual editor, editable Final Cut titles,

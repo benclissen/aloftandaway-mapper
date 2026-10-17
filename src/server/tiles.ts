@@ -61,6 +61,8 @@ export interface TileReply {
   status: number
   body: Buffer
   contentType?: string
+  /** True when the bytes came from the disk cache, false when they were fetched (or the request failed or was refused). */
+  fromCache: boolean
 }
 
 export interface TileStore {
@@ -177,13 +179,13 @@ function sendError(res: ServerResponse, status: number, message: string): void {
 }
 
 function badGateway(message: string): Reply {
-  return { status: 502, body: Buffer.from(JSON.stringify({ error: { message } })), contentType: 'application/json; charset=utf-8' }
+  return { status: 502, body: Buffer.from(JSON.stringify({ error: { message } })), contentType: 'application/json; charset=utf-8', fromCache: false }
 }
 
 const REJECTED = 'Not a tile path Mapper serves.'
 
 function rejected(): Reply {
-  return { status: 400, body: Buffer.from(JSON.stringify({ error: { message: REJECTED } })), contentType: 'application/json; charset=utf-8' }
+  return { status: 400, body: Buffer.from(JSON.stringify({ error: { message: REJECTED } })), contentType: 'application/json; charset=utf-8', fromCache: false }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -263,9 +265,9 @@ export function createTileStore(opts: TileStoreOptions): TileStore {
         if (status >= 500) {
           failure = `the tile server answered ${status}`
         } else if (status === 200) {
-          return { status, body, contentType: contentTypeFor(segments) }
+          return { status, body, contentType: contentTypeFor(segments), fromCache: false }
         } else if (status >= 400 || status === 204) {
-          return { status, body: Buffer.alloc(0) }
+          return { status, body: Buffer.alloc(0), fromCache: false }
         } else {
           // Redirects and other oddities: following them could leave the upstream.
           return badGateway(`The tile server answered ${status}, which Mapper doesn't follow.`)
@@ -284,7 +286,7 @@ export function createTileStore(opts: TileStoreOptions): TileStore {
   /** The upstream bytes for a subpath: from disk when cached, else fetched and cached. */
   async function obtain(segments: string[], file: string, use: 'view' | 'download'): Promise<Reply> {
     const cached = await readCached(segments, file)
-    if (cached) return { status: 200, body: cached, contentType: contentTypeFor(segments) }
+    if (cached) return { status: 200, body: cached, contentType: contentTypeFor(segments), fromCache: true }
     const reply = await fetchUpstream(segments, use)
     if (reply.status === 200) {
       if (segments.length === 1) {

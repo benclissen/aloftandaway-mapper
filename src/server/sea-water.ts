@@ -121,22 +121,24 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
     return base.isLand(toLngLat([(x + 0.5) / span, (y + 0.5) / span])) ? SOLID : OPEN
   }
 
-  /** One tile, fetched and decoded, or the reason it couldn't be had. */
-  async function fetchTile(build: string, key: string): Promise<Decoded | undefined> {
+  /** One tile, fetched and decoded, or undefined when it couldn't be had; and whether its bytes came from disk. */
+  async function fetchTile(build: string, key: string): Promise<{ tile: Decoded | undefined; fromCache: boolean }> {
     try {
       const reply = await store.get(`planet/${build}/${WATER_ZOOM}/${key}.pbf`, { use: 'download' })
-      if (reply.status === 204) return EMPTY
-      if (reply.status !== 200) return undefined
-      return decodeWater(reply.body)
+      if (reply.status === 204) return { tile: EMPTY, fromCache: reply.fromCache }
+      if (reply.status !== 200) return { tile: undefined, fromCache: reply.fromCache }
+      return { tile: decodeWater(reply.body), fromCache: reply.fromCache }
     } catch (e) {
       console.error(`Mapper sea router: could not read tile ${WATER_ZOOM}/${key} of ${build}:`, e)
-      return undefined
+      return { tile: undefined, fromCache: false }
     }
   }
 
   /**
-   * The tiles `keys` names, from memory or fetched. Each tile not in memory costs one from the budget, charged before
-   * any request goes out, so legs sharing a budget never pass it. Stops at the first failed fetch.
+   * The tiles `keys` names, from memory or fetched. Each request takes one tile from the budget before it goes out,
+   * so legs sharing a budget never pass it, and gives it back when the store answered from disk: only upstream
+   * fetches count. While the budget is empty but requests are out, the next one waits to see if they give any back.
+   * Stops at the first failed fetch.
    */
   async function obtain(
     build: string,
@@ -151,27 +153,39 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
       if (known === undefined) fresh.push(key)
       else tiles.set(key, resolve(known, key, base))
     }
-    const take = fresh.slice(0, Math.max(0, Math.floor(budget.tiles)))
-    budget.tiles -= take.length
     let next = 0
+    let out = 0
     let failed = false
+    let waiting: Array<() => void> = []
+    const settled = (): void => {
+      const wake = waiting
+      waiting = []
+      for (const go of wake) go()
+    }
     const worker = async (): Promise<void> => {
-      while (!failed && next < take.length) {
-        const key = take[next++]!
-        const tile = await fetchTile(build, key)
-        if (tile === undefined) {
-          failed = true
-          return
+      while (!failed && next < fresh.length) {
+        if (budget.tiles < 1) {
+          if (out === 0) return
+          await new Promise<void>((go) => waiting.push(go))
+          continue
         }
-        remember(`${build}/${WATER_ZOOM}/${key}`, tile)
-        tiles.set(key, resolve(tile, key, base))
+        budget.tiles -= 1
+        const key = fresh[next++]!
+        out++
+        const { tile, fromCache } = await fetchTile(build, key)
+        out--
+        if (fromCache) budget.tiles += 1
+        if (tile === undefined) failed = true
+        else {
+          remember(`${build}/${WATER_ZOOM}/${key}`, tile)
+          tiles.set(key, resolve(tile, key, base))
+        }
+        settled()
       }
     }
-    await Promise.all(Array.from({ length: Math.min(WORKERS, take.length) }, worker))
-    // Tiles charged but never asked for go back.
-    budget.tiles += take.length - next
+    await Promise.all(Array.from({ length: Math.min(WORKERS, fresh.length) }, worker))
     if (failed) return { tiles, stop: 'offline' }
-    if (take.length < fresh.length) return { tiles, stop: 'budget' }
+    if (next < fresh.length) return { tiles, stop: 'budget' }
     return { tiles }
   }
 
@@ -208,23 +222,34 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
         if (need.length === 0) return { ...sea, water: { build, tiles: loaded.size, rounds } }
         if (rounds === maxRounds) return unverified(sea, 'unsettled')
         const got = await obtain(build, need, base, budget)
-        for (const [key, tile] of got.tiles) loaded.set(key, tile)
-        if (got.tiles.size > 0) sea = routeSea(from, to, via, land)
+        // A round that couldn't finish is dropped, so the route is the one on the rounds that did, whatever this one
+        // happened to fetch before it stopped.
         if (got.stop) return unverified(sea, got.stop)
+        for (const [key, tile] of got.tiles) loaded.set(key, tile)
+        sea = routeSea(from, to, via, land)
       }
     },
   }
 }
 
-let shared: SeaWater | undefined
+const routers = new WeakMap<TileStore, SeaWater>()
+
+/** The one sea router on `store`, so everything reading the same tiles shares their decoded copies. */
+export function seaWaterOn(store: TileStore): SeaWater {
+  let water = routers.get(store)
+  if (!water) {
+    water = createSeaWater({ store })
+    routers.set(store, water)
+  }
+  return water
+}
 
 /** The process's one sea router, on the tile store the studio's map proxy uses. */
 export function seaWater(): SeaWater {
-  shared ??= createSeaWater({
-    store: tileStore({
+  return seaWaterOn(
+    tileStore({
       cacheDir: process.env.MAPPER_CACHE_DIR ?? path.join(os.homedir(), '.cache', 'mapper'),
       upstream: process.env.MAPPER_TILE_UPSTREAM || undefined,
     }),
-  })
-  return shared
+  )
 }

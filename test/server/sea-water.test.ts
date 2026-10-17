@@ -300,6 +300,52 @@ describe('SeaWater.route', () => {
     expect(all.fake.inFlightMax).toBe(4)
   })
 
+  it('tiles already on disk cost nothing from the budget', async () => {
+    // Every tile the route could ask for is a real tile, so each one fetched is written to disk.
+    const tiles = new Map<string, Uint8Array>()
+    for (const key of tilesTouching([[CX - 0.6, CY - 0.15, CX + 0.6, CY + 0.15]])) {
+      const [x, y] = key.split('/').map(Number) as [number, number]
+      tiles.set(key, waterBut(x, y, x === TX && y === TY ? [ISLAND] : []))
+    }
+    const w = await world(tiles)
+    const first = await w.water.route(FROM, TO, [], coastBase, budget())
+    if (!('build' in first.water)) throw new Error(`unverified: ${first.water.unverified}`)
+    expect(w.tileRequests().every((key) => tiles.has(key))).toBe(true)
+    expect(first.water.tiles).toBeGreaterThan(5)
+    // A fresh router on the same disk cache, with a budget far smaller than the tile count.
+    const before = w.fake.requests.length
+    const small = budget(5)
+    const again = await createSeaWater({ store: w.store }).route(FROM, TO, [], coastBase, small)
+    expect(w.fake.requests.length).toBe(before)
+    expect(again).toEqual(first)
+    expect(small.tiles).toBe(5)
+  })
+
+  it('a budget stop gives the same path on a warm and a cold SeaWater', async () => {
+    // The budget runs out partway through the first round, after the island's tile has been fetched.
+    const ne = routeSea(FROM, TO, [], coastBase)
+    const need = tilesNear(ne.path, { zoom: WATER_ZOOM, bufferKm: 2, coast: coastBase, coastKm: 20 })
+    const at = need.indexOf(`${TX}/${TY}`)
+    expect(at).toBeGreaterThanOrEqual(0)
+    expect(need.length).toBeGreaterThan(at + 1)
+    const tiles = new Map([[`${TX}/${TY}`, waterBut(TX, TY, [ISLAND])]])
+
+    const cold = await world(tiles)
+    const fromCold = await cold.water.route(FROM, TO, [], coastBase, budget(at + 1))
+    expect(cold.tileRequests()).toContain(`${TX}/${TY}`)
+
+    // Warm with tiles of an unrelated leg along the coast's far side, 28 km south.
+    const warm = await world(tiles)
+    await warm.water.route([CX - 2.8, CY - 0.25], [CX + 2.8, CY - 0.25], [], coastBase, budget())
+    expect(warm.tileRequests().length).toBeGreaterThan(20)
+    expect(warm.tileRequests().filter((key) => need.includes(key))).toEqual([])
+    const fromWarm = await warm.water.route(FROM, TO, [], coastBase, budget(at + 1))
+
+    // Both route on the rounds that finished, which here is none: the Natural Earth route.
+    expect(fromCold).toEqual({ ...ne, unverified: 'budget', water: { unverified: 'budget' } })
+    expect(fromWarm).toEqual(fromCold)
+  })
+
   it('offline gives the Natural Earth route, unverified', async () => {
     const ne = routeSea(FROM, TO, [], coastBase)
     // Nothing answers at all.

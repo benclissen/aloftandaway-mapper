@@ -520,6 +520,21 @@ describe('tile store', () => {
     expect(tiles.requests).toHaveLength(1)
   })
 
+  test('a reply says whether it came from the disk cache', async () => {
+    tiles.delayMs = 40
+    const store = createTileStore({ cacheDir, upstream: tiles.url, retryDelaysMs: [] })
+    expect((await store.get(tilePath(0), { use: 'download' })).fromCache).toBe(false)
+    expect((await store.get(tilePath(0), { use: 'download' })).fromCache).toBe(true)
+    // A fetch joined while in flight says what that fetch did.
+    const joined = await Promise.all([store.get(tilePath(1), { use: 'download' }), store.get(tilePath(1), { use: 'view' })])
+    expect(joined.map((r) => r.fromCache)).toEqual([false, false])
+    const fromDisk = await Promise.all([store.get(tilePath(1), { use: 'download' }), store.get(tilePath(1), { use: 'view' })])
+    expect(fromDisk.map((r) => r.fromCache)).toEqual([true, true])
+    // Empty and refused answers come from upstream too.
+    expect((await store.get(`planet/${BUILD}/12/2201/1000.pbf`, { use: 'download' })).fromCache).toBe(false)
+    expect((await store.get('planet/../x')).fromCache).toBe(false)
+  })
+
   test('tileStore gives one store per cache and upstream', async () => {
     const a = tileStore({ cacheDir, upstream: tiles.url })
     expect(tileStore({ cacheDir: path.join(cacheDir, '..', 'cache'), upstream: `${tiles.url}/` })).toBe(a)

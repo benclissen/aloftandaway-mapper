@@ -1,6 +1,6 @@
 import { SYMBOL_ICON, SYMBOLS, type LegMode, type ProjectPatch, type Route, type Scene, type SymbolKind } from '../../core/index.js'
 import { ICONS, type IconName } from '../stage/icons.js'
-import { MODE_LABELS, SYMBOL_LABELS, unverifiedNote } from './labels.js'
+import { fallbackNote, MODE_LABELS, SYMBOL_LABELS, unverifiedNote } from './labels.js'
 
 const MODES = Object.keys(MODE_LABELS) as LegMode[]
 
@@ -45,6 +45,7 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
         <ul>
           {scene.legs.map((leg, i) => {
             const sea = route.legs[i]?.sea
+            const fallback = fallbackNote(sea)
             return (
             <li
               key={i}
@@ -104,16 +105,11 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
                   ))}
                 </select>
               </div>
-              {sea?.status === 'fallback' && (
-                <p className="leg-note">
-                  {sea?.reason ? `No sea route found: ${sea?.reason}.` : 'No sea route found.'} Drawn as
-                  a line.
-                </p>
-              )}
+              {fallback && <p className="leg-note">{fallback}</p>}
               {sea?.status === 'pending' && <p className="leg-note">Finding a sea route…</p>}
               {sea?.unverified && (
                 <p className="leg-note" data-testid={`leg-unverified-${i}`}>
-                  {unverifiedNote(sea.unverified)}
+                  {unverifiedNote(sea.unverified, sea.status)}
                 </p>
               )}
             </li>

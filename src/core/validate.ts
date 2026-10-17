@@ -2,7 +2,7 @@ import { cameraAt, projectToLayout, resolveShots } from './camera.js'
 import { haversineKm } from './geo.js'
 import { buildRoute } from './route.js'
 import { THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
-import { NO_LAND_DATA, STOP_FAR_KM, UNVERIFIED_CAUSE, type SeaPaths } from './sea.js'
+import { NO_LAND_DATA, STOP_FAR_KM, STRAIGHT_LINE, UNVERIFIED_CAUSE, type SeaPaths } from './sea.js'
 import { signBox, signLift, signText } from './signs.js'
 import { buildTimeline, formatTimecode, legSeconds, SIGN_FADE_SECONDS } from './timeline.js'
 
@@ -238,7 +238,9 @@ function validateScene(
         warnings.push({
           code: 'sea-unverified',
           message:
-            why === 'unsettled'
+            leg.sea?.status === 'fallback'
+              ? `${legName(i)} has no checked sea route, because ${UNVERIFIED_CAUSE[why]}. It's ${STRAIGHT_LINE}.`
+              : why === 'unsettled'
               ? `${legName(i)}'s sea route was only partly checked, because ${UNVERIFIED_CAUSE[why]}. It may cross small islands near the ones it found.`
               : `${legName(i)}'s sea route was checked against Natural Earth only, because ${UNVERIFIED_CAUSE[why]}. It may cross small islands.`,
           path: ['legs', i],

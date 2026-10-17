@@ -58,13 +58,19 @@ export type SeaPaths = Record<string, SeaPath>
 /**
  * Why a path is unverified, as a clause. Validation, renders and the studio end "checked against Natural Earth only,
  * because …" with it for `offline` and `budget`, and "only partly checked, because …" for `unsettled`, which did use
- * the tiles it loaded.
+ * the tiles it loaded. A leg that fell back says `STRAIGHT_LINE` instead.
  */
 export const UNVERIFIED_CAUSE: Record<NonNullable<SeaPath['unverified']>, string> = {
   offline: "OpenFreeMap couldn't be reached",
   budget: 'the project needed more map tiles at once than Mapper fetches in one go',
   unsettled: 'it kept finding new islands',
 }
+
+/**
+ * What a sea leg that fell back says it was drawn as. Validation, renders and the studio all end their fallback
+ * wording with it, whatever the reason the leg went unverified.
+ */
+export const STRAIGHT_LINE = 'drawn as a straight line, which may cross land'
 
 /** A stop farther than this many km from the water its sea route starts or ends in has a line across land to reach it. */
 export const STOP_FAR_KM = 2

@@ -137,10 +137,38 @@ describe('unverified sea paths', () => {
     const { sail } = sailBySea()
     const [, from, to] = sail.stops.map((stop) => stop.at)
     const fellBack: SeaPaths = { [seaLegKey(from!, to!, [])]: { status: 'fallback', reason: 'No sea route found', path: [], knots: [], unverified: 'offline' } }
-    expect(seaWarningLines(sail, fellBack)).toEqual([OFFLINE])
+    expect(seaWarningLines(sail, fellBack)).toEqual([
+      "Leg 2: no sea route was found (OpenFreeMap couldn't be reached), so it's drawn as a straight line, which may cross land.",
+    ])
     // One that fell back with every tile it needed has none.
     const checked: SeaPaths = { [seaLegKey(from!, to!, [])]: { status: 'fallback', reason: 'No sea route found', path: [], knots: [] } }
     expect(seaWarningLines(sail, checked)).toEqual([])
+  })
+
+  test("a straight-line fallback says it's a straight line", () => {
+    const { sail } = sailBySea()
+    const [, from, to] = sail.stops.map((stop) => stop.at)
+    const fellBack = (unverified: 'offline' | 'budget' | 'unsettled'): SeaPaths => ({
+      [seaLegKey(from!, to!, [])]: { status: 'fallback', reason: 'No sea route found', path: [], knots: [], unverified },
+    })
+    const causes = {
+      offline: "OpenFreeMap couldn't be reached",
+      budget: 'the project needed more map tiles at once than Mapper fetches in one go',
+      unsettled: 'it kept finding new islands',
+    } as const
+    for (const why of ['offline', 'budget', 'unsettled'] as const) {
+      const lines = seaWarningLines(sail, fellBack(why))
+      expect(lines).toEqual([`Leg 2: no sea route was found (${causes[why]}), so it's drawn as a straight line, which may cross land.`])
+      expect(lines.join('\n')).not.toContain('small islands')
+    }
+  })
+
+  test('a straight-line warning keeps the scene label', () => {
+    const { sail } = sailBySea()
+    const [, from, to] = sail.stops.map((stop) => stop.at)
+    const fellBack: SeaPaths = { [seaLegKey(from!, to!, [])]: { status: 'fallback', reason: 'No sea route found', path: [], knots: [], unverified: 'offline' } }
+    const [line] = seaWarningLines(sail, fellBack, 'Scene 2 of 2 · Sail')
+    expect(line!.startsWith('Scene 2 of 2 · Sail: leg 2: no sea route was found (')).toBe(true)
   })
 
   test('a verified path, a path not yet routed and a scene with no sea leg have none', () => {

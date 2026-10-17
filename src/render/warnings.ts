@@ -1,4 +1,4 @@
-import { buildRoute, UNVERIFIED_CAUSE, type Scene, type SeaPaths } from '../core/index.js'
+import { buildRoute, STRAIGHT_LINE, UNVERIFIED_CAUSE, type Scene, type SeaPaths } from '../core/index.js'
 
 /**
  * What went wrong in a render without failing it. `unsettled` are frames whose camera height over terrain never held
@@ -55,7 +55,9 @@ export function seaWarningLines(scene: Scene, seaPaths: SeaPaths, label?: string
     const why = leg.sea?.unverified
     if (!why) return []
     const line =
-      why === 'unsettled'
+      leg.sea?.status === 'fallback'
+        ? `Leg ${i + 1}: no sea route was found (${UNVERIFIED_CAUSE[why]}), so it's ${STRAIGHT_LINE}.`
+        : why === 'unsettled'
         ? `Leg ${i + 1}: the sea route was only partly checked (${UNVERIFIED_CAUSE[why]}), so it may cross small islands near the ones it found.`
         : `Leg ${i + 1}: the sea route was checked against Natural Earth only (${UNVERIFIED_CAUSE[why]}), so it may cross small islands.`
     return [label ? `${label}: ${line[0]!.toLowerCase()}${line.slice(1)}` : line]

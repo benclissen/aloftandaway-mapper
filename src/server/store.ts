@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { writeFileAtomic } from './atomic.js'
+import { writeFileAtomic, type AtomicOptions } from './atomic.js'
 import { defaultProject, parseProject, ProjectError, type Output, type Project } from '../core/index.js'
 
 export const PROJECT_FILE = 'mapper.json'
@@ -117,21 +117,81 @@ export async function loadProject(folder: string): Promise<Project> {
   }
 }
 
-export async function saveProject(folder: string, project: Project): Promise<Project> {
+/**
+ * Validates and writes the project. The saved `updatedAt` is strictly later than the project's own and than `after`,
+ * even when two saves land in the same millisecond.
+ */
+export async function saveProject(folder: string, project: Project, opts: { after?: string } = {}): Promise<Project> {
   assertAbsolute(folder)
+  return save(folder, project, opts.after)
+}
+
+async function save(
+  folder: string,
+  project: Project,
+  after: string | undefined,
+  atomic?: AtomicOptions,
+): Promise<Project> {
   const valid = parseProject(project)
-  const previous = Date.parse(valid.updatedAt)
+  const floor = Math.max(timeOf(valid.updatedAt), timeOf(after))
   const now = Date.now()
-  // Keep updatedAt strictly increasing, even when two saves land in the same millisecond.
-  const next = Number.isFinite(previous) && now <= previous ? previous + 1 : now
+  const next = now <= floor ? floor + 1 : now
   const saved = { ...valid, updatedAt: new Date(next).toISOString() }
-  await writeAtomic(folder, saved)
+  await writeAtomic(folder, saved, atomic)
   return saved
 }
 
-export async function mutateProject(folder: string, fn: (project: Project) => Project): Promise<Project> {
+export async function mutateProject(
+  folder: string,
+  fn: (project: Project) => Project,
+  opts: { after?: string } = {},
+): Promise<Project> {
   assertAbsolute(folder)
-  return inFolderQueue(folder, async () => saveProject(folder, fn(await loadProject(folder))))
+  return inFolderQueue(folder, async () => saveProject(folder, fn(await loadProject(folder)), opts))
+}
+
+/** Thrown inside a restamp's write when the file changed while it was being prepared. */
+class Moved extends Error {}
+
+/**
+ * Saves the project on disk again with an `updatedAt` later than `expect.after`, changing nothing else. It writes only
+ * if the file still holds the content with `expect.hash` and isn't already later than `expect.after`, so it never
+ * stamps over a write that landed since the caller read the file. Returns the saved project, or undefined when it left
+ * the file alone.
+ */
+export async function restampProject(
+  folder: string,
+  expect: { hash: string; after: string },
+): Promise<Project | undefined> {
+  assertAbsolute(folder)
+  return inFolderQueue(folder, async () => {
+    let current: Project
+    try {
+      current = await loadProject(folder)
+    } catch {
+      return undefined // Not the file the caller read; whatever wrote it fires its own change.
+    }
+    if (projectHash(current) !== expect.hash || timeOf(current.updatedAt) > timeOf(expect.after)) return undefined
+    // The folder queue only orders this process's own writes. An editor or another Mapper can save while the new file
+    // is written and flushed, so the file is read again just before the rename. POSIX has no compare-and-swap rename,
+    // so this narrows the window to the moment between that read and the rename; it doesn't close it.
+    const unchanged = async (): Promise<void> => {
+      const onDisk = await loadProject(folder).catch(() => undefined)
+      if (!onDisk || projectHash(onDisk) !== expect.hash || onDisk.updatedAt !== current.updatedAt) throw new Moved()
+    }
+    try {
+      return await save(folder, current, expect.after, { beforeReplace: unchanged })
+    } catch (e) {
+      if (e instanceof Moved) return undefined // The newer write fires its own change.
+      throw e
+    }
+  })
+}
+
+/** An ISO time in ms, or -Infinity when there's none to compare. */
+function timeOf(iso: string | undefined): number {
+  const ms = iso === undefined ? NaN : Date.parse(iso)
+  return Number.isFinite(ms) ? ms : -Infinity
 }
 
 /** SHA-256 of the project as canonical JSON (object keys sorted), leaving out `updatedAt`. */
@@ -150,9 +210,9 @@ function canonical(value: unknown): unknown {
 }
 
 /** Writes mapper.json atomically (see `writeFileAtomic`). */
-async function writeAtomic(folder: string, project: Project): Promise<void> {
+async function writeAtomic(folder: string, project: Project, atomic?: AtomicOptions): Promise<void> {
   try {
-    await writeFileAtomic(path.join(folder, PROJECT_FILE), `${JSON.stringify(project, null, 2)}\n`)
+    await writeFileAtomic(path.join(folder, PROJECT_FILE), `${JSON.stringify(project, null, 2)}\n`, atomic)
   } catch (e) {
     // Name the folder, not the temporary file.
     throw fsError(e, folder)

@@ -325,6 +325,46 @@ describe the layered export unless they say otherwise.
   Mariehamn took 0.99 s and Stockholm to Helsinki 1.07 s. A cold Helsinki
   route took 12.6 s, bound by the network.
 
+**Revision, 2026-10-17 (stage 9 decisions):**
+
+- **A straight-line fallback says so.** An unverified sea leg drawn as a
+  straight line says it may cross land, whatever the reason (`unsettled` can
+  end that way too). The render warning, `sea-unverified` and the studio's
+  legs panel use that wording. A routed leg keeps "may cross small islands".
+- **The offline memory follows the network.** A route that ends `offline`
+  always starts the 60-second memory, from when its failure came back. Every
+  cause counts. Only a tile reply fetched from upstream (a 200 or 204 that
+  decodes) clears it. A route served from memory or disk leaves it alone. The
+  `down` flag goes.
+- **A 404 on a planet tile drops the cached TileJSON.** The next try reads the
+  current build. Other statuses leave the TileJSON alone.
+- **A new planet build doesn't re-route cached legs (parked).** A verified
+  route is a shape the user approved, so it stays until its stops, via points
+  or `ROUTER_VERSION` change. To re-route on the current build, delete
+  `.mapper/paths.json` or move a via point on that leg.
+- **Hand edits reach the studio.** The watcher compares the file with the last
+  version the server knew, by content (`projectHash`).
+  - A newer `updatedAt` is broadcast, whatever the content.
+  - The same `updatedAt` with the same content does nothing.
+  - Anything else gets a guarded restamp: changed content without a newer
+    `updatedAt`, or an identical older file restored from git or a backup. The
+    server saves the file once more with a fresh `updatedAt`, later than both,
+    and nothing else changes. The watcher then broadcasts that version.
+  - The restamp writes only if the file still holds the content it read and no
+    newer write has landed. An invalid hand edit is never written back. A
+    restamp that fails is logged once per project.
+  - A version counter instead of `updatedAt` was considered and rejected as too
+    much for a fix pass.
+- **Test waits.** A test that waits for an event polls the condition. A test
+  that checks nothing happens waits a named window tied to the product
+  constant it outlasts (4 × `WATCH_DEBOUNCE_MS`, 10 × `retryMs`). Mock sleeps
+  that stand for slow work stay, with a comment.
+- **Test hooks stay (parked).** `faultAtFrame`, `faultAfterRenderFrame`,
+  `forceUnsettledAt`, `removeFile`, `h264Encoder`, `cpuOverlay` and
+  `MapStage.lastScreenAngle` are documented injection points. The MCP `render`
+  tool's input is a strict schema, so unknown keys such as these are refused.
+  The CLI passes only its named options. A test pins that.
+
 ## Purpose
 
 Mapper turns a trip into an animated map clip for a travel film. An AI agent
@@ -708,7 +748,9 @@ Mapper process. It serves several projects.
   agent or the CLI), connected studios reload the project over WebSocket.
   Edits made in the studio are sent to the server, which applies them as a
   patch through `core`. The last write wins, and `updatedAt` shows which
-  write that was.
+  write that was. A hand edit to `mapper.json` that changes the content
+  without a newer `updatedAt`, or restores an older file, is saved again with
+  a fresh `updatedAt`.
 - **Tile cache**: map tiles, styles, fonts and terrain go through the server
   to a disk cache in `~/.cache/mapper/tiles`. Repeat previews and renders
   don't hit the upstream services again. Requests are throttled to stay
@@ -910,6 +952,12 @@ Each stage gets its own implementation plan.
    Vector tiles decoded in Node, rounds of routing, 50 m fine cells,
    `sea-unverified` and `sea-stop-far` warnings, and a credit for `blank`
    scenes with a sea leg.
+9. **Fix pass 2** (built): the open items from stages 7 and 8, each fixed
+   with a test or parked with a reason. Straight-line sea legs say they may
+   cross land, the sea router's offline memory follows the network, a stale
+   planet build is refetched, and hand edits reach the studio. A new planet
+   build doesn't re-route cached legs, and the render test hooks stay (both
+   parked).
 
 ## Risks
 

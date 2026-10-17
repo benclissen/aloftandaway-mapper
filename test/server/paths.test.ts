@@ -268,6 +268,34 @@ test('a verified entry is never re-routed', async () => {
   expect(await resolveSeaPaths(folder, p, { land: island(), water: refuse, now: () => 2 * day })).toEqual(first)
 })
 
+test("a new planet build doesn't re-route a verified leg", async () => {
+  const p = projectWith([{ from: A, to: B }])
+  const key = seaLegKey(A, B, [])
+  const day = 24 * 60 * 60 * 1000
+  const first = await resolveSeaPaths(folder, p, { land: island(), water: fakeWater(), now: () => 0 })
+  expect(first[key]!.status).toBe('ok')
+  expect(first[key]!.unverified).toBeUndefined()
+  // OpenFreeMap has published build b2. The leg is verified on b1, so nothing may ask the tile store for anything.
+  let getCalls = 0
+  let planetBuildCalls = 0
+  const store: TileStore = {
+    async get() {
+      getCalls++
+      throw new Error('the tile store was asked for a tile')
+    },
+    async forget() {},
+    async planetBuild() {
+      planetBuildCalls++
+      return 'b2'
+    },
+  }
+  const second = await resolveSeaPaths(folder, p, { land: island(), water: createSeaWater({ store }), now: () => day })
+  expect(second).toEqual(first)
+  expect(getCalls).toBe(0)
+  expect(planetBuildCalls).toBe(0)
+  expect((await readCacheFile()).paths[key].water.build).toBe('b1')
+})
+
 test("offline routes come back unverified and aren't retried within a minute", async () => {
   const p = projectWith([{ from: A, to: B }])
   const key = seaLegKey(A, B, [])

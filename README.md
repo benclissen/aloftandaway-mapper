@@ -12,12 +12,14 @@ or copy.
 
 ## Status
 
-Stages 1 to 8 (agent-driven MVP, Final Cut export, route editing, routes, look, scenes, a fix pass, sea routes against OpenFreeMap water) built. What works today:
+Stages 1 to 9 (agent-driven MVP, Final Cut export, route editing, routes, look, scenes, a fix pass, sea routes against OpenFreeMap water, a second fix pass) built. What works today:
 
 - An MCP server and CLI. The agent creates a project, sets stops, validates,
   previews, opens the studio and renders.
 - A local studio for scrubbing the preview, dragging stops and setting start
-  and end shots.
+  and end shots. A hand edit to `mapper.json` shows in an open studio. If it
+  changes the content without a newer `updatedAt`, or restores an older file,
+  Mapper saves it again with a fresh `updatedAt`.
 - Contact sheets and single-frame previews, so the agent can check its work.
 - Renders at 3840×2160 and 25 fps by default, as one flattened H.264 MP4
   (`all.mp4`) with the map credit burned in. `--codec prores` makes a
@@ -73,13 +75,17 @@ is needed, it uses Natural Earth 1:10m land outlines (public domain), shipped
 in `data/land-10m.bin`. The first route through an archipelago fetches map
 tiles, which takes several seconds (Stockholm to Helsinki took 12.6 s, and a
 slow connection can add more). After that the route is cached in the project,
-and the tiles come from disk if it is ever routed again, in about a second. Numbers are in
-[docs/render-speed.md](docs/render-speed.md#sea-routing-stage-8-task-9).
+and the tiles come from disk if it is ever routed again, in about a second
+(see [docs/render-speed.md](docs/render-speed.md#sea-routing-stage-8-task-9)).
+A verified route keeps the OpenFreeMap build it was routed on, so a new build
+doesn't re-route it; to re-route every sea leg on the current build, delete
+`<project>/.mapper/paths.json`.
 
 - Offline, a route is checked against Natural Earth only. It is flagged
   `sea-unverified` and may cross small islands, and the studio's legs panel
-  notes it. Once a minute has passed, the next call, or a studio left open,
-  routes it again.
+  notes it. A leg left unverified that also falls back is drawn as a straight
+  line, which may cross land. Once a minute has passed, the next call, or a
+  studio left open, routes it again.
 - A stop more than 30 km from the sea, or a leg with no route found, is drawn
   as a straight line with a `sea-fallback` warning. A stop more than 2 km from
   the water its route starts or ends in gets `sea-stop-far`: put the stop on

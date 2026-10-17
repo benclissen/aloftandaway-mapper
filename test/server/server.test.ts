@@ -1,14 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { WebSocket } from 'ws'
 import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, PATHS_ORIGIN, routeSea, seaLegKey, STALE_BASE_MESSAGE, validateProject, type LandSource, type LngLat, type Project, type ServerMessage, type ViaPoint } from '../../src/core/index.js'
 import { PROJECT_FILE, createProject, loadProject, mutateProject, saveProject } from '../../src/server/store.js'
 import type { SeaWater } from '../../src/server/sea-water.js'
-import { getServer, startServer, type MapperServer, type ServerOptions } from '../../src/server/server.js'
+import { getServer, startServer, WATCH_DEBOUNCE_MS, type MapperServer, type ServerOptions } from '../../src/server/server.js'
+
+/** A window in which nothing must happen. The caller picks a length that outlasts the product constant it names. */
+const quiet = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** The sea retry interval the retry tests pass as `retryMs`. */
+const RETRY = 20
 
 let tmp: string
 let studioDir: string
@@ -356,7 +361,8 @@ describe('registerProject', () => {
     expect((await loadProject(folder)).scenes[0]!.stops[0]?.name).toBe('Original')
     expect((await loadProject(copy)).scenes[0]!.stops[0]?.name).toBe('Piraeus')
     // The original's socket still hears about the original.
-    expect((await next(1000)).project.scenes[0]!.stops[0]?.name).toBe('Original')
+    // 2 s, not 1: watching a second folder can restart macOS's FSEvents stream, which is slow under parallel load.
+    expect((await next(2000)).project.scenes[0]!.stops[0]?.name).toBe('Original')
 
     await call(projectUrl('/patch', copyKey), {
       method: 'POST',
@@ -515,7 +521,7 @@ describe('websocket sync', () => {
     const { ws, next, messages } = await connect()
     await next()
     await writeFile(path.join(folder, PROJECT_FILE), '{"half":')
-    await new Promise((r) => setTimeout(r, 250))
+    await quiet(4 * WATCH_DEBOUNCE_MS)
     expect(messages).toHaveLength(0)
     const current = { ...project, name: 'Recovered' }
     await saveProject(folder, current)
@@ -523,15 +529,158 @@ describe('websocket sync', () => {
     ws.close()
   })
 
-  test('does not rebroadcast an unchanged updatedAt', async () => {
+  test('a hand edit that keeps updatedAt reaches the studio', async () => {
+    const { ws, next } = await connect()
+    try {
+      await next()
+      const before = await loadProject(folder)
+      await writeFile(path.join(folder, PROJECT_FILE), `${JSON.stringify({ ...before, name: 'By hand' }, null, 2)}\n`)
+      const message = await next(2000)
+      expect(message.project.name).toBe('By hand')
+      expect(Date.parse(message.project.updatedAt)).toBeGreaterThan(Date.parse(before.updatedAt))
+      expect('origin' in message).toBe(false)
+      expect((await loadProject(folder)).updatedAt).toBe(message.project.updatedAt)
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('a restored older file reaches the studio', async () => {
+    const { ws, next } = await connect()
+    try {
+      await next()
+      const file = path.join(folder, PROJECT_FILE)
+      const v1 = await saveProject(folder, { ...(await loadProject(folder)), name: 'Version 1' })
+      const v1Bytes = await readFile(file)
+      const v2 = await saveProject(folder, { ...v1, name: 'Version 2' })
+      // Two quick saves can reach the studio as one.
+      let shown = await next(2000)
+      while (shown.project.name !== 'Version 2') shown = await next(2000)
+      await writeFile(file, v1Bytes)
+      const message = await next(2000)
+      expect(message.project.name).toBe('Version 1')
+      expect({ ...message.project, updatedAt: v1.updatedAt }).toEqual(v1)
+      expect(Date.parse(message.project.updatedAt)).toBeGreaterThan(Date.parse(v2.updatedAt))
+      expect('origin' in message).toBe(false)
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('a save that changes only updatedAt is still broadcast', async () => {
+    const { ws, next } = await connect()
+    try {
+      const shown = await next()
+      const saved = await mutateProject(folder, (p) => p)
+      const message = await next(2000)
+      expect(message.project.updatedAt).toBe(saved.updatedAt)
+      expect(Date.parse(message.project.updatedAt)).toBeGreaterThan(Date.parse(shown.project.updatedAt))
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('an identical older file restored is restamped', async () => {
+    const { ws, next } = await connect()
+    try {
+      await next()
+      const file = path.join(folder, PROJECT_FILE)
+      await saveProject(folder, await loadProject(folder))
+      const v1Bytes = await readFile(file)
+      const v2 = await mutateProject(folder, (p) => p)
+      // Two quick saves can reach the studio as one.
+      let shown = await next(2000)
+      while (shown.project.updatedAt !== v2.updatedAt) shown = await next(2000)
+      await writeFile(file, v1Bytes)
+      const message = await next(2000)
+      expect(Date.parse(message.project.updatedAt)).toBeGreaterThan(Date.parse(v2.updatedAt))
+      expect('origin' in message).toBe(false)
+      expect((await loadProject(folder)).updatedAt).toBe(message.project.updatedAt)
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('a restamp that fails logs once across two reloads, and again after one succeeds', async () => {
     const { ws, next, messages } = await connect()
-    await next()
-    await writeFile(path.join(folder, 'notes.txt'), 'unrelated')
-    const before = await loadProject(folder)
-    await writeFile(path.join(folder, PROJECT_FILE), `${JSON.stringify(before, null, 2)}\n`)
-    await new Promise((r) => setTimeout(r, 250))
-    expect(messages).toHaveLength(0)
-    ws.close()
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const file = path.join(folder, PROJECT_FILE)
+    const restamps = () => errors.mock.calls.filter((call) => String(call[0]).includes('could not save'))
+    try {
+      await next()
+      const before = await loadProject(folder)
+      const handEdit = (name: string) => writeFile(file, `${JSON.stringify({ ...before, name }, null, 2)}\n`)
+      // A read-only folder: the file can still be edited in place, but the atomic save can't make its temporary file.
+      await chmod(folder, 0o555)
+      await handEdit('By hand')
+      await vi.waitFor(() => expect(restamps()).toHaveLength(1), { timeout: 2000 })
+      await handEdit('By hand again')
+      await quiet(4 * WATCH_DEBOUNCE_MS)
+      expect(restamps()).toHaveLength(1)
+      expect(messages).toHaveLength(0)
+      // Once a restamp succeeds, the next failure is logged again.
+      await chmod(folder, 0o755)
+      await handEdit('Saved')
+      expect((await next(2000)).project.name).toBe('Saved')
+      await chmod(folder, 0o555)
+      await writeFile(file, `${JSON.stringify({ ...(await loadProject(folder)), name: 'Stuck' }, null, 2)}\n`)
+      await vi.waitFor(() => expect(restamps()).toHaveLength(2), { timeout: 2000 })
+    } finally {
+      await chmod(folder, 0o755)
+      errors.mockRestore()
+      ws.close()
+    }
+  })
+
+  test('an identical rewrite sends nothing and leaves the file alone', async () => {
+    const { ws, next, messages } = await connect()
+    try {
+      await next()
+      await writeFile(path.join(folder, 'notes.txt'), 'unrelated')
+      const before = await loadProject(folder)
+      await writeFile(path.join(folder, PROJECT_FILE), `${JSON.stringify(before, null, 2)}\n`)
+      await quiet(4 * WATCH_DEBOUNCE_MS)
+      expect(messages).toHaveLength(0)
+      expect((await loadProject(folder)).updatedAt).toBe(before.updatedAt)
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('reformatting the file sends nothing and leaves it alone', async () => {
+    const { ws, next, messages } = await connect()
+    try {
+      await next()
+      const file = path.join(folder, PROJECT_FILE)
+      const before = await loadProject(folder)
+      const reordered = Object.fromEntries(Object.entries(before).reverse())
+      await writeFile(file, `${JSON.stringify(reordered, null, 4)}\n`)
+      const written = await readFile(file, 'utf8')
+      await quiet(4 * WATCH_DEBOUNCE_MS)
+      expect(messages).toHaveLength(0)
+      expect(await readFile(file, 'utf8')).toBe(written)
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('a schema-invalid hand edit is never rewritten', async () => {
+    const { ws, next, messages } = await connect()
+    try {
+      await next()
+      const file = path.join(folder, PROJECT_FILE)
+      const before = await loadProject(folder)
+      const invalid = { ...before, output: { ...before.output, fps: { num: 7, den: 1 } } }
+      await writeFile(file, `${JSON.stringify(invalid, null, 2)}\n`)
+      const written = await readFile(file, 'utf8')
+      await quiet(4 * WATCH_DEBOUNCE_MS)
+      expect(messages).toHaveLength(0)
+      expect(await readFile(file, 'utf8')).toBe(written)
+      await saveProject(folder, { ...before, name: 'Valid again' })
+      expect((await next(2000)).project.name).toBe('Valid again')
+    } finally {
+      ws.close()
+    }
   })
 
   test('close shuts down clients and the listener', async () => {
@@ -639,14 +788,14 @@ describe('sea paths', () => {
     const state = { online: false }
     const water = fakeWater(state)
     let clock = 0
-    await seaServer(async () => island(), { water, retryMs: 40, now: () => clock })
+    await seaServer(async () => island(), { water, retryMs: RETRY, now: () => clock })
     const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
     const { ws, next, messages } = await connect(url)
     try {
       const first = (await next()) as any
       expect(first.seaPaths[legKey].unverified).toBe('offline')
       // Within the minute the cache keeps the unverified path, and nothing changes, so nothing is sent.
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      await quiet(10 * RETRY)
       expect(water.calls).toBe(1)
       expect(messages).toEqual([])
       // Back online, and the minute is up: the next retry routes it again and pushes the new path.
@@ -661,7 +810,7 @@ describe('sea paths', () => {
       expect(upgraded.origin).toBe(PATHS_ORIGIN)
       expect(water.calls).toBe(2)
       // Verified now, so the retries stop.
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      await quiet(10 * RETRY)
       expect(water.calls).toBe(2)
       expect(messages).toEqual([])
     } finally {
@@ -676,33 +825,30 @@ describe('sea paths', () => {
     const water = fakeWater({ online: false })
     // Each call is a minute after the last, so every retry routes the leg again.
     let clock = 0
-    await seaServer(async () => island(), { water, retryMs: 20, now: () => (clock += 61_000) })
+    await seaServer(async () => island(), { water, retryMs: RETRY, now: () => (clock += 61_000) })
     const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
     const first = await connect(url)
     await first.next()
-    await wait(200)
-    expect(water.calls).toBeGreaterThan(2)
+    await vi.waitFor(() => expect(water.calls).toBeGreaterThan(2))
     // Offline each time, with the same path, so nothing new was sent.
     expect(first.messages).toEqual([])
     await new Promise<void>((resolve) => {
       first.ws.once('close', () => resolve())
       first.ws.close()
     })
-    await wait(60)
+    await quiet(3 * RETRY)
     const settled = water.calls
-    await wait(200)
+    await quiet(10 * RETRY)
     expect(water.calls).toBe(settled)
 
     // A new studio starts it again, and closing the server stops it.
     const second = await connect(url)
     await second.next()
-    await wait(100)
-    expect(water.calls).toBeGreaterThan(settled + 1)
+    await vi.waitFor(() => expect(water.calls).toBeGreaterThan(settled + 1))
     await sea.close()
     const closed = water.calls
-    await wait(200)
+    await quiet(10 * RETRY)
     expect(water.calls).toBe(closed)
   })
 
@@ -713,12 +859,12 @@ describe('sea paths', () => {
     const water = fakeWater({ online: false, why: 'unsettled' })
     // Each call is more than a day after the last, so any retry would route the leg again.
     let clock = 0
-    await seaServer(async () => island(), { water, retryMs: 20, now: () => (clock += 25 * 60 * 60 * 1000) })
+    await seaServer(async () => island(), { water, retryMs: RETRY, now: () => (clock += 25 * 60 * 60 * 1000) })
     const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
     const { ws, next, messages } = await connect(url)
     try {
       expect(((await next()) as any).seaPaths[legKey].unverified).toBe('unsettled')
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      await quiet(10 * RETRY)
       expect(water.calls).toBe(1)
       expect(messages).toEqual([])
     } finally {
@@ -732,7 +878,7 @@ describe('sea paths', () => {
     await saveProject(folder, withSeaLeg(await loadProject(folder)))
     const state = { online: false }
     let clock = 0
-    await seaServer(async () => island(), { water: fakeWater(state), retryMs: 40, now: () => clock })
+    await seaServer(async () => island(), { water: fakeWater(state), retryMs: RETRY, now: () => clock })
     const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
     const old = await connect(url)
     try {
@@ -744,7 +890,7 @@ describe('sea paths', () => {
       try {
         expect(((await fresh.next()) as any).seaPaths[legKey].unverified).toBeUndefined()
         expect(((await old.next(2000)) as any).seaPaths[legKey].unverified).toBeUndefined()
-        await new Promise((resolve) => setTimeout(resolve, 200))
+        await quiet(10 * RETRY)
         expect(fresh.messages).toEqual([])
       } finally {
         fresh.ws.close()

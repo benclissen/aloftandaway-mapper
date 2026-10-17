@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { WebSocket } from 'ws'
 import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, PATHS_ORIGIN, routeSea, seaLegKey, STALE_BASE_MESSAGE, validateProject, type LandSource, type LngLat, type Project, type ServerMessage, type ViaPoint } from '../../src/core/index.js'
 import { PROJECT_FILE, createProject, loadProject, mutateProject, saveProject } from '../../src/server/store.js'
@@ -591,6 +591,37 @@ describe('websocket sync', () => {
       expect('origin' in message).toBe(false)
       expect((await loadProject(folder)).updatedAt).toBe(message.project.updatedAt)
     } finally {
+      ws.close()
+    }
+  })
+
+  test('a restamp that fails logs once across two reloads, and again after one succeeds', async () => {
+    const { ws, next, messages } = await connect()
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const file = path.join(folder, PROJECT_FILE)
+    const restamps = () => errors.mock.calls.filter((call) => String(call[0]).includes('could not save'))
+    try {
+      await next()
+      const before = await loadProject(folder)
+      const handEdit = (name: string) => writeFile(file, `${JSON.stringify({ ...before, name }, null, 2)}\n`)
+      // A read-only folder: the file can still be edited in place, but the atomic save can't make its temporary file.
+      await chmod(folder, 0o555)
+      await handEdit('By hand')
+      await vi.waitFor(() => expect(restamps()).toHaveLength(1), { timeout: 2000 })
+      await handEdit('By hand again')
+      await new Promise((r) => setTimeout(r, 4 * WATCH_DEBOUNCE_MS))
+      expect(restamps()).toHaveLength(1)
+      expect(messages).toHaveLength(0)
+      // Once a restamp succeeds, the next failure is logged again.
+      await chmod(folder, 0o755)
+      await handEdit('Saved')
+      expect((await next(2000)).project.name).toBe('Saved')
+      await chmod(folder, 0o555)
+      await writeFile(file, `${JSON.stringify({ ...(await loadProject(folder)), name: 'Stuck' }, null, 2)}\n`)
+      await vi.waitFor(() => expect(restamps()).toHaveLength(2), { timeout: 2000 })
+    } finally {
+      await chmod(folder, 0o755)
+      errors.mockRestore()
       ws.close()
     }
   })

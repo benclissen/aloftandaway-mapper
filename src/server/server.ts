@@ -93,6 +93,8 @@ interface Registered {
   origins: Map<string, string>
   /** Whether a failure to work out sea routes has been logged for this project. */
   seaPathsFailed: boolean
+  /** Whether a failed restamp has been logged since the last one that succeeded. */
+  restampFailed: boolean
   /** What each open socket was last sent: the version, its sea routes as JSON, and whether any is retried soon. */
   shown: Map<WebSocket, Shown>
   /** The next retry of unverified sea routes, while a socket shows one that's retried within the minute. */
@@ -530,9 +532,21 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     if (project.updatedAt === entry.lastUpdatedAt && hash === entry.lastHash) return
     if (!(Date.parse(project.updatedAt) > Date.parse(entry.lastUpdatedAt))) {
       // Leaves the file alone if anything wrote since it was read; that write fires its own change.
-      const restamped = await restampProject(entry.folder, { hash, after: entry.lastUpdatedAt }).catch(() => undefined)
-      // A change from outside the studio, even if a patch's version once had the same time.
-      if (restamped) entry.origins.delete(restamped.updatedAt)
+      let restamped: Project | undefined
+      try {
+        restamped = await restampProject(entry.folder, { hash, after: entry.lastUpdatedAt })
+      } catch (e) {
+        if (!entry.restampFailed) {
+          entry.restampFailed = true
+          console.error(`Mapper could not save ${entry.folder} again for the studio, so it won't see this edit:`, e)
+        }
+        return
+      }
+      if (restamped) {
+        entry.restampFailed = false
+        // A change from outside the studio, even if a patch's version once had the same time.
+        entry.origins.delete(restamped.updatedAt)
+      }
       return
     }
     entry.lastUpdatedAt = project.updatedAt
@@ -575,6 +589,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
       timer: undefined,
       origins: new Map(),
       seaPathsFailed: false,
+      restampFailed: false,
       shown: new Map(),
       retry: undefined,
       retrying: false,

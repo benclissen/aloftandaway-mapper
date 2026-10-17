@@ -9,6 +9,9 @@ import { createMcpServer } from '../../src/mcp/server.js'
 import { creditLine, doneSummary, leftover, statusSummary, TOOLS } from '../../src/mcp/tools.js'
 import { startRenderJob, type RenderStatus } from '../../src/render/jobs.js'
 import { contactSheet, previewFrame } from '../../src/render/preview.js'
+import { loadProject, saveProject } from '../../src/server/store.js'
+import { TRACKS_DIR, writeTrack } from '../../src/server/tracks.js'
+import type { LngLat } from '../../src/core/index.js'
 
 // The real job runs; the spy records what the render tool asked for.
 vi.mock('../../src/render/jobs.js', async (importOriginal) => {
@@ -142,6 +145,23 @@ describe('tools', () => {
     expect(text(set)).not.toContain('sea route failed')
     const data = set.structuredContent as { validation: { warnings: { code: string }[] } }
     expect(data.validation.warnings.map((w) => w.code)).not.toContain('not-available-yet')
+  })
+
+  test('a track leg reports its recorded track once the file exists', async () => {
+    const folder = path.join(tmp, 'Track')
+    await call('create_project', { folder, name: 'Track' })
+    await call('set_stops', { folder, stops: STOPS.slice(0, 2), legMode: 'line' })
+    const id = await writeTrack(folder, { points: [STOPS[0]!.at, [24.5, 37.7], STOPS[1]!.at] as LngLat[] })
+    const project = await loadProject(folder)
+    const scene = project.scenes[0]!
+    await saveProject(folder, { ...project, scenes: [{ ...scene, legs: [{ mode: 'track', via: [], track: id }] }] })
+    const got = await call('get_project', { folder })
+    expect(text(got)).toContain('Leg 1 Piraeus → Mykonos: recorded track')
+    expect(text(got)).not.toContain('file missing')
+    await rm(path.join(folder, TRACKS_DIR, `${id}.json`))
+    const missing = await call('get_project', { folder })
+    expect(text(missing)).toContain('recorded track file missing')
+    expect(text(missing)).toContain('track-missing')
   })
 
   test('validate_project warns that an offline sea route is unverified', async () => {

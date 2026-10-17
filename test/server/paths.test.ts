@@ -3,10 +3,11 @@ import { mkdtemp, readFile, rm, stat, writeFile, mkdir } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import { decodeLand, defaultProject, encodeLand, landIndex, ROUTER_VERSION, routeSea, seaLegKey, type LandSource, type LngLat, type Project, type ViaPoint } from '../../src/core/index.js'
+import { decodeLand, defaultProject, encodeLand, landIndex, ROUTER_VERSION, routeSea, seaLegKey, trackKey, type LandSource, type LngLat, type Project, type ViaPoint } from '../../src/core/index.js'
 import { CACHE_VERSION, PATHS_FILE, resolveSeaPaths } from '../../src/server/paths.js'
 import { createSeaWater, SEA_BUDGET_TILES, SEA_WATER_VERSION, type SeaBudget, type SeaWater, type WaterNote } from '../../src/server/sea-water.js'
 import type { TileStore } from '../../src/server/tiles.js'
+import { writeTrack } from '../../src/server/tracks.js'
 
 vi.mock('node:fs/promises', async (original) => {
   const fs = await original<typeof import('node:fs/promises')>()
@@ -490,4 +491,22 @@ test('a failed network is remembered for a minute', async () => {
   clock = 123_000
   await resolve(B, D)
   expect(state.attempts).toBeGreaterThan(after)
+})
+
+test('resolveSeaPaths returns tracks with no sea legs', async () => {
+  const id = await writeTrack(folder, { points: [A, B] })
+  const p = projectWith([{ from: A, to: B, mode: 'air' }])
+  p.scenes[0]!.legs = [{ mode: 'track', via: [], track: id }] as never
+  const paths = await resolveSeaPaths(folder, p, { land: island(), water: undefined })
+  expect(paths).toEqual({ [trackKey(id)]: { status: 'ok', path: [A, B], knots: [] } })
+  // No sea legs, so nothing was routed or cached.
+  await expect(stat(cacheFile())).rejects.toThrow()
+})
+
+test('a project with sea and track legs gets both', async () => {
+  const id = await writeTrack(folder, { points: [A, B] })
+  const p = projectWith([{ from: A, to: B }, { from: B, to: A }])
+  p.scenes[0]!.legs[1] = { mode: 'track', via: [], track: id } as never
+  const paths = await resolveSeaPaths(folder, p, { land: island(), water: undefined })
+  expect(Object.keys(paths).sort()).toEqual([seaLegKey(A, B, []), trackKey(id)].sort())
 })

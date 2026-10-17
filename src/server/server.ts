@@ -24,6 +24,7 @@ import {
 } from '../core/index.js'
 import { loadLand } from './land.js'
 import { RETRY_MS, resolveSeaPaths, retriesSoon, seaLegsOf } from './paths.js'
+import { readTrackPaths } from './tracks.js'
 import { seaWaterOn, type SeaWater } from './sea-water.js'
 import { assertAbsolute, loadProject, mutateProject, PROJECT_FILE, projectHash, restampProject, StoreError } from './store.js'
 import { createTileProxy, tileStore } from './tiles.js'
@@ -300,32 +301,33 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   ]
 
   /**
-   * The sea routes for `project`. When they can't be worked out (the land data is missing, say) every sea leg falls
-   * back with the reason, so it draws as a line and the studio and validation say why, and the error is logged the
-   * first time for each project.
+   * The sea routes for `project`, and the recorded tracks it uses. When the routes can't be worked out (the land
+   * data is missing, say) every sea leg falls back with the reason, so it draws as a line and the studio and
+   * validation say why, and the error is logged the first time for each project. The tracks come back regardless.
    */
   async function seaPathsFor(entry: Registered, project: Project): Promise<SeaPaths> {
-    if (!project.scenes.some((scene) => scene.legs.some((leg) => leg.mode === 'sea'))) return {}
-    const failed = (e: unknown, reason: string): SeaPaths => {
+    if (!project.scenes.some((scene) => scene.legs.some((leg) => leg.mode === 'sea' || leg.mode === 'track'))) return {}
+    const failed = async (e: unknown, reason: string): Promise<SeaPaths> => {
       if (!entry.seaPathsFailed) {
         entry.seaPathsFailed = true
         console.error(`Mapper could not work out sea routes for ${entry.folder}:`, e)
       }
       const paths: SeaPaths = {}
       for (const key of seaLegsOf(project).keys()) paths[key] = { status: 'fallback', reason, path: [], knots: [] }
-      return paths
+      return { ...(await readTrackPaths(entry.folder, project).catch(() => ({}))), ...paths }
     }
     const work = (async (): Promise<SeaPaths> => {
-      let source: LandSource
+      let source: LandSource | undefined
       try {
-        source = await land()
+        // Tracks alone need no land data.
+        if (seaLegsOf(project).size > 0) source = await land()
       } catch (e) {
-        return failed(e, NO_LAND_DATA)
+        return await failed(e, NO_LAND_DATA)
       }
       try {
         return await resolveSeaPaths(entry.folder, project, { land: source, water, now: opts.now })
       } catch (e) {
-        return failed(e, 'Mapper could not work out the sea route')
+        return await failed(e, 'Mapper could not work out the sea route')
       }
     })()
     resolving.add(work)

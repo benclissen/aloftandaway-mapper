@@ -5,9 +5,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { WebSocket } from 'ws'
-import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, PATHS_ORIGIN, routeSea, seaLegKey, STALE_BASE_MESSAGE, validateProject, type LandSource, type LngLat, type Project, type ServerMessage, type ViaPoint } from '../../src/core/index.js'
+import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, PATHS_ORIGIN, routeSea, seaLegKey, STALE_BASE_MESSAGE, trackKey, validateProject, type LandSource, type LngLat, type Project, type ServerMessage, type ViaPoint } from '../../src/core/index.js'
 import { PROJECT_FILE, createProject, loadProject, mutateProject, saveProject } from '../../src/server/store.js'
 import type { SeaWater } from '../../src/server/sea-water.js'
+import { writeTrack } from '../../src/server/tracks.js'
 import { getServer, startServer, WATCH_DEBOUNCE_MS, type MapperServer, type ServerOptions } from '../../src/server/server.js'
 
 /** A window in which nothing must happen. The caller picks a length that outlasts the product constant it names. */
@@ -920,6 +921,42 @@ describe('sea paths', () => {
       // Validation says why, so the studio and agents don't wait on a route that won't come.
       const { warnings } = validateProject(body.project, { seaPaths: body.seaPaths })
       expect(warnings.find((w) => w.code === 'sea-fallback')?.message).toContain(NO_LAND_DATA)
+    } finally {
+      console.error = error
+    }
+  })
+
+  test('the studio gets tracks when the land data is missing', async () => {
+    const id = await writeTrack(folder, { points: [B, [12, 50.5], [13, 51]] })
+    const base = withSeaLeg(await loadProject(folder))
+    const scene = base.scenes[0]!
+    await saveProject(folder, {
+      ...base,
+      scenes: [
+        {
+          ...scene,
+          stops: [...scene.stops, { id: 'c', name: 'C', at: [13, 51], pause: 0, sign: 'always' }],
+          legs: [...scene.legs, { mode: 'track', via: [], track: id }],
+        },
+      ],
+    })
+    const error = console.error
+    console.error = () => undefined
+    try {
+      await seaServer(async () => {
+        throw new Error('no land')
+      })
+      const { ws, next } = await connect(sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`)
+      try {
+        const message = await next()
+        expect(message.type).toBe('project')
+        expect(message.seaPaths).toEqual({
+          [legKey]: { status: 'fallback', reason: NO_LAND_DATA, path: [], knots: [] },
+          [trackKey(id)]: { status: 'ok', path: [B, [12, 50.5], [13, 51]], knots: [] },
+        })
+      } finally {
+        ws.close()
+      }
     } finally {
       console.error = error
     }

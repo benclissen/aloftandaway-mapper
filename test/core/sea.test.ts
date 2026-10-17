@@ -397,6 +397,36 @@ describe('routeSea', () => {
     expect(hairpins(r)).toEqual([])
   })
 
+  it('pieces join only on their shared water point', () => {
+    // Two parallel channels 120 km long with a 20 m strip of land between them. The north one runs through, with a
+    // dogleg near 94 km; the south one is cut by plugs into lengths that open into the north one only at their west
+    // ends. The fine grids' boundary falls in the south length past 90 km, so the next piece starts where its own
+    // water leads nowhere, with the through channel less than two fine cells away across the strip. The route must
+    // go back and round by the link rather than step across.
+    const lat = 60
+    const kmLng = 111.32 * Math.cos((lat * Math.PI) / 180)
+    const x = (km: number): number => -31.08 + km / kmLng
+    const y = (m: number): number => lat + m / 111200
+    const rects: Rect[] = [
+      [x(0), y(100), x(92.8), lat + 0.7],
+      [x(95.2), y(100), x(120), lat + 0.7],
+      [x(92.8), y(400), x(95.2), lat + 0.7],
+      [x(93), y(-20), x(95), y(200)],
+      [x(0), lat - 0.7, x(120), y(-130)],
+    ]
+    let strip = 0
+    for (const plug of [30, 60, 90, 115]) {
+      rects.push([x(plug), y(-130), x(plug + 0.2), y(-40)], [x(strip), y(-40), x(plug + 0.2), y(-20)])
+      strip = plug + 0.4
+    }
+    rects.push([x(strip), y(-40), x(120), y(-20)])
+    const src = tileIslands(rects)
+    const r = ok(routeSea([x(-3), lat], [x(123), lat], [], src))
+    expect(r.crossesLand).toBeUndefined()
+    expect(r.stopGapKm).toEqual([0, 0])
+    expect(densePath(r.path, 0.005).filter((p) => src.isLand(p))).toEqual([])
+  })
+
   it("a stop whose way out lies behind it still starts in its own water", () => {
     // A lagoon 11 km long that opens to the west, with the stop at its east end behind a wall 200 m thick, and the
     // end stop 300 km east. The coarse route goes straight through the wall; the fine route has to go round.

@@ -644,8 +644,10 @@ function walk(
     const startStop = n === 0 && pStop
     const endStop = final && qStop
     const stopHere = startStop || endStop
-    // A shared point is a cell centre on this grid too; a cell or two of slack covers rounding at the edges.
-    const kmFrom = startStop ? snapKm(fineKm) : n > 0 ? 2 * fineKm : 0
+    // An open cell's centre and a shared point (a cell centre on this lattice, well inside this box) start from their
+    // own cell. Starting anywhere else would join them across whatever lies between; if their own water doesn't
+    // lead on, the stretch is shut and routed again instead.
+    const kmFrom = startStop ? snapKm(fineKm) : 0
     let start: number
     let goal: number | undefined
     let route: number[] | undefined

@@ -696,6 +696,37 @@ describe('track legs', () => {
     expect(sceneOf(out).legs[0]).toEqual({ mode: 'line', via: [] })
   })
 
+  test("an inserted stop's legMode wins over the track", () => {
+    const three = importTrack(emptyProject(), { stops: four.slice(0, 3), track: TRACK })
+    const p = applyPatch(three, { ops: [{ op: 'insert_stop', index: 1, stop: { ...s('X', [0.5, 0]), legMode: 'air', symbol: 'plane' } }] })
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['A', 'X', 'B', 'C'])
+    expect(sceneOf(p).legs[0]).toEqual({ mode: 'track', track: TRACK, via: [] })
+    expect(sceneOf(p).legs[1]).toEqual({ mode: 'air', via: [], symbol: 'plane' })
+    expect(sceneOf(p).legs[2]).toEqual(sceneOf(three).legs[1])
+  })
+
+  test('move_stop on a track project never makes a track leg without a track', () => {
+    const p = imported()
+    const ids = sceneOf(p).stops.map((x) => x.id)
+    for (const id of ids) {
+      for (let index = 0; index < ids.length; index++) {
+        const moved = applyPatch(p, { ops: [{ op: 'move_stop', id, index }] })
+        for (const leg of sceneOf(moved).legs) {
+          if (leg.mode === 'track') expect(leg).toMatchObject({ track: TRACK, via: [] })
+        }
+      }
+    }
+    // Moving the first stop to the end makes D → A, which no old leg joins, so it is a line.
+    const last = applyPatch(p, { ops: [{ op: 'move_stop', id: ids[0]!, index: 3 }] })
+    expect(sceneOf(last).legs.at(-1)).toEqual({ mode: 'line', via: [] })
+  })
+
+  test('set_stops replace:false after a track leaves the new legs off the track', () => {
+    const p = setStops(imported(), { stops: [s('E', [4, 0]), s('F', [5, 0])], replace: false })
+    expect(sceneOf(p).legs.slice(0, 3)).toEqual([onTrack, onTrack, onTrack])
+    expect(sceneOf(p).legs.slice(3)).toEqual([{ mode: 'line', via: [] }, { mode: 'line', via: [] }])
+  })
+
   test('a symbol alone keeps a track leg on its track', () => {
     const p = applyPatch(imported(), { ops: [{ op: 'update_leg', index: 0, changes: { symbol: 'ferry' } }] })
     expect(sceneOf(p).legs[0]).toEqual({ mode: 'track', track: TRACK, via: [], symbol: 'ferry' })

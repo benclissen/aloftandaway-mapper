@@ -205,9 +205,9 @@ interface LegHints {
  * Rebuilds legs for `stops` after the stops changed. A leg from stop a to stop b that existed before is reused whole.
  *
  * A new leg follows recorded track T, with no via points, when the old leg leaving a and the old leg arriving at b
- * both follow T. A new stop is looked through to the nearest old stop on its side, so a stop inserted on a track leg
- * splits it into two legs on T, and removing a stop between two legs on T joins them. The leg takes the new stop's
- * `symbol`, else the one both old legs have, if they have the same one.
+ * both follow T, unless a is a new stop with its own `legMode`. A new stop is looked through to the nearest old stop
+ * on its side, so a stop inserted on a track leg splits it into two legs on T, and removing a stop between two legs on
+ * T joins them. The leg takes the new stop's `symbol`, else the one both old legs have, if they have the same one.
  *
  * Any other new leg takes, in order: the `legMode` of the new stop it leaves, `fallback`, the old leg leaving a, the
  * old leg arriving at b, 'line'. An old leg's `track` mode becomes 'line' there, since the new leg has no track in
@@ -244,14 +244,15 @@ function syncLegs(old: { stops: Stop[]; legs: Leg[] }, stops: Stop[], hints: Leg
     const kept = byPair.get(JSON.stringify([a.id, b.id]))
     if (kept) return kept
     const symbol = hints.symbols?.get(a.id)
+    const asked = hints.leaving?.get(a.id)
     const from = leaving.get(oldBefore[i] ?? '')
     const to = arriving.get(oldAfter[i + 1] ?? '')
-    if (from?.mode === 'track' && to?.mode === 'track' && from.track !== undefined && from.track === to.track) {
+    if (!asked && from?.mode === 'track' && to?.mode === 'track' && from.track !== undefined && from.track === to.track) {
       const shared = symbol ?? (from.symbol === to.symbol ? from.symbol : undefined)
       return shared ? { mode: 'track', track: from.track, via: [], symbol: shared } : { mode: 'track', track: from.track, via: [] }
     }
     const inherited = leaving.get(a.id)?.mode ?? arriving.get(b.id)?.mode
-    const mode = hints.leaving?.get(a.id) ?? (symbol && defaultModeFor(symbol)) ?? hints.fallback ?? (inherited === 'track' ? 'line' : inherited) ?? 'line'
+    const mode = asked ?? (symbol && defaultModeFor(symbol)) ?? hints.fallback ?? (inherited === 'track' ? 'line' : inherited) ?? 'line'
     return symbol ? { mode, via: [], symbol } : { mode, via: [] }
   })
 }
@@ -290,6 +291,14 @@ export function setStops(
   project: Project,
   args: { scene?: SceneRef; stops: StopInput[]; legMode?: InputLegMode; replace?: boolean },
 ): Project {
+  return fitLength(parseProject(withStops(project, args).work))
+}
+
+/** `setStops` before the result is checked: a changed copy of `project`, and the index of the scene it changed. */
+function withStops(
+  project: Project,
+  args: { scene?: SceneRef; stops: StopInput[]; legMode?: InputLegMode; replace?: boolean },
+): { work: Project; at: number } {
   const inputs = parseOrThrow(z.array(StopInputSchema), args.stops, ['stops'])
   const legMode = parseOrThrow(InputLegModeSchema.optional(), args.legMode, ['legMode'])
   const work = structuredClone(project)
@@ -304,7 +313,7 @@ export function setStops(
     if (symbol) symbols.set(stop.id, symbol)
   }
   work.scenes[at] = { ...scene, stops, legs: syncLegs(old, stops, { leaving, symbols, fallback: legMode }) }
-  return fitLength(parseProject(work))
+  return { work, at }
 }
 
 // importTrack
@@ -319,14 +328,11 @@ export function importTrack(
 ): Project {
   const track = parseOrThrow(LegSchema.shape.track.unwrap(), args.track, ['track'])
   const symbol = parseOrThrow(SymbolKindSchema.optional(), args.symbol, ['symbol'])
-  const work = setStops(project, { scene: args.scene, stops: args.stops })
-  const { index: at } = resolveScene(work, args.scene)
-  const scenes = work.scenes.map((scene, i): Scene => {
-    if (i !== at) return scene
-    const legs = scene.legs.map((): Leg => (symbol ? { mode: 'track', track, via: [], symbol } : { mode: 'track', track, via: [] }))
-    return { ...scene, legs }
-  })
-  return fitLength(parseProject({ ...work, scenes }))
+  const { work, at } = withStops(project, { scene: args.scene, stops: args.stops })
+  const scene = work.scenes[at]!
+  const legs = scene.legs.map((): Leg => (symbol ? { mode: 'track', track, via: [], symbol } : { mode: 'track', track, via: [] }))
+  work.scenes[at] = { ...scene, legs }
+  return fitLength(parseProject(work))
 }
 
 // applyPatch

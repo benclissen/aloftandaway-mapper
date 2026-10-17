@@ -4,7 +4,7 @@ import path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { createMcpServer } from '../../src/mcp/server.js'
 import { creditLine, doneSummary, leftover, statusSummary, TOOLS } from '../../src/mcp/tools.js'
 import { startRenderJob, type RenderStatus } from '../../src/render/jobs.js'
@@ -24,14 +24,21 @@ vi.mock('../../src/render/preview.js', async (importOriginal) => ({
 }))
 
 // Sea legs come back unverified at once: the router's store gives up on the refused upstream without waiting to retry.
+// Its cache is a fresh folder, removed after the file's tests.
+const noTiles = vi.hoisted(() => ({ dir: '' }))
 vi.mock('../../src/server/sea-water.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/server/sea-water.js')>()
   const { createTileStore } = await import('../../src/server/tiles.js')
+  const { mkdtemp } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
-  const store = createTileStore({ cacheDir: join(tmpdir(), 'mapper-tools-test-no-tiles'), upstream: 'http://127.0.0.1:9', retryDelaysMs: [] })
+  noTiles.dir = await mkdtemp(join(tmpdir(), 'mapper-tools-test-no-tiles-'))
+  const store = createTileStore({ cacheDir: noTiles.dir, upstream: 'http://127.0.0.1:9', retryDelaysMs: [] })
   const water = actual.createSeaWater({ store })
   return { ...actual, seaWater: () => water }
+})
+afterAll(async () => {
+  if (noTiles.dir) await rm(noTiles.dir, { recursive: true, force: true })
 })
 
 const STOPS = [

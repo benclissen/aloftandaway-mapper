@@ -73,7 +73,10 @@ is needed, it uses Natural Earth 1:10m land outlines (public domain), shipped
 in `data/land-10m.bin`. The first route through an archipelago fetches map
 tiles, which takes several seconds (Stockholm to Helsinki took 12.6 s, and a
 slow connection can add more). After that the route is cached in the project,
-and the tiles come from disk if it is ever routed again, in about a second. Numbers are in
+and the tiles come from disk if it is ever routed again, in about a second. A
+verified route keeps the OpenFreeMap build it was routed on, so a new build
+doesn't re-route it; to re-route every sea leg on the current build, delete
+`<project>/.mapper/paths.json`. Numbers are in
 [docs/render-speed.md](docs/render-speed.md#sea-routing-stage-8-task-9).
 
 - Offline, a route is checked against Natural Earth only. It is flagged

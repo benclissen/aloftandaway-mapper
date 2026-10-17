@@ -447,6 +447,185 @@ describe('SeaWater.route', () => {
     expect(next.water).toMatchObject({ build: BUILD })
   })
 
+  /** FROM and TO moved `tiles` whole tiles east (or west, when negative), onto tiles the first leg never touched. */
+  const shifted = (tiles: number): [LngLat, LngLat] => {
+    const d = (tiles * 360) / SPAN
+    return [
+      [FROM[0] + d, FROM[1]],
+      [TO[0] + d, TO[1]],
+    ]
+  }
+  // Twenty tiles is about 1.8° of longitude: clear of the first leg's tiles, and still along the coast.
+  const EAST = shifted(20)
+  const WEST = shifted(-20)
+
+  it('the shifted legs need tiles of their own', () => {
+    const near = ([a, b]: [LngLat, LngLat]): string[] =>
+      tilesNear([a, b], { zoom: WATER_ZOOM, bufferKm: 2, coast: coastBase, coastKm: 20 })
+    const home = near([FROM, TO])
+    for (const leg of [EAST, WEST]) {
+      const keys = near(leg)
+      expect(keys.length).toBeGreaterThan(5)
+      expect(keys.filter((key) => home.includes(key))).toEqual([])
+    }
+    expect(near(EAST).filter((key) => near(WEST).includes(key))).toEqual([])
+  })
+
+  it("a route served from memory doesn't clear the memory of a failure", async () => {
+    const empty: TileReply = { status: 204, body: Buffer.alloc(0), fromCache: false }
+    let clock = 0
+    let fail = false
+    let holdNext = false
+    const calls = { build: 0, tiles: 0 }
+    let release!: () => void
+    const gate = new Promise<void>((go) => (release = go))
+    let asked!: () => void
+    const held = new Promise<void>((go) => (asked = go))
+    const store: TileStore = {
+      async get() {
+        calls.tiles++
+        if (fail) throw new Error('refused')
+        return empty
+      },
+      async forget() {},
+      async planetBuild() {
+        calls.build++
+        if (holdNext) {
+          holdNext = false
+          asked()
+          await gate
+        }
+        return BUILD
+      },
+    }
+    const water = createSeaWater({ store, now: () => clock })
+    // Warm the router's memory with FROM→TO's tiles.
+    expect((await water.route(FROM, TO, [], coastBase, budget())).water).toMatchObject({ build: BUILD })
+    expect(calls.tiles).toBeGreaterThan(0)
+    // V starts on the same leg and waits for the planet build.
+    holdNext = true
+    const v = water.route(FROM, TO, [], coastBase, budget())
+    await held
+    // Meanwhile F, on a leg the memory doesn't have, finds the network down.
+    clock = 1_000
+    fail = true
+    const tilesBeforeF = calls.tiles
+    expect((await water.route(...EAST, [], coastBase, budget())).unverified).toBe('offline')
+    expect(calls.tiles).toBeGreaterThan(tilesBeforeF)
+    // V finishes from memory, after F's failure, without asking the network for a tile.
+    const tilesBeforeV = calls.tiles
+    release()
+    expect((await v).water).toMatchObject({ build: BUILD })
+    expect(calls.tiles).toBe(tilesBeforeV)
+    // V proved nothing about the network, so half a minute after F's failure a route still doesn't try it.
+    const afterV = { ...calls }
+    clock = 31_000
+    expect((await water.route(...WEST, [], coastBase, budget())).unverified).toBe('offline')
+    expect(calls).toEqual(afterV)
+  })
+
+  it('a 4xx tile reply starts the offline minute', async () => {
+    for (const status of [404, 429]) {
+      let clock = 0
+      const calls = { build: 0, tiles: 0 }
+      const store: TileStore = {
+        async get() {
+          calls.tiles++
+          return { status, body: Buffer.alloc(0), fromCache: false }
+        },
+        async forget() {},
+        async planetBuild() {
+          calls.build++
+          return BUILD
+        },
+      }
+      const water = createSeaWater({ store, now: () => clock })
+      expect((await water.route(FROM, TO, [], coastBase, budget())).unverified).toBe('offline')
+      expect(calls.build).toBe(1)
+      expect(calls.tiles).toBeGreaterThan(0)
+      const after = { ...calls }
+      clock = 30_000
+      expect((await water.route(FROM, TO, [], coastBase, budget())).unverified).toBe('offline')
+      expect(calls).toEqual(after)
+      clock = 61_000
+      expect((await water.route(FROM, TO, [], coastBase, budget())).unverified).toBe('offline')
+      expect(calls.build).toBe(2)
+    }
+  })
+
+  it("a tile served from disk doesn't clear the memory", async () => {
+    // V's tiles come from disk and arrive after F's failure: the network hasn't been heard from since.
+    let clock = 0
+    let mode: 'fail' | 'disk' = 'fail'
+    let holdNext = true
+    const calls = { build: 0, tiles: 0 }
+    let release!: () => void
+    const gate = new Promise<void>((go) => (release = go))
+    let asked!: () => void
+    const held = new Promise<void>((go) => (asked = go))
+    const store: TileStore = {
+      async get() {
+        calls.tiles++
+        if (mode === 'fail') throw new Error('refused')
+        return { status: 204, body: Buffer.alloc(0), fromCache: true }
+      },
+      async forget() {},
+      async planetBuild() {
+        calls.build++
+        if (holdNext) {
+          holdNext = false
+          asked()
+          await gate
+        }
+        return BUILD
+      },
+    }
+    const water = createSeaWater({ store, now: () => clock })
+    const v = water.route(FROM, TO, [], coastBase, budget())
+    await held
+    clock = 1_000
+    expect((await water.route(...EAST, [], coastBase, budget())).unverified).toBe('offline')
+    expect(calls.tiles).toBeGreaterThan(0)
+    mode = 'disk'
+    const tilesBeforeV = calls.tiles
+    release()
+    expect((await v).water).toMatchObject({ build: BUILD })
+    expect(calls.tiles).toBeGreaterThan(tilesBeforeV)
+    const afterV = { ...calls }
+    clock = 31_000
+    expect((await water.route(...WEST, [], coastBase, budget())).unverified).toBe('offline')
+    expect(calls).toEqual(afterV)
+  })
+
+  it('a 404 on a planet tile forgets the cached TileJSON', async () => {
+    const replies: Record<string, () => TileReply> = {
+      404: () => ({ status: 404, body: Buffer.alloc(0), fromCache: false }),
+      429: () => ({ status: 429, body: Buffer.alloc(0), fromCache: false }),
+      500: () => ({ status: 500, body: Buffer.alloc(0), fromCache: false }),
+      throw: () => {
+        throw new Error('refused')
+      },
+    }
+    for (const [name, reply] of Object.entries(replies)) {
+      const forgotten: string[] = []
+      const store: TileStore = {
+        async get() {
+          return reply()
+        },
+        async forget(subpath) {
+          forgotten.push(subpath)
+        },
+        async planetBuild() {
+          return BUILD
+        },
+      }
+      const r = await createSeaWater({ store }).route(FROM, TO, [], coastBase, budget())
+      expect(r.unverified, name).toBe('offline')
+      if (name === '404') expect(forgotten, name).toContain('planet')
+      else expect(forgotten, name).not.toContain('planet')
+    }
+  })
+
   it("a tile that doesn't decode is fetched again", async () => {
     const good = waterBut(TX, TY, [ISLAND])
     const w = await world(new Map([[`${TX}/${TY}`, Uint8Array.of(255)]]))

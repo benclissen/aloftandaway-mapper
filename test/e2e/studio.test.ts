@@ -7,8 +7,17 @@ import { applyPatch, buildRoute, buildTimeline, formatTimecode, pointAt, type Ln
 import { loadProject, mutateProject } from '../../src/server/store.js'
 import { greekIslands, pacific, projectWithScenes, sceneOf, twoScenes } from '../fixtures/projects.js'
 import { closeAll, flatTerrainTile, openStudioPage } from './helpers.js'
+import { startSeaFixtures, type SeaFixtures } from './sea-fixtures.js'
 
-afterAll(closeAll)
+/** Serves the committed water tiles, so a sea leg here doesn't reach OpenFreeMap. Started before the studio server is. */
+let seaFixtures: SeaFixtures
+beforeAll(async () => {
+  seaFixtures = await startSeaFixtures()
+})
+afterAll(async () => {
+  await closeAll()
+  await seaFixtures?.close()
+})
 
 const VIEWPORT = { width: 1280, height: 800 }
 

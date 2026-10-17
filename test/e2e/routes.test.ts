@@ -7,12 +7,17 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { Map as MapLibreMap } from 'maplibre-gl'
-import { afterAll, beforeAll, expect, test } from 'vitest'
-import { buildRoute } from '../../src/core/index.js'
+import { afterAll, beforeAll, describe, expect, test } from 'vitest'
+import { buildRoute, type LngLat } from '../../src/core/index.js'
+import { loadLand } from '../../src/server/land.js'
 import { resolveSeaPaths } from '../../src/server/paths.js'
+import { createSeaWater, SEA_BUDGET_TILES } from '../../src/server/sea-water.js'
+import { DEFAULT_TILE_UPSTREAM, createTileStore } from '../../src/server/tiles.js'
 import { mutateProject } from '../../src/server/store.js'
 import { cruise, sceneOf } from '../fixtures/projects.js'
+import { findLand, showLand } from '../helpers/water-check.js'
 import { closeAll, openStudioPage } from './helpers.js'
+import { startSeaFixtures, type SeaFixtures } from './sea-fixtures.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const MAIN = path.join(ROOT, 'dist', 'cli', 'main.js')
@@ -22,16 +27,19 @@ type StudioWindow = Window & { mapperStudio: { map: MapLibreMap } }
 
 let tmp: string
 let client: Client
+/** Serves the committed water tiles, so no test here but the MAPPER_NET one reaches OpenFreeMap. */
+let seaFixtures: SeaFixtures
 
 beforeAll(async () => {
   expect(existsSync(MAIN), `${MAIN} is missing; run npm run build`).toBe(true)
   tmp = await mkdtemp(path.join(os.tmpdir(), 'mapper-routes-e2e-'))
+  seaFixtures = await startSeaFixtures()
   client = new Client({ name: 'e2e', version: '0.0.0' })
   await client.connect(
     new StdioClientTransport({
       command: process.execPath,
       args: [MAIN, 'mcp'],
-      env: { ...(process.env as Record<string, string>), MAPPER_CACHE_DIR: path.join(tmp, 'cache') },
+      env: { ...(process.env as Record<string, string>), MAPPER_CACHE_DIR: path.join(tmp, 'cache'), MAPPER_TILE_UPSTREAM: seaFixtures.url },
       stderr: 'inherit',
     }),
   )
@@ -40,6 +48,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await client?.close()
   await closeAll()
+  await seaFixtures?.close()
   await rm(tmp, { recursive: true, force: true })
 })
 
@@ -97,7 +106,7 @@ test('studio draws the routed sea leg', async () => {
   const { page, folder, project } = studio
   try {
     await page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
-    const seaPaths = await resolveSeaPaths(folder, project)
+    const seaPaths = await resolveSeaPaths(folder, project, { water: seaFixtures.water })
     const expected = buildRoute(sceneOf(project), seaPaths).legs[0]!.path.length
     expect(expected).toBeGreaterThan(2)
 
@@ -127,3 +136,29 @@ test('studio draws the routed sea leg', async () => {
     await studio.close()
   }
 }, 60_000)
+
+describe.skipIf(process.env.MAPPER_NET !== '1')('live basemap (MAPPER_NET only)', () => {
+  test('a live Stockholm–Mariehamn route stays off zoom-14 islands', async () => {
+    // OpenFreeMap itself, not the fixtures: the router reads zoom-12 tiles and this reads the zoom-14 polygons.
+    const stadsgarden: LngLat = [18.087, 59.317]
+    const mariehamn: LngLat = [19.925, 60.0935]
+    const store = createTileStore({ cacheDir: path.join(tmp, 'live-cache'), upstream: DEFAULT_TILE_UPSTREAM })
+    const sea = await createSeaWater({ store }).route(stadsgarden, mariehamn, [], await loadLand(), { tiles: SEA_BUDGET_TILES })
+    expect(sea.status).toBe('ok')
+    expect(sea.unverified).toBeUndefined()
+    expect(sea.crossesLand).toBeUndefined()
+
+    const build = await store.planetBuild()
+    const check = await findLand(sea.path, {
+      zoom: 14,
+      stepM: 5,
+      skipM: [(sea.stopGapKm?.[0] ?? 0) * 1000 + 20, (sea.stopGapKm?.[1] ?? 0) * 1000 + 20],
+      tile: async (x, y) => {
+        const reply = await store.get(`planet/${build}/14/${x}/${y}.pbf`, { use: 'download' })
+        return reply.status === 200 ? reply.body : undefined
+      },
+    })
+    expect(check.land.length, `land samples (of ${check.checked}):\n${showLand(check)}`).toBe(0)
+    expect(check.missing).toBe(0)
+  }, 300_000)
+})

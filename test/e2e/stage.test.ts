@@ -22,8 +22,18 @@ import { resolveSeaPaths } from '../../src/server/paths.js'
 import { alpineTilted, cruise, greekIslands, sceneOf, stopsAt } from '../fixtures/projects.js'
 import type { MapperPage } from '../../src/studio/render-mode.js'
 import { closeAll, expectGolden, openRenderPage, pixelDiff, snapshot } from './helpers.js'
+import { startSeaFixtures, type SeaFixtures } from './sea-fixtures.js'
 
-afterAll(closeAll)
+/** Serves the committed water tiles, so the sea legs here don't reach OpenFreeMap. */
+let seaFixtures: SeaFixtures
+beforeAll(async () => {
+  // Not the tile upstream: this file's MAPPER_NET tests draw live map tiles through the shared server.
+  seaFixtures = await startSeaFixtures({ env: false })
+})
+afterAll(async () => {
+  await closeAll()
+  await seaFixtures?.close()
+})
 
 /** The layout-px position of `at` on `frame`, for a shot with no bearing or pitch. */
 function layoutPx(project: Project, frame: number, at: LngLat): [number, number] {
@@ -255,7 +265,7 @@ describe('sea legs', () => {
     const project = cruise()
     const folder = await mkdtemp(path.join(os.tmpdir(), 'mapper-sea-golden-'))
     try {
-      const seaPaths = await resolveSeaPaths(folder, project)
+      const seaPaths = await resolveSeaPaths(folder, project, { water: seaFixtures.water })
       const { page, close } = await openRenderPage(project, 0.5, { seaPaths })
       const last = await page.evaluate(() => (window as unknown as { mapper: MapperPage }).mapper.frameCount - 1)
       const png = await snapshot(page, last)
@@ -270,7 +280,7 @@ describe('sea legs', () => {
     const project = cruise()
     const folder = await mkdtemp(path.join(os.tmpdir(), 'mapper-sea-count-'))
     try {
-      const seaPaths = await resolveSeaPaths(folder, project)
+      const seaPaths = await resolveSeaPaths(folder, project, { water: seaFixtures.water })
       const expected = planExport(project, { seaPaths }).scenes[0]!.totalFrames
       const { page, close } = await openRenderPage(project, 0.5, { seaPaths })
       expect(await page.evaluate(() => (window as unknown as { mapper: MapperPage }).mapper.frameCount)).toBe(expected)

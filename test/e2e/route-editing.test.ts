@@ -15,6 +15,7 @@ import { launchBrowser } from '../../src/render/chrome.js'
 import { loadProject } from '../../src/server/store.js'
 import { sceneOf } from '../fixtures/projects.js'
 import { pixelDiff } from './helpers.js'
+import { startSeaFixtures, type SeaFixtures } from './sea-fixtures.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const MAIN = path.join(ROOT, 'dist', 'cli', 'main.js')
@@ -32,16 +33,19 @@ const STOPS = [
 let tmp: string
 let client: Client
 let browser: Browser
+/** Serves the committed water tiles, so the sea legs here don't reach OpenFreeMap. */
+let seaFixtures: SeaFixtures
 
 beforeAll(async () => {
   expect(existsSync(MAIN), `${MAIN} is missing; run npm run build`).toBe(true)
   tmp = await mkdtemp(path.join(os.tmpdir(), 'mapper-route-e2e-'))
+  seaFixtures = await startSeaFixtures()
   client = new Client({ name: 'e2e', version: '0.0.0' })
   await client.connect(
     new StdioClientTransport({
       command: process.execPath,
       args: [MAIN, 'mcp'],
-      env: { ...(process.env as Record<string, string>), MAPPER_CACHE_DIR: path.join(tmp, 'cache') },
+      env: { ...(process.env as Record<string, string>), MAPPER_CACHE_DIR: path.join(tmp, 'cache'), MAPPER_TILE_UPSTREAM: seaFixtures.url },
       stderr: 'inherit',
     }),
   )
@@ -51,6 +55,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await browser?.close()
   await client?.close()
+  await seaFixtures?.close()
   await rm(tmp, { recursive: true, force: true })
 })
 

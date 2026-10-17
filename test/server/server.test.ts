@@ -361,7 +361,8 @@ describe('registerProject', () => {
     expect((await loadProject(folder)).scenes[0]!.stops[0]?.name).toBe('Original')
     expect((await loadProject(copy)).scenes[0]!.stops[0]?.name).toBe('Piraeus')
     // The original's socket still hears about the original.
-    expect((await next(1000)).project.scenes[0]!.stops[0]?.name).toBe('Original')
+    // 2 s, not 1: watching a second folder can restart macOS's FSEvents stream, which is slow under parallel load.
+    expect((await next(2000)).project.scenes[0]!.stops[0]?.name).toBe('Original')
 
     await call(projectUrl('/patch', copyKey), {
       method: 'POST',

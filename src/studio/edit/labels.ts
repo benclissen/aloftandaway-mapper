@@ -1,4 +1,4 @@
-import { STRAIGHT_LINE, UNVERIFIED_CAUSE, type LegMode, type SeaPath, type SymbolKind, type ThemeId } from '../../core/index.js'
+import { STRAIGHT_LINE, UNVERIFIED_CAUSE, type LegMode, type RouteLeg, type SeaPath, type SymbolKind, type ThemeId } from '../../core/index.js'
 
 export const SYMBOL_LABELS: Record<SymbolKind, string> = {
   none: 'None',
@@ -39,6 +39,15 @@ export const THEME_NAMES: Record<ThemeId, string> = {
   satellite: 'Satellite',
   monochrome: 'Monochrome',
   blank: 'Blank',
+}
+
+/**
+ * The legs panel's note for a sea leg drawn as a line because no route was found. An unverified one has none:
+ * `unverifiedNote` says the same, and why.
+ */
+export function fallbackNote(sea: RouteLeg['sea']): string | undefined {
+  if (sea?.status !== 'fallback' || sea.unverified) return undefined
+  return sea.reason ? `No sea route found: ${sea.reason}. Drawn as a line.` : 'No sea route found. Drawn as a line.'
 }
 
 /**

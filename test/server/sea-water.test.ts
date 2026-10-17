@@ -597,6 +597,78 @@ describe('SeaWater.route', () => {
     expect(calls).toEqual(afterV)
   })
 
+  it("an upstream reply during a failing route's wait wins", async () => {
+    // F's first tile fails at once while its others are held. G hears from upstream before F's held tiles fail too.
+    let clock = 0
+    let mode: 'f' | 'open' = 'f'
+    let fGets = 0
+    let builds = 0
+    let release!: () => void
+    const gate = new Promise<void>((go) => (release = go))
+    let asked!: () => void
+    const held = new Promise<void>((go) => (asked = go))
+    const store: TileStore = {
+      async get() {
+        if (mode === 'open') return { status: 204, body: Buffer.alloc(0), fromCache: false }
+        if (++fGets > 1) {
+          asked()
+          await gate
+        }
+        throw new Error('refused')
+      },
+      async forget() {},
+      async planetBuild() {
+        builds++
+        return BUILD
+      },
+    }
+    const water = createSeaWater({ store, now: () => clock })
+    const f = water.route(FROM, TO, [], coastBase, budget())
+    await held
+    // Lets F's first failure come back before the clock moves on.
+    await new Promise((go) => setImmediate(go))
+    expect(fGets).toBeGreaterThan(1)
+    clock = 5_000
+    mode = 'open'
+    expect((await water.route(...EAST, [], coastBase, budget())).water).toMatchObject({ build: BUILD })
+    clock = 10_000
+    release()
+    expect((await f).unverified).toBe('offline')
+    // The network answered after F's failure came back, so a route on a fresh leg goes to it.
+    clock = 20_000
+    const before = builds
+    expect((await water.route(...WEST, [], coastBase, budget())).water).toMatchObject({ build: BUILD })
+    expect(builds).toBe(before + 1)
+  })
+
+  it('upstream bytes that never decode start the offline minute', async () => {
+    let clock = 0
+    const calls = { build: 0, tiles: 0 }
+    const forgotten = new Set<string>()
+    const store: TileStore = {
+      async get(subpath) {
+        calls.tiles++
+        // Bad bytes on disk, and bad bytes again when the tile is fetched from upstream.
+        return { status: 200, body: Buffer.from([255]), fromCache: !forgotten.has(subpath) }
+      },
+      async forget(subpath) {
+        forgotten.add(subpath)
+      },
+      async planetBuild() {
+        calls.build++
+        return BUILD
+      },
+    }
+    const water = createSeaWater({ store, now: () => clock })
+    expect((await water.route(FROM, TO, [], coastBase, budget())).unverified).toBe('offline')
+    expect(forgotten.size).toBeGreaterThan(0)
+    expect(calls.build).toBe(1)
+    const after = { ...calls }
+    clock = 30_000
+    expect((await water.route(FROM, TO, [], coastBase, budget())).unverified).toBe('offline')
+    expect(calls).toEqual(after)
+  })
+
   it('a 404 on a planet tile forgets the cached TileJSON', async () => {
     const replies: Record<string, () => TileReply> = {
       404: () => ({ status: 404, body: Buffer.alloc(0), fromCache: false }),

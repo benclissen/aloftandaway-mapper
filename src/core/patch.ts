@@ -12,8 +12,9 @@ import {
   SceneSchema,
   parseProject,
   zodIssues,
+  type InputLegMode,
   type Leg,
-  type LegMode,
+  type LngLat,
   type Project,
   type ProjectIssue,
   type Scene,
@@ -42,6 +43,17 @@ const StopChangesSchema = StopSchema.omit({ id: true })
   })
 
 const LegChangesSchema = LegSchema.partial().extend({ symbol: clearable(SymbolKindSchema) })
+/** What `update_leg` changes on a leg. */
+export type LegChanges = z.infer<typeof LegChangesSchema>
+
+/**
+ * The changes `update_leg` makes to `leg`. A symbol without a mode also sets the mode it implies, except on a track
+ * leg, which stays on its track. `invertPatch` reads the same changes, so undo restores what was changed.
+ */
+export function legChangesFor(leg: Leg, changes: LegChanges): LegChanges {
+  const { symbol, mode } = changes
+  return symbol && !mode && leg.mode !== 'track' ? { ...changes, mode: defaultModeFor(symbol) } : changes
+}
 
 /** Applies `changes` over `target`: a `null` removes an (optional) key. Required keys never reach here as null. */
 function withChanges<T extends object>(target: T, changes: object): T {
@@ -182,17 +194,24 @@ function toStop(input: StopInput): Stop {
 
 interface LegHints {
   /** Mode for the leg leaving each of these stops (from a new stop's `legMode`). */
-  leaving?: Map<string, LegMode>
+  leaving?: Map<string, InputLegMode>
   /** Symbol for the leg leaving each of these stops (from a new stop's `symbol`). */
   symbols?: Map<string, SymbolKind>
   /** Mode for any other new leg, ahead of the old project's legs. */
-  fallback?: LegMode
+  fallback?: InputLegMode
 }
 
 /**
- * Rebuilds legs for `stops` after the stops changed. A leg from stop a to stop b that
- * existed before is reused whole. A new leg takes, in order: the `legMode` of the new
- * stop it leaves, `fallback`, the old leg leaving a, the old leg arriving at b, 'line'.
+ * Rebuilds legs for `stops` after the stops changed. A leg from stop a to stop b that existed before is reused whole.
+ *
+ * A new leg follows recorded track T, with no via points, when the old leg leaving a and the old leg arriving at b
+ * both follow T. A new stop is looked through to the nearest old stop on its side, so a stop inserted on a track leg
+ * splits it into two legs on T, and removing a stop between two legs on T joins them. The leg takes the new stop's
+ * `symbol`, else the one both old legs have, if they have the same one.
+ *
+ * Any other new leg takes, in order: the `legMode` of the new stop it leaves, `fallback`, the old leg leaving a, the
+ * old leg arriving at b, 'line'. An old leg's `track` mode becomes 'line' there, since the new leg has no track in
+ * common.
  */
 function syncLegs(old: { stops: Stop[]; legs: Leg[] }, stops: Stop[], hints: LegHints = {}): Leg[] {
   const byPair = new Map<string, Leg>()
@@ -206,12 +225,33 @@ function syncLegs(old: { stops: Stop[]; legs: Leg[] }, stops: Stop[], hints: Leg
     leaving.set(a.id, leg)
     arriving.set(b.id, leg)
   })
-  return stops.slice(1).map((b, i) => {
+  // The id of the nearest old stop at or before each index, and at or after it.
+  const isOld = new Set(old.stops.map((s) => s.id))
+  const oldBefore: (string | undefined)[] = []
+  const oldAfter: (string | undefined)[] = []
+  let near: string | undefined
+  for (let k = 0; k < stops.length; k++) {
+    if (isOld.has(stops[k]!.id)) near = stops[k]!.id
+    oldBefore[k] = near
+  }
+  near = undefined
+  for (let k = stops.length - 1; k >= 0; k--) {
+    if (isOld.has(stops[k]!.id)) near = stops[k]!.id
+    oldAfter[k] = near
+  }
+  return stops.slice(1).map((b, i): Leg => {
     const a = stops[i]!
     const kept = byPair.get(JSON.stringify([a.id, b.id]))
     if (kept) return kept
     const symbol = hints.symbols?.get(a.id)
-    const mode = hints.leaving?.get(a.id) ?? (symbol && defaultModeFor(symbol)) ?? hints.fallback ?? leaving.get(a.id)?.mode ?? arriving.get(b.id)?.mode ?? 'line'
+    const from = leaving.get(oldBefore[i] ?? '')
+    const to = arriving.get(oldAfter[i + 1] ?? '')
+    if (from?.mode === 'track' && to?.mode === 'track' && from.track !== undefined && from.track === to.track) {
+      const shared = symbol ?? (from.symbol === to.symbol ? from.symbol : undefined)
+      return shared ? { mode: 'track', track: from.track, via: [], symbol: shared } : { mode: 'track', track: from.track, via: [] }
+    }
+    const inherited = leaving.get(a.id)?.mode ?? arriving.get(b.id)?.mode
+    const mode = hints.leaving?.get(a.id) ?? (symbol && defaultModeFor(symbol)) ?? hints.fallback ?? (inherited === 'track' ? 'line' : inherited) ?? 'line'
     return symbol ? { mode, via: [], symbol } : { mode, via: [] }
   })
 }
@@ -248,7 +288,7 @@ export function fitLength(project: Project): Project {
  */
 export function setStops(
   project: Project,
-  args: { scene?: SceneRef; stops: StopInput[]; legMode?: LegMode; replace?: boolean },
+  args: { scene?: SceneRef; stops: StopInput[]; legMode?: InputLegMode; replace?: boolean },
 ): Project {
   const inputs = parseOrThrow(z.array(StopInputSchema), args.stops, ['stops'])
   const legMode = parseOrThrow(InputLegModeSchema.optional(), args.legMode, ['legMode'])
@@ -257,7 +297,7 @@ export function setStops(
   const old = args.replace === false ? { stops: scene.stops, legs: scene.legs } : { stops: [], legs: [] }
   const added = inputs.map((input) => ({ stop: toStop(input), legMode: input.legMode, symbol: input.symbol }))
   const stops = [...old.stops, ...added.map((a) => a.stop)]
-  const leaving = new Map<string, LegMode>()
+  const leaving = new Map<string, InputLegMode>()
   const symbols = new Map<string, SymbolKind>()
   for (const { stop, legMode: mode, symbol } of added) {
     if (mode) leaving.set(stop.id, mode)
@@ -265,6 +305,28 @@ export function setStops(
   }
   work.scenes[at] = { ...scene, stops, legs: syncLegs(old, stops, { leaving, symbols, fallback: legMode }) }
   return fitLength(parseProject(work))
+}
+
+// importTrack
+
+/**
+ * Replaces the chosen scene's stops (the first by default) with `stops`, as `setStops` does, and puts every leg on the
+ * recorded track `track`, with `symbol` when it's given. The other scenes are untouched.
+ */
+export function importTrack(
+  project: Project,
+  args: { scene?: SceneRef; stops: { name: string; at: LngLat }[]; track: string; symbol?: SymbolKind },
+): Project {
+  const track = parseOrThrow(LegSchema.shape.track.unwrap(), args.track, ['track'])
+  const symbol = parseOrThrow(SymbolKindSchema.optional(), args.symbol, ['symbol'])
+  const work = setStops(project, { scene: args.scene, stops: args.stops })
+  const { index: at } = resolveScene(work, args.scene)
+  const scenes = work.scenes.map((scene, i): Scene => {
+    if (i !== at) return scene
+    const legs = scene.legs.map((): Leg => (symbol ? { mode: 'track', track, via: [], symbol } : { mode: 'track', track, via: [] }))
+    return { ...scene, legs }
+  })
+  return fitLength(parseProject({ ...work, scenes }))
 }
 
 // applyPatch
@@ -309,9 +371,7 @@ function applyOp(scene: Scene, op: StopOp, at: number): Scene {
         const range = scene.legs.length ? `use 0 to ${scene.legs.length - 1}` : 'there are no legs'
         fail(['ops', at, 'index'], `leg index ${op.index} is out of range; ${range}`)
       }
-      const { symbol, mode } = op.changes
-      const changes = symbol && !mode ? { ...op.changes, mode: defaultModeFor(symbol) } : op.changes
-      return { ...scene, legs: scene.legs.map((l, j) => (j === op.index ? withChanges(l, changes) : l)) }
+      return { ...scene, legs: scene.legs.map((l, j) => (j === op.index ? withChanges(l, legChangesFor(l, op.changes)) : l)) }
     }
     case 'insert_via':
     case 'update_via':

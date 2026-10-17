@@ -94,7 +94,7 @@ function validationLine(errors: Issue[], warnings: Issue[]): string {
 /** `shot` with its longitude wrapped to ±180, as the schema stores it. Fitted shots can lie beyond 180. */
 const wrapped = (shot: Shot): Shot => ({ ...shot, center: [unwrapLng(0, shot.center[0]), shot.center[1]] })
 
-/** One line for a leg that has a transport or via points; nothing for a plain leg. */
+/** One line for a leg that has a transport, via points or a recorded track; nothing for a plain leg. */
 function legLine(scene: Scene, i: number, route: Route): string | undefined {
   const leg = scene.legs[i]!
   const parts: string[] = []
@@ -104,6 +104,7 @@ function legLine(scene: Scene, i: number, route: Route): string | undefined {
   if (sharp) parts.push(`${sharp} sharp`)
   const drawn = route.legs[i]
   if (drawn?.drawnAs === 'air') parts.push('flight arc')
+  else if (drawn?.track) parts.push(drawn.track.status === 'ok' ? 'recorded track' : 'recorded track file missing')
   else if (drawn?.sea) {
     const { status, reason, crossesLand } = drawn.sea
     if (status === 'fallback') parts.push(`sea route failed: ${reason ?? 'no route found'}`)

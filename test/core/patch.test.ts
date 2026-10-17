@@ -7,6 +7,7 @@ import {
   SceneOpSchema,
   isSceneOp,
   applyPatch,
+  importTrack,
   mergePatch,
   newStopId,
   setStops,
@@ -633,5 +634,72 @@ describe('a fixed length', () => {
   test('travel is rounded to 1e-6', () => {
     const p = applyPatch(fixed(), { sceneSet: { timing: { length: 8.1234567 } } })
     expect(sceneOf(p).timing.travel).toBe(2.123457)
+  })
+})
+
+describe('track legs', () => {
+  const TRACK = '0123456789ab'
+  const four = [s('A', [0, 0]), s('B', [1, 0]), s('C', [2, 0]), s('D', [3, 0])]
+  const imported = () => importTrack(emptyProject(), { stops: four, track: TRACK, symbol: 'cruise-ship' })
+  const onTrack = { mode: 'track', track: TRACK, via: [], symbol: 'cruise-ship' }
+
+  test('importTrack puts every leg on the track', () => {
+    const p = imported()
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['A', 'B', 'C', 'D'])
+    expect(sceneOf(p).legs).toEqual([onTrack, onTrack, onTrack])
+    const bare = importTrack(emptyProject(), { stops: four.slice(0, 2), track: TRACK })
+    expect(sceneOf(bare).legs).toEqual([{ mode: 'track', track: TRACK, via: [] }])
+  })
+
+  test('importTrack replaces the chosen scene and refits its length', () => {
+    const base = applyPatch(projectWithScenes(2), { scene: 2, sceneSet: { timing: { length: 20 } } })
+    const p = importTrack(base, { scene: 2, stops: [{ ...s('A', [0, 0]), pause: 3 }, s('B', [1, 0])], track: TRACK })
+    expect(p.scenes[0]).toEqual(base.scenes[0])
+    expect(p.scenes[1]!.stops.map((x) => x.name)).toEqual(['A', 'B'])
+    expect(p.scenes[1]!.timing.travel).toBe(20 - p.scenes[1]!.timing.holdStart - p.scenes[1]!.timing.holdEnd - 3)
+  })
+
+  test('importTrack refuses a bad track id', () => {
+    const e = failure(() => importTrack(emptyProject(), { stops: four, track: 'nope' }))
+    expect(e.issues[0]?.path).toEqual(['track'])
+  })
+
+  test('remove then insert keeps every leg on the track', () => {
+    let p = imported()
+    p = applyPatch(p, { ops: [{ op: 'remove_stop', id: sceneOf(p).stops[1]!.id }] })
+    expect(sceneOf(p).legs).toEqual([onTrack, onTrack])
+    p = applyPatch(p, { ops: [{ op: 'insert_stop', index: 1, stop: s('Missed', [1.5, 0]) }] })
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['A', 'Missed', 'C', 'D'])
+    expect(sceneOf(p).legs).toEqual([onTrack, onTrack, onTrack])
+  })
+
+  test('a new leg joining two track legs only shares a symbol they both have', () => {
+    let p = imported()
+    p = applyPatch(p, { ops: [{ op: 'update_leg', index: 1, changes: { symbol: 'ferry' } }] })
+    p = applyPatch(p, { ops: [{ op: 'remove_stop', id: sceneOf(p).stops[1]!.id }] })
+    expect(sceneOf(p).legs[0]).toEqual({ mode: 'track', track: TRACK, via: [] })
+  })
+
+  test('a new leg joining two different tracks is a line', () => {
+    const p = imported()
+    const scene = sceneOf(p)
+    scene.legs[1] = { mode: 'track', track: 'ba9876543210', via: [] }
+    const out = applyPatch(p, { ops: [{ op: 'remove_stop', id: scene.stops[1]!.id }] })
+    expect(sceneOf(out).legs[0]).toEqual({ mode: 'line', via: [] })
+  })
+
+  test('a new leg next to a track leg of another kind is a line', () => {
+    const p = imported()
+    const scene = sceneOf(p)
+    scene.legs[1] = { mode: 'sea', via: [] }
+    const out = applyPatch(p, { ops: [{ op: 'remove_stop', id: scene.stops[1]!.id }] })
+    expect(sceneOf(out).legs[0]).toEqual({ mode: 'line', via: [] })
+  })
+
+  test('a symbol alone keeps a track leg on its track', () => {
+    const p = applyPatch(imported(), { ops: [{ op: 'update_leg', index: 0, changes: { symbol: 'ferry' } }] })
+    expect(sceneOf(p).legs[0]).toEqual({ mode: 'track', track: TRACK, via: [], symbol: 'ferry' })
+    const off = applyPatch(imported(), { ops: [{ op: 'update_leg', index: 0, changes: { symbol: 'plane', mode: 'air' } }] })
+    expect(sceneOf(off).legs[0]).toEqual({ mode: 'air', track: TRACK, via: [], symbol: 'plane' })
   })
 })

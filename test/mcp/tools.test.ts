@@ -325,6 +325,21 @@ describe('tools', () => {
     expect(text(result)).not.toContain('Leg 2')
   })
 
+  test('the summary flags a track leg whose file is missing', async () => {
+    const folder = path.join(tmp, 't')
+    await call('create_project', { folder, name: 'T' })
+    await call('set_stops', { folder, stops: STOPS.slice(0, 2) })
+    // A hand-edited file: the track it names was never imported.
+    const file = path.join(folder, 'mapper.json')
+    const json = JSON.parse(await readFile(file, 'utf8'))
+    json.scenes[0].legs = [{ mode: 'track', track: '0123456789ab', via: [] }]
+    await writeFile(file, JSON.stringify(json))
+    const result = await call('get_project', { folder })
+    expect(result.isError, text(result)).toBeFalsy()
+    expect(text(result)).toContain('Leg 1 Piraeus → Mykonos: recorded track file missing')
+    expect(text(result)).toContain('track-missing')
+  })
+
   test('descriptions describe version 2', () => {
     const get = TOOLS.find((t) => t.name === 'get_project')!.description
     expect(get).toContain('scenes')

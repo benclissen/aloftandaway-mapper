@@ -375,3 +375,52 @@ export function trackToStops(
   const stops = found.map((f, k): TrackStop => ({ name: nameNear(f.at) ?? `Stop ${k + 1}`, ...f }))
   return { stops, points: thinTrack(collapsed, keep), recorded, stays: stays.length }
 }
+
+// Cutting a track into legs
+
+/** The `seaPaths` key a recorded track's points ride under. Sea keys are hex, so they never start with `track:`. */
+export function trackKey(id: string): string {
+  return `track:${id}`
+}
+
+/**
+ * The point of `points`, from `lo` on, where a leg should end at `at`: the nearest point in the first run of
+ * consecutive points within `TRACK_NEAR_KM` of it, or the nearest point from `lo` on when none comes that close. With
+ * no points from `lo` on, the last point. Stops scanning at the end of the first run, so it costs O(points) at most.
+ */
+function cutAt(points: LngLat[], at: LngLat, lo: number): { index: number; km: number } {
+  let best = { index: Math.max(Math.min(lo, points.length - 1), 0), km: Infinity }
+  let inRun = false
+  for (let k = Math.max(lo, 0); k < points.length; k++) {
+    const km = haversineKm(at, points[k]!)
+    const near = km <= TRACK_NEAR_KM
+    if (inRun && !near) break
+    if (near && !inRun) {
+      // The first run starts here: what was nearest before it no longer counts.
+      inRun = true
+      best = { index: k, km }
+    } else if (km < best.km) best = { index: k, km }
+  }
+  if (best.km === Infinity && points.length > 0) best.km = haversineKm(at, points[best.index]!)
+  return best
+}
+
+/**
+ * Where a leg from `from` to `to` cuts `points`, the wrapped points of a recorded track. `start` is the index the leg
+ * starts at, the previous leg's `end` when both follow this track; without it, `from` is searched for from index 0.
+ * `end` is searched for from `start + 1` on: the nearest point in the first run of points within `TRACK_NEAR_KM` of
+ * `to`, or the nearest point when none comes that close. Taking the first run cuts a port called at twice at its
+ * first call, and a cruise that ends where it began at its end. `gapKm` is how far `from` and `to` are from the
+ * points at `start` and `end`. Distances are great-circle, so a track across 180° needs no unwrapping. `points` must
+ * hold at least one point.
+ */
+export function cutTrack(
+  points: LngLat[],
+  from: LngLat,
+  to: LngLat,
+  start?: number,
+): { start: number; end: number; gapKm: [number, number] } {
+  const first = start === undefined ? cutAt(points, from, 0) : { index: start, km: haversineKm(from, points[start]!) }
+  const last = cutAt(points, to, first.index + 1)
+  return { start: first.index, end: last.index, gapKm: [first.km, last.km] }
+}

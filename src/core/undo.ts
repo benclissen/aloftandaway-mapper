@@ -1,6 +1,6 @@
-import { applyPatch, isSceneOp, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
+import { applyPatch, isSceneOp, legChangesFor, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
 import { resolveScene, sceneTitleOf } from './scenes.js'
-import { defaultModeFor, type Project } from './schema.js'
+import type { Project } from './schema.js'
 
 type Obj = Record<string, unknown>
 
@@ -53,10 +53,9 @@ function invertOp(project: Project, op: PatchOp, sceneId: string): PatchOp {
       return { op: 'update_stop', id: op.id, changes: oldValues(stop, op.changes) as never }
     }
     case 'update_leg': {
-      const { symbol, mode } = op.changes
-      // A symbol without a mode also sets the mode, so the inverse restores the mode as well.
-      const changes: Obj = symbol && !mode ? { ...op.changes, mode: defaultModeFor(symbol) } : { ...op.changes }
-      return { op: 'update_leg', index: op.index, changes: oldValues(scene!.legs[op.index]!, changes) as never }
+      // A symbol without a mode can also set the mode, and then the inverse restores the mode as well.
+      const leg = scene!.legs[op.index]!
+      return { op: 'update_leg', index: op.index, changes: oldValues(leg, legChangesFor(leg, op.changes)) as never }
     }
     case 'insert_via':
       return { op: 'remove_via', leg: op.leg, index: op.index }

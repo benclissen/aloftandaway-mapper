@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { applyPatch, invertPatch, ProjectPatchSchema, type Project, type ProjectPatch } from '../../src/core/index.js'
+import { applyPatch, importTrack, invertPatch, ProjectPatchSchema, type Project, type ProjectPatch } from '../../src/core/index.js'
 import { greekIslands, projectWithScenes, sceneOf } from '../fixtures/projects.js'
 
 function roundTrip(p: Project, patch: ProjectPatch): void {
@@ -30,6 +30,18 @@ describe('invertPatch', () => {
       op: 'update_leg',
       changes: { symbol: null, mode: sceneOf(p).legs[0]!.mode },
     })
+  })
+
+  test('undo of a symbol change on a track leg', () => {
+    const p = importTrack(greekIslands(), {
+      stops: [{ name: 'A', at: [23.6, 37.9] }, { name: 'B', at: [25.3, 37.4] }],
+      track: '0123456789ab',
+      symbol: 'cruise-ship',
+    })
+    const patch: ProjectPatch = { ops: [{ op: 'update_leg', index: 0, changes: { symbol: 'ferry' } }] }
+    expect(sceneOf(applyPatch(p, patch)).legs[0]!.mode).toBe('track')
+    roundTrip(p, patch)
+    expect(invertPatch(p, patch).ops?.[0]).toEqual({ op: 'update_leg', index: 0, changes: { symbol: 'cruise-ship' } })
   })
 
   test('update_leg symbol null', () => {

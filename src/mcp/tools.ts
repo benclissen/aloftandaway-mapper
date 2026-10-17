@@ -552,7 +552,7 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'import_track',
     description:
-      "Read a recorded GPS or AIS track from a local .gpx or .csv (lng,lat,time columns) into the scene's stops, replacing them. Legs follow the recorded points exactly; the track is kept in tracks/ in the project folder. stops: 'stays' (default when every point has a time) puts a stop wherever the track stayed within 1 km for minStayMinutes (default 120); 'ends' uses the first and last points. Stops come back with arrival and departure times; rename them with update_stop. symbol sets every leg. path and folder must be absolute.",
+      "Read a recorded GPS or AIS track from a local .gpx or .csv (lng,lat,time columns) into the scene's stops, replacing them. Legs follow the recorded points exactly; the track is kept in tracks/ in the project folder. stops: 'stays' (default when every point has a time) puts a stop wherever the track stayed within 1 km for minStayMinutes (default 120); 'ends' uses the first and last points. Stops come back with arrival and departure times; rename them with update_project's update_stop op. symbol sets every leg. path and folder must be absolute.",
     input: z.strictObject({
       folder,
       scene: sceneInput,
@@ -585,6 +585,9 @@ export const TOOLS: ToolDef<any>[] = [
         if (e instanceof GpxError || e instanceof TrackError) throw new ToolError(e.message, e.fix)
         throw e
       }
+      // The folder and scene are checked before anything is written, so a bad call leaves no tracks/ folder behind.
+      assertAbsolute(folder)
+      resolveScene(await loadProject(folder), ref)
       // The track file goes down first, so the project never names a file that isn't there.
       const id = await writeTrack(folder, { name: recorded.name, points: imported.points })
       const project = await mutateProject(folder, (p) => importTrack(p, { scene: ref, stops: imported.stops.map(({ name, at }) => ({ name, at })), track: id, symbol }))

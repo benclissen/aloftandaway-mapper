@@ -1139,6 +1139,27 @@ describe('render summaries', () => {
       expect(text(result)).toMatch(/Error: .*absolute/)
     })
 
+    test('import_track writes nothing when the folder or scene is wrong', async () => {
+      const { folder, file } = await setup('trk-bad', 'cruise.csv', syntheticCruise().csv)
+      const none = (dir: string) => expect(readdir(path.join(dir, TRACKS_DIR))).rejects.toThrow()
+
+      const relative = await call('import_track', { folder: 'rel-trk-folder', path: file })
+      expect(relative.isError).toBe(true)
+      expect(text(relative)).toMatch(/absolute/)
+      await none(path.resolve('rel-trk-folder'))
+
+      const notProject = path.join(tmp, 'not-a-project')
+      await mkdir(notProject)
+      const missing = await call('import_track', { folder: notProject, path: file })
+      expect(missing.isError).toBe(true)
+      expect(text(missing)).toContain('No project found')
+      await none(notProject)
+
+      const badScene = await call('import_track', { folder, path: file, scene: 5 })
+      expect(badScene.isError).toBe(true)
+      await none(folder)
+    })
+
     test('importing twice reuses the track file', async () => {
       const { folder, file } = await setup('trk-twice', 'cruise.csv', syntheticCruise().csv)
       const first = (await call('import_track', { folder, path: file })).structuredContent as unknown as TrackResult

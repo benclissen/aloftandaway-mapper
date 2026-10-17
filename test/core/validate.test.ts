@@ -599,7 +599,8 @@ describe('validateProject', () => {
     })
 
     test('track-stop-far names the stop and the gap', () => {
-      const off: LngLat = [25.3289, 37.5]
+      // The track turns 5.9 km south-west of Mykonos, and neither of its segments there comes nearer the stop.
+      const off: LngLat = [25.2817, 37.4092]
       const { project, seaPaths } = trackProject({ 1: off })
       const found = validateProject(project, { seaPaths }).warnings.filter((w) => w.code === 'track-stop-far')
       // Mykonos ends leg 1 and starts leg 2 at the same cut, and is warned once.

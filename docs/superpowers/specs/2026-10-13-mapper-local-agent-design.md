@@ -399,20 +399,24 @@ describe the layered export unless they say otherwise.
   departure times so the agent can name the stops. `stops: 'ends'` gives only
   the first and last points, as `import_gpx` does.
 - **Each leg's stretch is found, not stored.** `buildRoute` cuts the track at
-  each stop: the first run of points within `TRACK_NEAR_KM` (2) of the stop,
-  then the nearest point in that run. The first run handles a ship that calls
+  each stop: the first run of segments within `TRACK_NEAR_KM` (2) of the stop,
+  then the nearest place in that run. A cut can fall between two kept points,
+  so a stop on a long thinned segment is cut where it is and the points either
+  side stay in the legs either side; a cut within 100 m of a kept point is
+  taken at the point. A leg draws its two stops and every kept point strictly
+  between its cuts. The first run handles a ship that calls
   at one port twice and a cruise that ends where it started. A leg that
   follows another leg of the same track starts where that leg ended, and its
   end is looked for after its start. The track may already be within 2 km of
-  the end stop where the leg leaves it. If that point is within
+  the end stop where the leg leaves it. If that place is within
   `SAME_PLACE_KM` (0.5) of the end stop, the track hasn't left yet, so the leg
   ends in the next run, or in this one if there's no other. That keeps a loop
   from a stop back to it whole, even when the logger sat jittering at both
   ends or a stop is dragged a little. Further out, this run is taken if it
   gets nearer the end stop than half the leaving distance; if not, it competes
   with the next run and the nearer wins. A loop whose way out dips back within
-  2 km of its end stop is still cut there. If no point is within 2 km, the
-  nearest one is used and `track-stop-far` warns. Validation doesn't give
+  2 km of its end stop is still cut there. If no segment is within 2 km, the
+  nearest place is used and `track-stop-far` warns. Validation doesn't give
   `same-place` for two stops with a track leg between them, since merging them
   would lose the loop.
 - **Adding or removing a stop keeps the track.** A new leg from a to b is a

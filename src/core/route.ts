@@ -3,7 +3,7 @@ import { dist, lerp, sampleChain, type Control } from './curve.js'
 import { toLngLat, toXY, unwrapLng, headingDeg, type XY } from './geo.js'
 import type { LegMode, LngLat, Scene, SymbolKind } from './schema.js'
 import { seaLegKey, type SeaPath, type SeaPaths } from './sea.js'
-import { cutTrack, trackKey } from './track.js'
+import { cutTrack, trackKey, type TrackCut } from './track.js'
 
 export interface RouteLeg {
   mode: LegMode
@@ -37,7 +37,7 @@ export interface RouteLeg {
   }
   /**
    * On every track leg. `missing` when `seaPaths` has no points for its track, and then it's drawn as a straight
-   * line. `stopGapKm` is how far the start and end stops are from the track points the leg is cut at.
+   * line. `stopGapKm` is how far the start and end stops are from the places on the track the leg is cut at.
    */
   track?: {
     status: 'ok' | 'missing'
@@ -96,7 +96,7 @@ export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
   let start: LngLat = unwrap(stops[0]!.at)
 
   // Where the last track leg ended on its track, so the next leg on the same track starts there.
-  let cut: { leg: number; id: string; end: number } | undefined
+  let cut: { leg: number; id: string; end: TrackCut } | undefined
 
   // One curve runs through each chain of `line` and `land` legs. A sharp stop ends a
   // chain, and a sea, air or track leg is a chain on its own.
@@ -198,8 +198,9 @@ export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
   }
 
   /**
-   * Leg `i` on its recorded track: the stops at its ends, and the points between its cuts, each unwrapped from the one
-   * before. A straight line when the track's points are missing.
+   * Leg `i` on its recorded track: the stops at its ends, and the points strictly between its cuts, each unwrapped
+   * from the one before. A cut can fall between two points, so a stop on a long segment keeps the points either side
+   * in the legs either side. A straight line when the track's points are missing.
    */
   function trackLeg(i: number): RouteLeg {
     const id = specs[i]!.track ?? ''
@@ -214,7 +215,9 @@ export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
     const { start: s, end: e, gapKm } = cutTrack(points, stops[i]!.at, stops[i + 1]!.at, shared)
     cut = { leg: i, id, end: e }
     const path: LngLat[] = [start]
-    for (let k = s + 1; k < e; k++) path.push(unwrap(points[k]!))
+    // Every point strictly between the cuts. A cut on a point leaves it out, and one after a point keeps it.
+    const to = e.t > 0 ? e.index : e.index - 1
+    for (let k = s.index + 1; k <= to; k++) path.push(unwrap(points[k]!))
     path.push(unwrap(stops[i + 1]!.at))
     const leg = finishLeg('track', 'track', path, path.map(toXY), [0, path.length - 1])
     leg.track = { status: 'ok', id, stopGapKm: gapKm }

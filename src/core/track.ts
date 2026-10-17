@@ -1,4 +1,4 @@
-import { haversineKm, toXY, unwrapLng, type XY } from './geo.js'
+import { haversineKm, toLngLat, toXY, unwrapLng, type XY } from './geo.js'
 import { NAME_KM, parseIsoTime, simplify, type GpxLine } from './gpx.js'
 import { MAX_LAT, type LngLat } from './schema.js'
 
@@ -482,69 +482,151 @@ export function trackKey(id: string): string {
   return `track:${id}`
 }
 
-type Cut = { index: number; km: number }
+/**
+ * Where a leg meets its track: on the segment from point `index` to the next one, `t` of the way along it in Mercator,
+ * with 0 <= t < 1. On a point `t` is 0, and the last point is always `{ index: n - 1, t: 0 }`.
+ */
+export interface TrackCut {
+  index: number
+  t: number
+}
+
+type Cut = TrackCut & { km: number }
+
+/** A cut moves onto an end of its segment when that point is less than this much further from the stop. */
+const SNAP_KM = 0.1
+
+/** Where `cut` lies. A point exactly; between points, its longitude may be off by whole turns. */
+export function cutPoint(points: LngLat[], cut: TrackCut): LngLat {
+  const a = points[cut.index]!
+  if (cut.t === 0) return a
+  const b = points[cut.index + 1]!
+  const xa = toXY(a)
+  const xb = toXY([unwrapLng(a[0], b[0]), b[1]])
+  return toLngLat([xa[0] + (xb[0] - xa[0]) * cut.t, xa[1] + (xb[1] - xa[1]) * cut.t])
+}
+
+/** The vertex positions `cut` is at or before. A cut on a point is after it, so the point isn't strictly after. */
+const before = (a: TrackCut, b: TrackCut): boolean => a.index < b.index || (a.index === b.index && a.t < b.t)
 
 /**
- * The point of `points`, from `lo` on, where a leg should end at `at`: the nearest point in the first run of
- * consecutive points within `TRACK_NEAR_KM` of it, or the nearest point from `lo` on when none comes that close. With
- * no points from `lo` on, the last point.
+ * Where a leg should end at `at` on `points`, from the cut `lo` on: the nearest place in the first run of segments
+ * that come within `TRACK_NEAR_KM` of it, or the nearest place from `lo` on when none comes that close. With no
+ * segment from `lo` on, the last point. Distances are to the segment, so a stop on a long thinned segment is cut
+ * there, not at a point kilometres away. `snap` then moves the cut onto a point that's nearly as near.
  *
- * `leaving`, the index the leg leaves from, is given when searching for a leg's end. The track may then be inside
+ * `leaving`, the cut the leg leaves from, is given when searching for a leg's end. The track may then be inside
  * `at`'s circle already at `lo`, because the two ends are close, and that run needs care:
  * - If the leg leaves within `SAME_PLACE_KM` of `at`, the track hasn't left yet, as on a loop that ends where it
  *   began, so the next run is taken. This run is used only when there's no other.
  * - Otherwise it's taken if it gets nearer `at` than half the distance the leg leaves from: the track has made its way
  *   over to `at`. If it doesn't, it competes with the next run, and the nearer of the two wins.
  * The scan stops at the end of the next run, so it costs O(points) at most.
+ *
+ * Each segment is measured in Mercator, as it's drawn, scaled to kilometres at `at`'s latitude: exact to well under
+ * 1% within a few kilometres, which is all the runs need. The distance a cut reports is great-circle.
  */
-function cutAt(points: LngLat[], at: LngLat, lo: number, leaving?: number): Cut {
+function cutAt(points: LngLat[], at: LngLat, lo: TrackCut, leaving?: TrackCut): Cut {
   const n = points.length
-  let k = Math.max(lo, 0)
+  const last = (): Cut => ({ index: n - 1, t: 0, km: haversineKm(at, points[n - 1]!) })
+  if (lo.index >= n - 1) return last()
+  const q = toXY(at)
+  const kmPerUnit = WORLD_KM * Math.cos((at[1] * Math.PI) / 180)
+  /** Point `k` in Mercator, moved by whole turns to lie nearest `x`. */
+  const xyNear = (k: number, x: number): XY => {
+    const p = toXY(points[k]!)
+    return [p[0] + Math.round(x - p[0]), p[1]]
+  }
+  let k = lo.index
+  let a = xyNear(k, q[0])
+  /** The nearest place to `at` on segment `k`, from `lo` on, with the next point in Mercator for the next segment. */
+  const nearestOn = (): { cut: Cut; b: XY } => {
+    const b = xyNear(k + 1, a[0])
+    const dx = b[0] - a[0]
+    const dy = b[1] - a[1]
+    // `at` moved by whole turns to lie nearest the segment, which spans less than half a turn.
+    const qx = q[0] + Math.round(a[0] + dx / 2 - q[0])
+    const len2 = dx * dx + dy * dy
+    const t0 = k === lo.index ? lo.t : 0
+    const t = len2 === 0 ? t0 : Math.min(1, Math.max(t0, ((qx - a[0]) * dx + (q[1] - a[1]) * dy) / len2))
+    const km = Math.hypot(a[0] + dx * t - qx, a[1] + dy * t - q[1]) * kmPerUnit
+    return { cut: t >= 1 ? { index: k + 1, t: 0, km } : { index: k, t, km }, b }
+  }
+  const step = (): Cut => {
+    const { cut, b } = nearestOn()
+    a = b
+    k++
+    return cut
+  }
+
   // The run under way at `lo`, if there is one, and how far from `at` the leg leaves.
   let early: Cut | undefined
   let leaveKm = 0
   if (leaving !== undefined) {
-    for (; k < n; k++) {
-      const km = haversineKm(at, points[k]!)
-      if (km > TRACK_NEAR_KM) break
-      if (!early || km < early.km) early = { index: k, km }
+    while (k < n - 1) {
+      const { cut, b } = nearestOn()
+      if (cut.km > TRACK_NEAR_KM) break
+      a = b
+      k++
+      if (!early || cut.km < early.km) early = cut
     }
-    leaveKm = haversineKm(points[leaving]!, at)
-    if (early && leaveKm >= SAME_PLACE_KM && early.km < leaveKm / 2) return early
+    leaveKm = haversineKm(cutPoint(points, leaving), at)
+    if (early && leaveKm >= SAME_PLACE_KM && early.km < leaveKm / 2) return snap(points, at, lo, early)
   }
   let run: Cut | undefined
   let nearest: Cut | undefined
-  for (; k < n; k++) {
-    const km = haversineKm(at, points[k]!)
-    if (km <= TRACK_NEAR_KM) {
-      if (!run || km < run.km) run = { index: k, km }
+  while (k < n - 1) {
+    const cut = step()
+    if (cut.km <= TRACK_NEAR_KM) {
+      if (!run || cut.km < run.km) run = cut
     } else if (run) break
-    else if (!nearest || km < nearest.km) nearest = { index: k, km }
+    else if (!nearest || cut.km < nearest.km) nearest = cut
   }
-  if (early && run && leaveKm >= SAME_PLACE_KM) return early.km <= run.km ? early : run
+  if (early && run && leaveKm >= SAME_PLACE_KM) return snap(points, at, lo, early.km <= run.km ? early : run)
   const found = run ?? early ?? nearest
-  if (found) return found
-  const index = Math.max(Math.min(lo, n - 1), 0)
-  return { index, km: n > 0 ? haversineKm(at, points[index]!) : Infinity }
+  return found ? snap(points, at, lo, found) : last()
 }
 
 /**
- * Where a leg from `from` to `to` cuts `points`, the wrapped points of a recorded track. `start` is the index the leg
- * starts at, the previous leg's `end` when both follow this track; without it, `from` is searched for from index 0.
- * `end` is searched for from `start + 1` on: the nearest point in the first run of points within `TRACK_NEAR_KM` of
- * `to`, or the nearest point when none comes that close. Taking the first run cuts a port called at twice at its
- * first call, and a cruise that ends where it began at its end. When the track is already within `TRACK_NEAR_KM` of
- * `to` where the leg leaves, `cutAt` decides whether the leg ends in that run or a later one, so a loop from a stop
- * back to it isn't cut on the way out. `gapKm` is how far `from` and `to` are from the points at `start` and `end`. Distances are
- * great-circle, so a track across 180° needs no unwrapping. `points` must hold at least one point.
+ * `cut` moved onto the nearer end of its segment when that point is less than `SNAP_KM` further from `at`, so a stop
+ * by a logged point is cut there, and no sliver of track is left between the cut and the point. Only a point from
+ * `lo` on is taken. The distance is great-circle.
+ */
+function snap(points: LngLat[], at: LngLat, lo: TrackCut, cut: Cut): Cut {
+  if (cut.t === 0) return { ...cut, km: haversineKm(at, points[cut.index]!) }
+  const km = haversineKm(at, cutPoint(points, cut))
+  let best: Cut = { ...cut, km }
+  for (const index of [cut.index, cut.index + 1]) {
+    if (before({ index, t: 0 }, lo)) continue
+    const vertexKm = haversineKm(at, points[index]!)
+    if (vertexKm - km < SNAP_KM && (best.t !== 0 || vertexKm < best.km)) best = { index, t: 0, km: vertexKm }
+  }
+  return best
+}
+
+/**
+ * Where a leg from `from` to `to` cuts `points`, the wrapped points of a recorded track. A cut can fall between two
+ * points (see `TrackCut`), so a stop on a long thinned segment is cut where it is, and the points either side stay in
+ * the legs either side. The leg follows every point strictly between its two cuts.
+ *
+ * `start` is the cut the leg starts at, the previous leg's `end` when both follow this track; without it, `from` is
+ * searched for from the first point. `end` is searched for from `start` on: the nearest place in the first run of
+ * segments within `TRACK_NEAR_KM` of `to`, or the nearest place when none comes that close. Taking the first run cuts
+ * a port called at twice at its first call, and a cruise that ends where it began at its end. When the track is
+ * already within `TRACK_NEAR_KM` of `to` where the leg leaves, `cutAt` decides whether the leg ends in that run or a
+ * later one, so a loop from a stop back to it isn't cut on the way out. `gapKm` is the great-circle distance from
+ * `from` and `to` to the places at `start` and `end`, so two legs that share a cut report the same gap there. Runs
+ * are measured in a local Mercator frame, so a track across 180° needs no unwrapping. `points` must hold at least one
+ * point, and each stored edge must span less than 180° of longitude, as `thinTrack` leaves them.
  */
 export function cutTrack(
   points: LngLat[],
   from: LngLat,
   to: LngLat,
-  start?: number,
-): { start: number; end: number; gapKm: [number, number] } {
-  const first = start === undefined ? cutAt(points, from, 0) : { index: start, km: haversineKm(from, points[start]!) }
-  const last = cutAt(points, to, first.index + 1, first.index)
-  return { start: first.index, end: last.index, gapKm: [first.km, last.km] }
+  start?: TrackCut,
+): { start: TrackCut; end: TrackCut; gapKm: [number, number] } {
+  const first = start ?? cutAt(points, from, { index: 0, t: 0 })
+  const fromKm = haversineKm(from, cutPoint(points, first))
+  const last = cutAt(points, to, first, first)
+  return { start: { index: first.index, t: first.t }, end: { index: last.index, t: last.t }, gapKm: [fromKm, last.km] }
 }

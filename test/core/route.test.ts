@@ -2,11 +2,13 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
 import {
   AIR_SAMPLES,
+  applyPatch,
   buildRoute,
   clampLat,
   decodeLand,
   effectiveSymbol,
   haversineKm,
+  importTrack,
   LngLatSchema,
   MAX_LAT,
   headingDeg,
@@ -22,6 +24,7 @@ import {
   trackKey,
   trackToStops,
   unwrapLng,
+  validateProject,
   type LngLat,
   type RouteLeg,
   type Scene,
@@ -737,6 +740,50 @@ describe('track legs', () => {
     const legs = buildRoute(scene, seaPaths).legs
     expect(legs[0]!.path).toEqual([[0, 0], ...points.slice(1, 14), B])
     expect(legs[1]!.path).toEqual([B, ...points.slice(15, 200), [0.2, 0]])
+  })
+
+  test('a stop inserted on a thinned segment keeps the bends either side', () => {
+    // 201 points along [0,0] → [1,0] → [1,1] thin to those three. A stop put on the first segment, 55 km from any kept
+    // point, is on the track: the leg before it ends there, and the leg after it still turns at [1,0].
+    const logged: LngLat[] = [
+      ...Array.from({ length: 101 }, (_, k): LngLat => [k / 100, 0]),
+      ...Array.from({ length: 100 }, (_, k): LngLat => [1, (k + 1) / 100]),
+    ]
+    const imported = trackToStops({ points: logged }, { stops: 'ends', minStayMinutes: 120 })
+    expect(imported.points).toEqual([[0, 0], [1, 0], [1, 1]])
+    const base = importTrack(greekIslands(), { stops: imported.stops, track: TRACK })
+    const seaPaths: SeaPaths = { [trackKey(TRACK)]: { status: 'ok', path: imported.points, knots: [] } }
+    const p = applyPatch(base, { ops: [{ op: 'insert_stop', index: 1, stop: { name: 'Mid', at: [0.5, 0] } }] })
+    const legs = buildRoute(sceneOf(p), seaPaths).legs
+    expect(legs.map((l) => l.drawnAs)).toEqual(['track', 'track'])
+    expect(legs[0]!.path).toEqual([[0, 0], [0.5, 0]])
+    expect(legs[1]!.path).toEqual([[0.5, 0], [1, 0], [1, 1]])
+    for (const leg of legs) expect(Math.max(...leg.track!.stopGapKm!)).toBeLessThan(1e-6)
+    expect(validateProject(p, { seaPaths }).warnings.map((w) => w.code)).not.toContain('track-stop-far')
+
+    // Two stops on the same segment, and one dragged 300 m off it, still keep the corner after them.
+    const q = applyPatch(p, { ops: [{ op: 'insert_stop', index: 2, stop: { name: 'Off', at: [0.7, 0.0027] } }] })
+    const three = buildRoute(sceneOf(q), seaPaths).legs
+    expect(three.map((l) => l.path)).toEqual([[[0, 0], [0.5, 0]], [[0.5, 0], [0.7, 0.0027]], [[0.7, 0.0027], [1, 0], [1, 1]]])
+    expect(three[1]!.track!.stopGapKm![1]).toBeCloseTo(haversineKm([0.7, 0], [0.7, 0.0027]), 3)
+    expect(three[2]!.track!.stopGapKm![0]).toBe(three[1]!.track!.stopGapKm![1])
+  })
+
+  test('a stop inserted on a thinned segment across 180° keeps the bend after it', () => {
+    // The same L shape from 179.5° E, logged with each longitude in [-180, 180].
+    const wrap = (lng: number): number => ((lng + 180) % 360) - 180
+    const logged: LngLat[] = [
+      ...Array.from({ length: 101 }, (_, k): LngLat => [wrap(179.5 + k / 100), 0]),
+      ...Array.from({ length: 100 }, (_, k): LngLat => [-179.5, (k + 1) / 100]),
+    ]
+    const imported = trackToStops({ points: logged }, { stops: 'ends', minStayMinutes: 120 })
+    expect(imported.points).toEqual([[179.5, 0], [-179.5, 0], [-179.5, 1]])
+    const base = importTrack(greekIslands(), { stops: imported.stops, track: TRACK })
+    const seaPaths: SeaPaths = { [trackKey(TRACK)]: { status: 'ok', path: imported.points, knots: [] } }
+    const p = applyPatch(base, { ops: [{ op: 'insert_stop', index: 1, stop: { name: 'Mid', at: [180, 0] } }] })
+    const legs = buildRoute(sceneOf(p), seaPaths).legs
+    expect(legs.map((l) => l.path)).toEqual([[[179.5, 0], [180, 0]], [[180, 0], [180.5, 0], [180.5, 1]]])
+    expect(validateProject(p, { seaPaths }).warnings.map((w) => w.code)).not.toContain('track-stop-far')
   })
 
   test('a stop far from the track reports the gap', () => {

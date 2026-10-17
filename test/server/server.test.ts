@@ -10,6 +10,11 @@ import { PROJECT_FILE, createProject, loadProject, mutateProject, saveProject } 
 import type { SeaWater } from '../../src/server/sea-water.js'
 import { getServer, startServer, WATCH_DEBOUNCE_MS, type MapperServer, type ServerOptions } from '../../src/server/server.js'
 
+/** A window in which nothing must happen. The caller picks a length that outlasts the product constant it names. */
+const quiet = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** The sea retry interval the retry tests pass as `retryMs`. */
+const RETRY = 20
+
 let tmp: string
 let studioDir: string
 let folder: string
@@ -515,7 +520,7 @@ describe('websocket sync', () => {
     const { ws, next, messages } = await connect()
     await next()
     await writeFile(path.join(folder, PROJECT_FILE), '{"half":')
-    await new Promise((r) => setTimeout(r, 250))
+    await quiet(4 * WATCH_DEBOUNCE_MS)
     expect(messages).toHaveLength(0)
     const current = { ...project, name: 'Recovered' }
     await saveProject(folder, current)
@@ -609,7 +614,7 @@ describe('websocket sync', () => {
       await handEdit('By hand')
       await vi.waitFor(() => expect(restamps()).toHaveLength(1), { timeout: 2000 })
       await handEdit('By hand again')
-      await new Promise((r) => setTimeout(r, 4 * WATCH_DEBOUNCE_MS))
+      await quiet(4 * WATCH_DEBOUNCE_MS)
       expect(restamps()).toHaveLength(1)
       expect(messages).toHaveLength(0)
       // Once a restamp succeeds, the next failure is logged again.
@@ -633,7 +638,7 @@ describe('websocket sync', () => {
       await writeFile(path.join(folder, 'notes.txt'), 'unrelated')
       const before = await loadProject(folder)
       await writeFile(path.join(folder, PROJECT_FILE), `${JSON.stringify(before, null, 2)}\n`)
-      await new Promise((r) => setTimeout(r, 4 * WATCH_DEBOUNCE_MS))
+      await quiet(4 * WATCH_DEBOUNCE_MS)
       expect(messages).toHaveLength(0)
       expect((await loadProject(folder)).updatedAt).toBe(before.updatedAt)
     } finally {
@@ -650,7 +655,7 @@ describe('websocket sync', () => {
       const reordered = Object.fromEntries(Object.entries(before).reverse())
       await writeFile(file, `${JSON.stringify(reordered, null, 4)}\n`)
       const written = await readFile(file, 'utf8')
-      await new Promise((r) => setTimeout(r, 4 * WATCH_DEBOUNCE_MS))
+      await quiet(4 * WATCH_DEBOUNCE_MS)
       expect(messages).toHaveLength(0)
       expect(await readFile(file, 'utf8')).toBe(written)
     } finally {
@@ -667,7 +672,7 @@ describe('websocket sync', () => {
       const invalid = { ...before, output: { ...before.output, fps: { num: 7, den: 1 } } }
       await writeFile(file, `${JSON.stringify(invalid, null, 2)}\n`)
       const written = await readFile(file, 'utf8')
-      await new Promise((r) => setTimeout(r, 4 * WATCH_DEBOUNCE_MS))
+      await quiet(4 * WATCH_DEBOUNCE_MS)
       expect(messages).toHaveLength(0)
       expect(await readFile(file, 'utf8')).toBe(written)
       await saveProject(folder, { ...before, name: 'Valid again' })
@@ -782,14 +787,14 @@ describe('sea paths', () => {
     const state = { online: false }
     const water = fakeWater(state)
     let clock = 0
-    await seaServer(async () => island(), { water, retryMs: 40, now: () => clock })
+    await seaServer(async () => island(), { water, retryMs: RETRY, now: () => clock })
     const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
     const { ws, next, messages } = await connect(url)
     try {
       const first = (await next()) as any
       expect(first.seaPaths[legKey].unverified).toBe('offline')
       // Within the minute the cache keeps the unverified path, and nothing changes, so nothing is sent.
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      await quiet(10 * RETRY)
       expect(water.calls).toBe(1)
       expect(messages).toEqual([])
       // Back online, and the minute is up: the next retry routes it again and pushes the new path.
@@ -804,7 +809,7 @@ describe('sea paths', () => {
       expect(upgraded.origin).toBe(PATHS_ORIGIN)
       expect(water.calls).toBe(2)
       // Verified now, so the retries stop.
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      await quiet(10 * RETRY)
       expect(water.calls).toBe(2)
       expect(messages).toEqual([])
     } finally {
@@ -819,33 +824,30 @@ describe('sea paths', () => {
     const water = fakeWater({ online: false })
     // Each call is a minute after the last, so every retry routes the leg again.
     let clock = 0
-    await seaServer(async () => island(), { water, retryMs: 20, now: () => (clock += 61_000) })
+    await seaServer(async () => island(), { water, retryMs: RETRY, now: () => (clock += 61_000) })
     const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
     const first = await connect(url)
     await first.next()
-    await wait(200)
-    expect(water.calls).toBeGreaterThan(2)
+    await vi.waitFor(() => expect(water.calls).toBeGreaterThan(2))
     // Offline each time, with the same path, so nothing new was sent.
     expect(first.messages).toEqual([])
     await new Promise<void>((resolve) => {
       first.ws.once('close', () => resolve())
       first.ws.close()
     })
-    await wait(60)
+    await quiet(3 * RETRY)
     const settled = water.calls
-    await wait(200)
+    await quiet(10 * RETRY)
     expect(water.calls).toBe(settled)
 
     // A new studio starts it again, and closing the server stops it.
     const second = await connect(url)
     await second.next()
-    await wait(100)
-    expect(water.calls).toBeGreaterThan(settled + 1)
+    await vi.waitFor(() => expect(water.calls).toBeGreaterThan(settled + 1))
     await sea.close()
     const closed = water.calls
-    await wait(200)
+    await quiet(10 * RETRY)
     expect(water.calls).toBe(closed)
   })
 
@@ -856,12 +858,12 @@ describe('sea paths', () => {
     const water = fakeWater({ online: false, why: 'unsettled' })
     // Each call is more than a day after the last, so any retry would route the leg again.
     let clock = 0
-    await seaServer(async () => island(), { water, retryMs: 20, now: () => (clock += 25 * 60 * 60 * 1000) })
+    await seaServer(async () => island(), { water, retryMs: RETRY, now: () => (clock += 25 * 60 * 60 * 1000) })
     const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
     const { ws, next, messages } = await connect(url)
     try {
       expect(((await next()) as any).seaPaths[legKey].unverified).toBe('unsettled')
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      await quiet(10 * RETRY)
       expect(water.calls).toBe(1)
       expect(messages).toEqual([])
     } finally {
@@ -875,7 +877,7 @@ describe('sea paths', () => {
     await saveProject(folder, withSeaLeg(await loadProject(folder)))
     const state = { online: false }
     let clock = 0
-    await seaServer(async () => island(), { water: fakeWater(state), retryMs: 40, now: () => clock })
+    await seaServer(async () => island(), { water: fakeWater(state), retryMs: RETRY, now: () => clock })
     const url = sea.base.replace('http:', 'ws:') + `ws/projects/${seaKey}`
     const old = await connect(url)
     try {
@@ -887,7 +889,7 @@ describe('sea paths', () => {
       try {
         expect(((await fresh.next()) as any).seaPaths[legKey].unverified).toBeUndefined()
         expect(((await old.next(2000)) as any).seaPaths[legKey].unverified).toBeUndefined()
-        await new Promise((resolve) => setTimeout(resolve, 200))
+        await quiet(10 * RETRY)
         expect(fresh.messages).toEqual([])
       } finally {
         fresh.ws.close()

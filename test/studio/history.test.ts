@@ -114,7 +114,7 @@ describe('EditQueue', () => {
       return { set: { name: 'Second' } }
     }, () => initial)
 
-    await new Promise((r) => setTimeout(r, 10))
+    await new Promise((r) => setImmediate(r))
     // The second edit waits for the first to settle.
     expect(sent).toHaveLength(1)
     expect(seen).toEqual([initial])

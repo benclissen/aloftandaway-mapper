@@ -701,6 +701,24 @@ describe('tools', () => {
     expect(schema.safeParse({ folder, scenes: ['x', 0] }).success).toBe(false)
   })
 
+  test('render passes only its own options to the job', async () => {
+    // The render path has test hooks (faultAtFrame, forceUnsettledAt, removeFile and others). None may be reachable from the tool.
+    const folder = path.join(tmp, 'hooks')
+    await call('create_project', { folder, name: 'Hooks' })
+    vi.mocked(startRenderJob).mockClear()
+    // The input schema is strict, so an unknown key is refused before any job starts.
+    const refused = await call('render', { folder, forceUnsettledAt: 3, faultAtFrame: 1, removeFile: 'x' })
+    expect(refused.isError).toBe(true)
+    expect(startRenderJob).not.toHaveBeenCalled()
+    const schema = TOOLS.find((t) => t.name === 'render')!.input
+    expect(schema.safeParse({ folder, forceUnsettledAt: 3, faultAtFrame: 1, removeFile: 'x' }).success).toBe(false)
+    // A normal call hands the job exactly the tool's own six options. The project has no stops, so the job fails at once.
+    const normal = await call('render', { folder })
+    expect(normal.isError).toBe(true)
+    expect(startRenderJob).toHaveBeenCalledTimes(1)
+    expect(Object.keys(vi.mocked(startRenderJob).mock.calls[0]![0]).sort()).toEqual(['codec', 'folder', 'join', 'layers', 'range', 'scenes'])
+  })
+
   test('render_status and cancel_render reject an unknown job', async () => {
     for (const name of ['render_status', 'cancel_render']) {
       const result = await call(name, { jobId: 'missing' })

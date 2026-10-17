@@ -55,7 +55,7 @@ describe('cancelling a render', () => {
       onFrame?.(1)
       if (!signal!.aborted) await new Promise((resolve) => signal!.addEventListener('abort', resolve, { once: true }))
       events.push('page closing')
-      await sleep(50)
+      await sleep(50) // stands for a slow page close
       events.push('page closed')
       throw new Error('page.evaluate: Target page, context or browser has been closed')
     })
@@ -218,11 +218,10 @@ describe('RenderPage.close', () => {
     let secondDone = false
     void page.close().then(() => (firstDone = true))
     void page.close().then(() => (secondDone = true))
-    await sleep(10)
+    await new Promise((r) => setImmediate(r))
     expect([firstDone, secondDone]).toEqual([false, false])
     finish()
-    await sleep(0)
-    expect([firstDone, secondDone]).toEqual([true, true])
+    await vi.waitFor(() => expect([firstDone, secondDone]).toEqual([true, true]))
     expect(closes).toBe(1)
   })
 })

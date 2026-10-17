@@ -23,6 +23,17 @@ vi.mock('../../src/render/preview.js', async (importOriginal) => ({
   contactSheet: vi.fn(),
 }))
 
+// Sea legs come back unverified at once: the router's store gives up on the refused upstream without waiting to retry.
+vi.mock('../../src/server/sea-water.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/server/sea-water.js')>()
+  const { createTileStore } = await import('../../src/server/tiles.js')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const store = createTileStore({ cacheDir: join(tmpdir(), 'mapper-tools-test-no-tiles'), upstream: 'http://127.0.0.1:9', retryDelaysMs: [] })
+  const water = actual.createSeaWater({ store })
+  return { ...actual, seaWater: () => water }
+})
+
 const STOPS = [
   { name: 'Piraeus', at: [23.6466, 37.942] },
   { name: 'Mykonos', at: [25.3289, 37.4467] },

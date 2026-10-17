@@ -16,7 +16,7 @@ import {
   type Scene,
 } from '../../core/index.js'
 import { CLIENT_ID, getProject, patch, RequestError, sceneParam, setSceneParam, subscribe } from './api.js'
-import { EditHistory, EditQueue, OutsideWrites, redoPatch, scenesAround, type Entry } from './history.js'
+import { EditHistory, EditQueue, OutsideWrites, pathsUpdate, redoPatch, scenesAround, type Entry } from './history.js'
 import { LegsPanel } from './LegsPanel.js'
 import { PointMenu } from './PointMenu.js'
 import { isSharp, removeViaEdit, sharpEdit, type PointMenuTarget } from './RouteEditor.js'
@@ -63,7 +63,7 @@ function inField(target: EventTarget | null): boolean {
  */
 export function App() {
   const [project, setProject] = useState<Project>()
-  /** The sea routes of `project`; always replaced together with it. */
+  /** The sea routes of `project`; replaced together with it, or alone when the server checks a route again. */
   const [seaPaths, setSeaPaths] = useState<SeaPaths>({})
   const [loadError, setLoadError] = useState<string>()
   const [frame, setFrame] = useState(0)
@@ -187,6 +187,10 @@ export function App() {
     try {
       // A newer version that this page didn't patch came from outside: the agent or the CLI.
       const onMessage = ({ project: incoming, seaPaths: paths, origin }: { project: Project; seaPaths: SeaPaths; origin?: string }) => {
+        // A route checked again changes only the routes of the version on screen, so the undo history still lines up.
+        const kind = pathsUpdate(origin, incoming, current.current)
+        if (kind === 'paths') setSeaPaths(paths)
+        if (kind !== 'project') return
         if (accept(incoming, paths)) {
           if (origin !== CLIENT_ID) outsideChange(incoming.updatedAt)
         } else if (origin !== CLIENT_ID) {

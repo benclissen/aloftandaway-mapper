@@ -1,4 +1,4 @@
-import { applyPatch, isSceneOp, type PatchResponse, type Project, type ProjectPatch } from '../../core/index.js'
+import { applyPatch, isSceneOp, PATHS_ORIGIN, type PatchResponse, type Project, type ProjectPatch } from '../../core/index.js'
 
 /** One studio edit: the patch that made it, the patch that undoes it, and the scene to show after each. */
 export interface Entry {
@@ -100,6 +100,17 @@ export class EditHistory {
 }
 
 const newer = (a: Project, b: Project) => Date.parse(a.updatedAt) > Date.parse(b.updatedAt)
+
+/**
+ * What to do with a server message that may only carry new sea routes, given the project on screen. `paths`: it is
+ * about the version on screen, so only its routes change and the undo history stays. `drop`: it is about a version
+ * already replaced. `project`: anything else, handled as an ordinary project message.
+ */
+export function pathsUpdate(origin: string | undefined, incoming: Project, shown: Project | undefined): 'paths' | 'drop' | 'project' {
+  if (origin !== PATHS_ORIGIN || !shown) return 'project'
+  if (incoming.updatedAt === shown.updatedAt) return 'paths'
+  return newer(incoming, shown) ? 'project' : 'drop'
+}
 
 /**
  * The newest version written from outside the studio (by the agent or the CLI) that the studio knows of. An edit that

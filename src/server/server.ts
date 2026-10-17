@@ -13,6 +13,7 @@ import {
   CLIENT_HEADER,
   CLIENT_ID_PATTERN,
   NO_LAND_DATA,
+  PATHS_ORIGIN,
   ProjectError,
   STALE_BASE_MESSAGE,
   type PatchRequest,
@@ -22,9 +23,10 @@ import {
   type ServerMessage,
 } from '../core/index.js'
 import { loadLand } from './land.js'
-import { resolveSeaPaths, seaLegsOf } from './paths.js'
+import { RETRY_MS, resolveSeaPaths, seaLegsOf } from './paths.js'
+import { seaWaterOn, type SeaWater } from './sea-water.js'
 import { assertAbsolute, loadProject, mutateProject, PROJECT_FILE, StoreError } from './store.js'
-import { createTileProxy } from './tiles.js'
+import { createTileProxy, tileStore } from './tiles.js'
 
 export interface MapperServer {
   port: number
@@ -44,9 +46,16 @@ export interface MapperServer {
 export interface ServerOptions {
   studioDir: string
   cacheDir: string
+  /** The tile server for the map and the sea router. Defaults to `MAPPER_TILE_UPSTREAM`, then OpenFreeMap. */
   tileUpstream?: string
   /** Where sea routes get their land data. Defaults to the data that ships with Mapper. */
   land?: () => Promise<LandSource>
+  /** Checks sea routes against the basemap's water. Defaults to the router on this server's tile store. */
+  water?: SeaWater
+  /** How often an open studio's unverified sea routes are worked out again, in ms. Default 60 s. */
+  retryMs?: number
+  /** The clock the sea route cache's retry times use, in ms. For tests. */
+  now?: () => number
 }
 
 const MAX_BODY_BYTES = 1024 * 1024
@@ -81,6 +90,18 @@ interface Registered {
   origins: Map<string, string>
   /** Whether a failure to work out sea routes has been logged for this project. */
   seaPathsFailed: boolean
+  /** What each open socket was last sent: the version, its sea routes as JSON, and whether any is unverified. */
+  shown: Map<WebSocket, Shown>
+  /** The next retry of unverified sea routes, while a socket shows one. */
+  retry: NodeJS.Timeout | undefined
+  /** Whether a retry is running now. */
+  retrying: boolean
+}
+
+interface Shown {
+  updatedAt: string
+  paths: string
+  unverified: boolean
 }
 
 interface RouteContext {
@@ -159,6 +180,10 @@ async function readBody(req: http.IncomingMessage): Promise<string> {
 export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   const studioDir = path.resolve(opts.studioDir)
   const land = opts.land ?? loadLand
+  const cacheDir = path.resolve(opts.cacheDir)
+  const upstream = opts.tileUpstream ?? (process.env.MAPPER_TILE_UPSTREAM || undefined)
+  const water = opts.water ?? seaWaterOn(tileStore({ cacheDir, upstream }))
+  const retryMs = opts.retryMs ?? RETRY_MS
   /** Sea route work in flight, which `close` waits for so nothing writes a cache file after it returns. */
   const resolving = new Set<Promise<unknown>>()
   const token = randomBytes(32).toString('hex')
@@ -196,8 +221,8 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   }
 
   const tiles = createTileProxy({
-    cacheDir: path.resolve(opts.cacheDir),
-    upstream: opts.tileUpstream,
+    cacheDir,
+    upstream,
     publicBase: () => `${mapper.base}tiles/`,
   })
 
@@ -292,7 +317,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
         return failed(e, NO_LAND_DATA)
       }
       try {
-        return await resolveSeaPaths(entry.folder, project, { land: source })
+        return await resolveSeaPaths(entry.folder, project, { land: source, water, now: opts.now })
       } catch (e) {
         return failed(e, 'Mapper could not work out the sea route')
       }
@@ -322,10 +347,10 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     }
   }
 
-  /** The studio's client id from its header, or undefined when it's missing or malformed. */
+  /** The studio's client id from its header, or undefined when it's missing, malformed or the paths origin. */
   function clientId(req: http.IncomingMessage): string | undefined {
     const value = req.headers[CLIENT_HEADER.toLowerCase()]
-    return typeof value === 'string' && CLIENT_ID_PATTERN.test(value) ? value : undefined
+    return typeof value === 'string' && CLIENT_ID_PATTERN.test(value) && value !== PATHS_ORIGIN ? value : undefined
   }
 
   function rememberOrigin(entry: Registered, updatedAt: string, client: string): void {
@@ -391,16 +416,83 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.on('error', () => undefined)
       entry.clients.add(ws)
-      ws.on('close', () => entry.clients.delete(ws))
+      ws.on('close', () => {
+        entry.clients.delete(ws)
+        entry.shown.delete(ws)
+        updateRetry(entry)
+      })
       void loadProject(entry.folder).then(
-        async (project) => send(ws, { type: 'project', project, seaPaths: await seaPathsFor(entry, project) }),
+        async (project) => {
+          send(entry, ws, { type: 'project', project, seaPaths: await seaPathsFor(entry, project) })
+          updateRetry(entry)
+        },
         () => ws.close(1011, 'Could not load the project'),
       )
     })
   })
 
-  function send(ws: WebSocket, message: ServerMessage): void {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message))
+  /** Sends `message` to an open socket of `entry`, and notes what it now shows. */
+  function send(entry: Registered, ws: WebSocket, message: ServerMessage, paths = JSON.stringify(message.seaPaths)): void {
+    if (ws.readyState !== WebSocket.OPEN || !entry.clients.has(ws)) return
+    ws.send(JSON.stringify(message))
+    const unverified = Object.values(message.seaPaths).some((p) => p.unverified !== undefined)
+    entry.shown.set(ws, { updatedAt: message.project.updatedAt, paths, unverified })
+  }
+
+  // Retrying unverified sea routes
+
+  /**
+   * Keeps a retry coming while an open socket shows an unverified sea route, and none otherwise. Each retry is
+   * `retryMs` after the last one finished, so a slow one never overlaps the next.
+   */
+  function updateRetry(entry: Registered): void {
+    const wanted = !closed && projects.get(entry.key) === entry && [...entry.shown.values()].some((s) => s.unverified)
+    if (!wanted) {
+      clearTimeout(entry.retry)
+      entry.retry = undefined
+      return
+    }
+    if (entry.retry !== undefined || entry.retrying) return
+    entry.retry = setTimeout(() => {
+      entry.retry = undefined
+      void retryPaths(entry)
+    }, retryMs)
+    entry.retry.unref()
+  }
+
+  /**
+   * Works out the project's sea routes again, through the cache, which routes an unverified one only once its minute
+   * is up. Sockets showing this version get the routes when they differ from what they show, as a paths-only message
+   * the studio takes without clearing its undo history. A version the server hasn't passed on yet goes out as an
+   * ordinary reload instead, with its origin.
+   */
+  async function retryPaths(entry: Registered): Promise<void> {
+    entry.retrying = true
+    try {
+      let project: Project
+      try {
+        project = await loadProject(entry.folder)
+      } catch {
+        return // Half-written or invalid; the watcher or the next retry sees it.
+      }
+      if (closed || projects.get(entry.key) !== entry) return
+      if (project.updatedAt !== entry.lastUpdatedAt) {
+        await reload(entry)
+        return
+      }
+      const seaPaths = await seaPathsFor(entry, project)
+      // A newer version came in meanwhile; its own broadcast carries its routes.
+      if (closed || projects.get(entry.key) !== entry || project.updatedAt !== entry.lastUpdatedAt) return
+      const paths = JSON.stringify(seaPaths)
+      const message: ServerMessage = { type: 'project', project, seaPaths, origin: PATHS_ORIGIN }
+      for (const ws of entry.clients) {
+        const shown = entry.shown.get(ws)
+        if (shown && shown.updatedAt === project.updatedAt && shown.paths !== paths) send(entry, ws, message, paths)
+      }
+    } finally {
+      entry.retrying = false
+      updateRetry(entry)
+    }
   }
 
   // Watching
@@ -427,11 +519,15 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     if (closed || projects.get(entry.key) !== entry) return
     const message: ServerMessage =
       origin === undefined ? { type: 'project', project, seaPaths } : { type: 'project', project, seaPaths, origin }
-    for (const ws of entry.clients) send(ws, message)
+    const paths = JSON.stringify(seaPaths)
+    for (const ws of entry.clients) send(entry, ws, message, paths)
+    updateRetry(entry)
   }
 
   function dispose(entry: Registered): void {
     clearTimeout(entry.timer)
+    clearTimeout(entry.retry)
+    entry.retry = undefined
     entry.watcher?.close()
     entry.watcher = undefined
   }
@@ -455,6 +551,9 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
       timer: undefined,
       origins: new Map(),
       seaPathsFailed: false,
+      shown: new Map(),
+      retry: undefined,
+      retrying: false,
     }
     // Watch the folder, not the file: atomic saves rename a temporary file over mapper.json.
     try {

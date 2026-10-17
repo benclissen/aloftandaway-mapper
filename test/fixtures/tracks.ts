@@ -58,10 +58,18 @@ const STOP_TO_C: LngLat[] = [SHORT_STOP, [25.22, 36.72], [25.26, 36.58], [25.36,
  * C lasts 3 h rather than 2 h: at one sample a minute, 2 h of samples span only 119 minutes, which is under the default
  * 120-minute stay.
  */
-export function syntheticCruise(opts: { seed?: number } = {}): { csv: string; gpx: string; ports: LngLat[] } {
+export function syntheticCruise(opts: { seed?: number } = {}): {
+  csv: string
+  gpx: string
+  ports: LngLat[]
+  /** The first and last sample time at each port, in milliseconds. */
+  calls: { arrive: number; depart: number }[]
+} {
   const rand = lcg(opts.seed ?? 1)
   const points: LngLat[] = []
-  const stay = (at: LngLat, minutes: number): void => {
+  const calls: { arrive: number; depart: number }[] = []
+  const stay = (at: LngLat, minutes: number, call = true): void => {
+    if (call) calls.push({ arrive: START_MS + points.length * MINUTE, depart: START_MS + (points.length + minutes - 1) * MINUTE })
     for (let i = 0; i < minutes; i++) points.push(jitter(rand, at, 200))
   }
   const sail = (line: LngLat[], minutes: number): void => {
@@ -71,7 +79,7 @@ export function syntheticCruise(opts: { seed?: number } = {}): { csv: string; gp
   sail([PORT_A, PORT_B], 600)
   stay(PORT_B, 480)
   sail(B_TO_STOP, 240)
-  stay(SHORT_STOP, 30)
+  stay(SHORT_STOP, 30, false)
   sail(STOP_TO_C, 240)
   stay(PORT_C, 180)
 
@@ -83,5 +91,5 @@ export function syntheticCruise(opts: { seed?: number } = {}): { csv: string; gp
     '<?xml version="1.0" encoding="UTF-8"?>\n' +
     '<gpx version="1.1" creator="mapper-tests" xmlns="http://www.topografix.com/GPX/1/1">' +
     `<trk><name>Synthetic cruise</name><trkseg>${trkpts.join('')}</trkseg></trk></gpx>\n`
-  return { csv, gpx, ports: [PORT_A, PORT_B, PORT_C] }
+  return { csv, gpx, ports: [PORT_A, PORT_B, PORT_C], calls }
 }

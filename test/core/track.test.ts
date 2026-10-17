@@ -51,6 +51,7 @@ describe('parseTrackCsv', () => {
       ])
       expect(t.times).toEqual([Date.UTC(2026, 5, 1, 6, 0), Date.UTC(2026, 5, 1, 6, 1)])
       expect(t.skippedRows).toBe(0)
+      expect(t.badTimes).toBe(0)
     }
     const noTime = parseTrackCsv('lat,lng\n50,10\n51,11\n')
     expect(noTime.points).toEqual([
@@ -155,6 +156,32 @@ describe('findStays', () => {
     expect(fromGpx.times).toEqual(track.times)
   })
 
+  it('each port call is one stay from arrival to departure, whatever the seed', { timeout: 60_000 }, () => {
+    const seeds = [...Array.from({ length: 200 }, (_, i) => i + 1), 80, 84, 116]
+    for (const seed of seeds) {
+      const c = syntheticCruise({ seed })
+      const r = trackToStops(parseTrackCsv(c.csv), { stops: 'stays', minStayMinutes: 120 })
+      expect(r.stops, `seed ${seed}`).toHaveLength(3)
+      r.stops.forEach((s, k) => {
+        const call = c.calls[k]!
+        expect(haversineKm(s.at, c.ports[k]!), `seed ${seed} stop ${k + 1}`).toBeLessThan(0.3)
+        expect(Math.abs(Date.parse(s.arrive!) - call.arrive), `seed ${seed} stop ${k + 1} arrive`).toBeLessThanOrEqual(15 * MIN)
+        expect(Math.abs(Date.parse(s.depart!) - call.depart), `seed ${seed} stop ${k + 1} depart`).toBeLessThanOrEqual(15 * MIN)
+      })
+    }
+  })
+
+  it('a stay keeps going past a run that ends early, even when the rest is short', () => {
+    // The run from the first point (0.9 km out) ends at the point 0.3 km south of the port after 2.5 h. The 1.5 h after
+    // it is too short to be a stay alone, but it's still the same port call.
+    const p: LngLat = [24, 37]
+    const points: LngLat[] = [north(p, 0.9), p, p, p, north(p, -0.3), p, p, north(p, 5)]
+    const times = [0, 1, 2, 2.5, 3, 3.5, 4, 5].map((h) => h * HOUR)
+    const stays = findStays({ points, times }, 120 * MIN)
+    expect(stays.map((s) => [s.start, s.end, s.arrive, s.depart])).toEqual([[0, 6, 0, 4 * HOUR]])
+    expect(haversineKm(stays[0]!.at, north(p, (0.9 - 0.3) / 7))).toBeLessThan(0.001)
+  })
+
   it('unsorted times find the same stays', () => {
     const [header, ...rows] = cruise.csv.trim().split('\n')
     const rand = lcg(7)
@@ -176,16 +203,16 @@ describe('findStays', () => {
     expect(haversineKm(stays[0]!.at, north(p, 0.025))).toBeLessThan(0.001)
   })
 
-  it('a run is measured from its first point', () => {
-    // Drifting 0.4 km an hour: every point is near the one before, but a run ends 1 km from its first point. The last
-    // two points span only an hour, so they aren't a stay.
+  it('a slow drift is cut into stays a little over 1 km long', () => {
+    // Drifting 0.45 km an hour. The run from point 0 ends at point 3 (1.35 km from it); as a stay it then takes points
+    // within 1 km of its centre: point 3 (0.9 km) but not point 4 (1.125 km). The next stays start from there.
     const p: LngLat = [24, 37]
-    const points = Array.from({ length: 11 }, (_, i) => north(p, 0.4 * i))
+    const points = Array.from({ length: 11 }, (_, i) => north(p, 0.45 * i))
     const times = points.map((_, i) => i * HOUR)
     expect(findStays({ points, times }, 120 * MIN).map((s) => [s.start, s.end])).toEqual([
-      [0, 2],
-      [3, 5],
-      [6, 8],
+      [0, 3],
+      [4, 7],
+      [8, 10],
     ])
   })
 
@@ -318,6 +345,26 @@ describe('trackToStops', () => {
     const e = caught(() => trackToStops({ points: track.points }, { stops: 'stays', minStayMinutes: 120 }))
     expect(e).toBeInstanceOf(TrackError)
     expect((e as TrackError).fix).toBe("Pass stops: 'ends', or use a file with a time for every point.")
+    const blank = parseTrackCsv('lng,lat,time\n10,50,2026-06-01T06:00:00Z\n10.1,50.1,\n')
+    expect(blank.badTimes).toBe(0)
+    const e2 = caught(() => trackToStops(blank, { stops: 'stays', minStayMinutes: 120 }))
+    expect((e2 as TrackError).fix).toBe("Pass stops: 'ends', or use a file with a time for every point.")
+  })
+
+  it('times with no zone are refused with a fix that says so', () => {
+    const local = parseTrackCsv('lng,lat,time\n10,50,2026-06-01T06:00:00\n10.1,50.1,2026-06-01T09:00:00\n10.2,50.2,2026-06-01T10:00:00Z\n')
+    expect(local.times).toBeUndefined()
+    expect(local.badTimes).toBe(2)
+    for (const f of [() => trackToStops(local, { stops: 'stays', minStayMinutes: 120 }), () => findStays(local, 120 * MIN)]) {
+      const e = caught(f)
+      expect(e).toBeInstanceOf(TrackError)
+      expect((e as TrackError).message).toBe("2 of the track's times can't be read, so stays can't be found.")
+      expect((e as TrackError).fix).toBe(
+        "Write every time in ISO 8601 with a Z or an offset, such as 2026-06-01T06:00:00Z, or as Unix seconds. Or pass stops: 'ends'.",
+      )
+    }
+    // Ends mode doesn't need times, so it still works.
+    expect(trackToStops(local, { stops: 'ends', minStayMinutes: 120 }).stops).toHaveLength(2)
   })
 
   it('a track with fewer than 2 points is refused', () => {

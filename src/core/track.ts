@@ -1,5 +1,5 @@
 import { haversineKm, toXY, unwrapLng, type XY } from './geo.js'
-import { parseIsoTime, simplify, type GpxLine } from './gpx.js'
+import { NAME_KM, parseIsoTime, simplify, type GpxLine } from './gpx.js'
 import { MAX_LAT, type LngLat } from './schema.js'
 
 /** A recorded GPS or AIS track, as read from a file. */
@@ -8,6 +8,8 @@ export interface RecordedTrack {
   points: LngLat[]
   /** Milliseconds since 1970 for each point, present only when every point has one. */
   times?: number[]
+  /** How many points had a time that couldn't be read, such as one with no zone. Explains missing `times`. */
+  badTimes?: number
 }
 
 export class TrackError extends Error {
@@ -26,13 +28,25 @@ export const STAY_RADIUS_KM = 1
 /** How close a track must come to a stop for a leg to be cut there. */
 export const TRACK_NEAR_KM = 2
 
-/** A stop takes the name of a waypoint this close to it, as in gpx.ts. */
-const NAME_KM = 1
 /** Douglas-Peucker starts at this tolerance. */
 const THIN_KM = 0.01
 /** Once round the equator, in the same units as `haversineKm`. */
 const WORLD_KM = 2 * haversineKm([0, 0], [180, 0])
-const NO_TIMES_FIX = "Pass stops: 'ends', or use a file with a time for every point."
+
+/** Why stays can't be found in `track`: times that are missing, or times that couldn't be read. */
+function noTimes(track: RecordedTrack): TrackError {
+  const bad = track.badTimes ?? 0
+  if (bad > 0) {
+    return new TrackError(
+      `${bad} of the track's times can't be read, so stays can't be found.`,
+      "Write every time in ISO 8601 with a Z or an offset, such as 2026-06-01T06:00:00Z, or as Unix seconds. Or pass stops: 'ends'.",
+    )
+  }
+  return new TrackError(
+    "Stays need a time on every point, and this track doesn't have one on each.",
+    "Pass stops: 'ends', or use a file with a time for every point.",
+  )
+}
 
 // CSV
 
@@ -85,9 +99,10 @@ function timeOf(cell: string | undefined): number | undefined {
 /**
  * A CSV track. The first row names the columns, in any order and any case: `lng`, `lon` or `longitude`; `lat` or
  * `latitude`; and optionally `time` or `timestamp`. Rows with a missing or out-of-range coordinate are skipped and
- * counted. Times are kept only when every kept row has a readable one.
+ * counted. Times are kept only when every kept row has a readable one; `badTimes` counts the kept rows whose time is
+ * there but can't be read, such as one with no zone.
  */
-export function parseTrackCsv(text: string): RecordedTrack & { skippedRows: number } {
+export function parseTrackCsv(text: string): RecordedTrack & { skippedRows: number; badTimes: number } {
   const lines = text.replace(/^\uFEFF/, '').split(/\r\n|\n|\r/)
   const first = lines.findIndex((l) => l.trim() !== '')
   const header = first < 0 ? [] : cells(lines[first]!).map((c) => c.toLowerCase())
@@ -101,7 +116,8 @@ export function parseTrackCsv(text: string): RecordedTrack & { skippedRows: numb
 
   const points: LngLat[] = []
   const times: number[] = []
-  let allTimed = timeAt >= 0
+  let missingTimes = 0
+  let badTimes = 0
   let skippedRows = 0
   for (const line of lines.slice(first + 1)) {
     if (line.trim() === '') continue
@@ -113,12 +129,15 @@ export function parseTrackCsv(text: string): RecordedTrack & { skippedRows: numb
       continue
     }
     points.push([lng, lat])
-    if (!allTimed) continue
-    const time = timeOf(row[timeAt])
-    if (time === undefined) allTimed = false
-    else times.push(time)
+    if (timeAt < 0) continue
+    const cell = row[timeAt]
+    const time = timeOf(cell)
+    if (time !== undefined) times.push(time)
+    else if (cell === undefined || cell === '') missingTimes++
+    else badTimes++
   }
-  return allTimed ? { points, times, skippedRows } : { points, skippedRows }
+  const allTimed = timeAt >= 0 && missingTimes === 0 && badTimes === 0
+  return allTimed ? { points, times, skippedRows, badTimes } : { points, skippedRows, badTimes }
 }
 
 export function recordedFromGpx(line: GpxLine): RecordedTrack {
@@ -133,9 +152,7 @@ function byTime(track: RecordedTrack): RecordedTrack {
   const { times } = track
   if (!times || times.every((t, i) => i === 0 || times[i - 1]! <= t)) return track
   const order = times.map((_, i) => i).sort((a, b) => times[a]! - times[b]!)
-  const sorted: RecordedTrack = { points: order.map((i) => track.points[i]!), times: order.map((i) => times[i]!) }
-  if (track.name !== undefined) sorted.name = track.name
-  return sorted
+  return { ...track, points: order.map((i) => track.points[i]!), times: order.map((i) => times[i]!) }
 }
 
 // Stays
@@ -154,18 +171,6 @@ export interface Stay {
 /** `lng` brought back into [-180, 180). */
 const wrapLng = (lng: number): number => ((((lng + 180) % 360) + 360) % 360) - 180
 
-/** Mean of `points`, taking the short way round 180°. */
-function centroid(points: LngLat[]): LngLat {
-  const ref = points[0]![0]
-  let lng = 0
-  let lat = 0
-  for (const p of points) {
-    lng += unwrapLng(ref, p[0])
-    lat += p[1]
-  }
-  return [wrapLng(lng / points.length), lat / points.length]
-}
-
 /** The centre of `a`'s `na` points and `b`'s `nb` points together. */
 function joinCentres(a: LngLat, na: number, b: LngLat, nb: number): LngLat {
   const lng = (a[0] * na + unwrapLng(a[0], b[0]) * nb) / (na + nb)
@@ -179,17 +184,20 @@ function joinCentres(a: LngLat, na: number, b: LngLat, nb: number): LngLat {
  * points.
  *
  * A run can start on a point still coming in, near the edge of the circle, and then end early when a point on the far
- * side of the stay leaves it. The rest of the stay is then a second run straight after. So a stay that follows another
- * with no point between and has its centre within `STAY_RADIUS_KM` of the other's joins it.
+ * side of the stay leaves it, before the stay is over. So once a run is a stay, it goes on taking points while each is
+ * within `STAY_RADIUS_KM` of the stay's centre so far. And a stay that follows another with no point between, and has
+ * its centre within `STAY_RADIUS_KM` of the other's, joins it.
  *
- * Speed: a stay's points are scanned once and consumed. A start that fails is scanned only until a point leaves the
- * radius, so the cost is n times the points logged while crossing 1 km, about a dozen for a ship logging every 10 s.
- * Each distance test is a flat-earth sum of squares on typed arrays, exact to well under 1% at 1 km; only a pair within
- * 2% of the radius falls back to `haversineKm`.
+ * Speed: a stay's points are scanned once and consumed, and its centre is kept as running sums. A start that fails is
+ * scanned until a point leaves its circle. While moving, that's the points logged while crossing 1 km, about a dozen
+ * for a ship logging every 10 s. Inside a stop shorter than `minStayMs`, though, every start scans to the end of the
+ * stop, so the cost is quadratic in that stop's point count: a 1-hour stop logged every second is about 6.5 million
+ * distance tests. Each test is a flat-earth sum of squares on typed arrays, exact to well under 1% at 1 km; only a pair
+ * within 2% of the radius falls back to `haversineKm`.
  */
 export function findStays(track: RecordedTrack, minStayMs: number): Stay[] {
   const { points, times } = byTime(track)
-  if (!times) throw new TrackError("Stays need a time on every point, and this track doesn't have one on each.", NO_TIMES_FIX)
+  if (!times) throw noTimes(track)
   const n = points.length
   const rad = Math.PI / 180
   const lng = new Float64Array(n)
@@ -199,16 +207,17 @@ export function findStays(track: RecordedTrack, minStayMs: number): Stay[] {
     lat[i] = points[i]![1] * rad
   }
   const r2 = (STAY_RADIUS_KM / (WORLD_KM / (2 * Math.PI))) ** 2
-  const near = (i: number, j: number, cosI: number): boolean => {
-    let dl = lng[j]! - lng[i]!
+  /** Whether point `j` is within the radius of the place at `lngA`, `latA` (radians, `cosA` its cosine). */
+  const near = (lngA: number, latA: number, cosA: number, j: number): boolean => {
+    let dl = lng[j]! - lngA
     if (dl > Math.PI) dl -= 2 * Math.PI
     else if (dl < -Math.PI) dl += 2 * Math.PI
-    const dx = dl * cosI
-    const dy = lat[j]! - lat[i]!
+    const dx = dl * cosA
+    const dy = lat[j]! - latA
     const d2 = dx * dx + dy * dy
     if (d2 < 0.98 * r2) return true
     if (d2 > 1.02 * r2) return false
-    return haversineKm(points[i]!, points[j]!) <= STAY_RADIUS_KM
+    return haversineKm([(lngA * 180) / Math.PI, (latA * 180) / Math.PI], points[j]!) <= STAY_RADIUS_KM
   }
 
   const stays: Stay[] = []
@@ -216,9 +225,26 @@ export function findStays(track: RecordedTrack, minStayMs: number): Stay[] {
   while (i < n) {
     const cosI = Math.cos(lat[i]!)
     let j = i
-    while (j + 1 < n && near(i, j + 1, cosI)) j++
+    while (j + 1 < n && near(lng[i]!, lat[i]!, cosI, j + 1)) j++
     if (j > i && times[j]! - times[i]! >= minStayMs) {
-      const at = centroid(points.slice(i, j + 1))
+      // Running sums for the centre, with longitudes unwrapped around the run's first point.
+      const ref = points[i]![0]
+      let sumLng = 0
+      let sumLat = 0
+      for (let k = i; k <= j; k++) {
+        sumLng += unwrapLng(ref, points[k]![0])
+        sumLat += points[k]![1]
+      }
+      for (;;) {
+        const count = j + 1 - i
+        const cLat = sumLat / count
+        if (j + 1 >= n || !near((sumLng / count) * rad, cLat * rad, Math.cos(cLat * rad), j + 1)) break
+        j++
+        sumLng += unwrapLng(ref, points[j]![0])
+        sumLat += points[j]![1]
+      }
+      const count = j + 1 - i
+      const at: LngLat = [wrapLng(sumLng / count), sumLat / count]
       const prev = stays[stays.length - 1]
       if (prev && prev.end === i - 1 && haversineKm(prev.at, at) <= STAY_RADIUS_KM) {
         prev.at = joinCentres(prev.at, i - prev.start, at, j + 1 - i)
@@ -321,7 +347,7 @@ export function trackToStops(
     }
   }
 
-  if (!times) throw new TrackError("Stays need a time on every point, and this track doesn't have one on each.", NO_TIMES_FIX)
+  if (!times) throw noTimes(track)
   const stays = findStays(sorted, opts.minStayMinutes * 60_000)
   // Collapse each stay to its centre, noting where each centre lands in the shorter list.
   const collapsed: LngLat[] = []

@@ -28,7 +28,8 @@ export class GpxError extends Error {
 
 const MAX_VIA = 100
 const KEEP_KM = 2
-const NAME_KM = 1
+/** A stop takes the name of a waypoint this close to it. */
+export const NAME_KM = 1
 
 // Parsing
 

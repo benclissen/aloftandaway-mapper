@@ -107,6 +107,11 @@ function decodeWater(body: Uint8Array): Decoded {
 /** When a fetch failure came back, and its place in the order news about the network arrived in. */
 type Failure = { at: number; news: number }
 
+/** A tile fetched and decoded, or the failure that stopped it; and whether its bytes came from disk. */
+type Fetched =
+  | { tile: Decoded; fromCache: boolean; failure?: undefined }
+  | { tile: undefined; fromCache: boolean; failure: Failure }
+
 const SOLID = allLand(TILE_PIXELS)
 const OPEN = allWater()
 
@@ -119,8 +124,9 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
   const now = opts.now ?? Date.now
   /**
    * When a route last ended offline: when its failure came back, which can be minutes after the route began. The
-   * latest news about the network wins, so it's cleared the moment a tile arrives from upstream (200 or 204), even
-   * for another route. A route answered from memory or disk proves nothing about the network and leaves it alone.
+   * latest news about the network wins, so it's cleared the moment a tile arrives from upstream (a 200 or 204 that
+   * decodes), even for another route. A route answered from memory or disk proves nothing about the network and
+   * leaves it alone.
    */
   let downAt: number | undefined
   /**
@@ -153,49 +159,67 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
   }
 
   /**
-   * One tile, fetched and decoded, or undefined when it couldn't be had; whether its bytes came from disk; and whether
-   * it arrived from upstream (a 200 or 204 that decodes), which is news that the network is up. Bytes that don't
-   * decode are a failure, not that news. They're dropped from the disk cache, so a later fetch gets the tile again;
-   * from disk, that's tried now. A 404 drops the cached TileJSON too: the build it names may have been retired, and
-   * the next route should read the current one rather than fail until the TileJSON expires.
+   * One tile, fetched and decoded, or the failure when it couldn't be had; and whether its bytes came from disk. News
+   * about the network is numbered as it arrives, before any cleanup is awaited, so a slow cleanup can't put it after
+   * news that came later. A tile that arrives from upstream (a 200 or 204 that decodes) is news that the network is
+   * up, and clears the offline memory at once. Bytes that don't decode are a failure, not that news. They're dropped
+   * from the disk cache, so a later fetch gets the tile again; from disk, that's tried now. A 404 drops the cached
+   * TileJSON too: the build it names may have been retired, and the next route should read the current one rather
+   * than fail until the TileJSON expires.
    */
   async function fetchTile(
     build: string,
     key: string,
     again = false,
-  ): Promise<{ tile: Decoded | undefined; fromCache: boolean; answered: boolean }> {
-    const fail = (e: unknown, fromCache = false) => {
+  ): Promise<Fetched> {
+    const failed = (): Failure => ({ at: now(), news: ++news })
+    const fail = (e: unknown, failure: Failure, fromCache = false): Fetched => {
       console.error(`Mapper sea router: could not read tile ${WATER_ZOOM}/${key} of ${build}:`, e)
-      return { tile: undefined, fromCache, answered: false }
+      return { tile: undefined, fromCache, failure }
+    }
+    const arrived = (got: Fetched): Fetched => {
+      if (!got.fromCache) {
+        heard = ++news
+        downAt = undefined
+      }
+      return got
     }
     const subpath = `planet/${build}/${WATER_ZOOM}/${key}.pbf`
     let reply: TileReply
     try {
       reply = await store.get(subpath, { use: 'download' })
     } catch (e) {
-      return fail(e)
+      return fail(e, failed())
     }
-    const answered = !reply.fromCache && (reply.status === 200 || reply.status === 204)
-    if (reply.status === 204) return { tile: EMPTY, fromCache: reply.fromCache, answered }
+    if (reply.status === 204) return arrived({ tile: EMPTY, fromCache: reply.fromCache })
     if (reply.status !== 200) {
+      const failure = failed()
       if (reply.status === 404) await store.forget('planet')
-      return { tile: undefined, fromCache: reply.fromCache, answered }
+      return { tile: undefined, fromCache: reply.fromCache, failure }
     }
+    let tile: Decoded
     try {
-      return { tile: decodeWater(reply.body), fromCache: reply.fromCache, answered }
+      tile = decodeWater(reply.body)
     } catch (e) {
+      // Bad bytes from disk say nothing about the network: the refetch's answer is the news.
+      if (reply.fromCache && !again) {
+        await store.forget(subpath)
+        return fetchTile(build, key, true)
+      }
+      const failure = failed()
       await store.forget(subpath)
-      if (reply.fromCache && !again) return fetchTile(build, key, true)
-      return fail(e, reply.fromCache)
+      return fail(e, failure, reply.fromCache)
     }
+    return arrived({ tile, fromCache: reply.fromCache })
   }
 
   /**
    * The tiles `keys` names, from memory or fetched. Each request takes one tile from the budget before it goes out,
    * so legs sharing a budget never pass it, and gives it back when the store answered from disk: only upstream
    * fetches count. While the budget is empty but requests are out, the next one waits to see if they give any back.
-   * Stops at the first failed fetch, and says when that failure came back. Each tile that arrives from upstream
-   * clears the offline memory as it arrives.
+   * Stops at the first failed fetch, and says when that failure came back. A round's first failure is the one that
+   * arrived first, even when its cleanup finished after another's. Each tile that arrives from upstream clears the
+   * offline memory as it arrives (in `fetchTile`).
    */
   async function obtain(
     build: string,
@@ -213,6 +237,10 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
     let next = 0
     let out = 0
     let failure: Failure | undefined
+    /** Keeps the failure that arrived first, which needn't be the first whose cleanup finished. */
+    const keep = (candidate: Failure): void => {
+      if (failure === undefined || candidate.news < failure.news) failure = candidate
+    }
     let waiting: Array<() => void> = []
     const settled = (): void => {
       const wake = waiting
@@ -230,17 +258,12 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
         const key = fresh[next++]!
         out++
         const got = await fetchTile(build, key)
-        const { tile } = got
         out--
         if (got.fromCache) budget.tiles += 1
-        if (got.answered) {
-          heard = ++news
-          downAt = undefined
-        }
-        if (tile === undefined) failure ??= { at: now(), news: ++news }
+        if (got.failure) keep(got.failure)
         else {
-          remember(`${build}/${WATER_ZOOM}/${key}`, tile)
-          tiles.set(key, resolve(tile, key, base))
+          remember(`${build}/${WATER_ZOOM}/${key}`, got.tile)
+          tiles.set(key, resolve(got.tile, key, base))
         }
         settled()
       }

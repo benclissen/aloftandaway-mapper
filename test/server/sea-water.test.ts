@@ -641,6 +641,51 @@ describe('SeaWater.route', () => {
     expect(builds).toBe(before + 1)
   })
 
+  it('a failure is news when it arrives, not when its cleanup ends', async () => {
+    // F's tiles fail at 1 s, and the cleanup they await (forgetting the TileJSON, or the bad bytes) is held. G hears
+    // from upstream at 2 s. F's cleanup ends at 3 s: F's failure is still older news than G's reply.
+    const replies: Record<string, TileReply> = {
+      404: { status: 404, body: Buffer.alloc(0), fromCache: false },
+      undecodable: { status: 200, body: Buffer.from([255]), fromCache: false },
+    }
+    for (const [name, failing] of Object.entries(replies)) {
+      let clock = 1_000
+      let mode: 'f' | 'open' = 'f'
+      let builds = 0
+      let release!: () => void
+      const gate = new Promise<void>((go) => (release = go))
+      let asked!: () => void
+      const held = new Promise<void>((go) => (asked = go))
+      const store: TileStore = {
+        async get() {
+          return mode === 'open' ? { status: 204, body: Buffer.alloc(0), fromCache: false } : failing
+        },
+        async forget() {
+          asked()
+          await gate
+        },
+        async planetBuild() {
+          builds++
+          return BUILD
+        },
+      }
+      const water = createSeaWater({ store, now: () => clock })
+      const f = water.route(FROM, TO, [], coastBase, budget())
+      await held
+      clock = 2_000
+      mode = 'open'
+      expect((await water.route(...EAST, [], coastBase, budget())).water, name).toMatchObject({ build: BUILD })
+      clock = 3_000
+      release()
+      expect((await f).unverified, name).toBe('offline')
+      // The network answered after F's failure arrived, so a route on a fresh leg goes to it.
+      clock = 4_000
+      const before = builds
+      expect((await water.route(...WEST, [], coastBase, budget())).water, name).toMatchObject({ build: BUILD })
+      expect(builds, name).toBe(before + 1)
+    }
+  })
+
   it('upstream bytes that never decode start the offline minute', async () => {
     let clock = 0
     const calls = { build: 0, tiles: 0 }

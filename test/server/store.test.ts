@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { ProjectError, setStops, type LngLat, type Project } from '../../src/core/index.js'
 import {
   PROJECT_FILE,
@@ -16,6 +16,14 @@ import {
 } from '../../src/server/store.js'
 import { writeFileAtomic } from '../../src/server/atomic.js'
 import { greekIslands, sceneOf } from '../fixtures/projects.js'
+
+// The real writeFileAtomic, wrapped so a test can land an outside write while a save is under way.
+vi.mock('../../src/server/atomic.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/server/atomic.js')>()
+  return { ...actual, writeFileAtomic: vi.fn(actual.writeFileAtomic) }
+})
+const { writeFileAtomic: realWriteFileAtomic } =
+  await vi.importActual<typeof import('../../src/server/atomic.js')>('../../src/server/atomic.js')
 
 let tmp: string
 
@@ -172,6 +180,29 @@ describe('writeFileAtomic', () => {
     await expect(writeFileAtomic(path.join(blocked, 'out.json'), 'text')).rejects.toThrow()
     expect(await readdir(blocked)).toEqual(['out.json'])
   })
+
+  test('beforeReplace runs on the finished temporary file, and a throw leaves the file as it was', async () => {
+    const file = path.join(tmp, 'out.json')
+    await writeFile(file, 'before')
+    let seen: string[] = []
+    const refused = new Error('refused')
+    const error = await failure(
+      writeFileAtomic(file, 'after', {
+        async beforeReplace() {
+          const temps = (await readdir(tmp)).filter((f) => f.endsWith('.tmp'))
+          seen = await Promise.all(temps.map((f) => readFile(path.join(tmp, f), 'utf8')))
+          throw refused
+        },
+      }),
+    )
+    expect(error).toBe(refused)
+    expect(seen).toEqual(['after'])
+    expect(await readdir(tmp)).toEqual(['out.json'])
+    expect(await readFile(file, 'utf8')).toBe('before')
+
+    await writeFileAtomic(file, 'after', { beforeReplace: async () => undefined })
+    expect(await readFile(file, 'utf8')).toBe('after')
+  })
 })
 
 describe('saveProject', () => {
@@ -252,6 +283,36 @@ describe('restampProject', () => {
     const after = new Date(Date.now() + 3_600_000).toISOString()
     expect(await restampProject(folder, { hash, after })).toBeUndefined()
     expect(await readFile(file, 'utf8')).toBe(before)
+  })
+
+  test('restamp leaves a newer write that lands while it saves', async () => {
+    const folder = path.join(tmp, 'outside')
+    const created = await createProject(folder, 'Outside')
+    const file = path.join(folder, PROJECT_FILE)
+    const after = new Date(Date.parse(created.updatedAt) + 3_600_000).toISOString()
+    // Another process saves a valid, newer project straight to disk, past the folder queue, while the restamp saves:
+    // after the restamp checked the file and wrote its temporary file, before the rename.
+    const newer: Project = {
+      ...created,
+      name: 'Saved elsewhere',
+      updatedAt: new Date(Date.parse(after) + 60_000).toISOString(),
+    }
+    const newerText = `${JSON.stringify(newer, null, 2)}\n`
+    let landed = false
+    vi.mocked(writeFileAtomic).mockImplementationOnce(async (target, text, opts) => {
+      await realWriteFileAtomic(target, text, {
+        async beforeReplace() {
+          await writeFile(file, newerText)
+          landed = true
+          await opts?.beforeReplace?.()
+        },
+      })
+    })
+    expect(await restampProject(folder, { hash: projectHash(created), after })).toBeUndefined()
+    expect(landed).toBe(true)
+    expect(await readFile(file, 'utf8')).toBe(newerText)
+    expect(await loadProject(folder)).toEqual(newer)
+    expect((await readdir(folder)).filter((f) => f.endsWith('.tmp'))).toEqual([])
   })
 
   test('restamp leaves a file already newer than after', async () => {

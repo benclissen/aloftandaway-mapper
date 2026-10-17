@@ -333,8 +333,9 @@ describe the layered export unless they say otherwise.
   legs panel use that wording. A routed leg keeps "may cross small islands".
 - **The offline memory follows the network.** A route that ends `offline`
   always starts the 60-second memory, from when its failure came back. Every
-  cause counts. Only a tile reply fetched from upstream (200 or 204) clears
-  it. A route served from memory or disk leaves it alone. The `down` flag goes.
+  cause counts. Only a tile reply fetched from upstream (a 200 or 204 that
+  decodes) clears it. A route served from memory or disk leaves it alone. The
+  `down` flag goes.
 - **A 404 on a planet tile drops the cached TileJSON.** The next try reads the
   current build. Other statuses leave the TileJSON alone.
 - **A new planet build doesn't re-route cached legs (parked).** A verified

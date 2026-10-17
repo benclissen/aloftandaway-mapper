@@ -175,11 +175,13 @@ Output folders with several scenes (`<scene-slug>` is the scene's name, and
 ## Recorded tracks
 
 `import_track` draws a path that was really travelled, exactly as logged. It
-reads a local `.gpx` (with a `<time>` on every point) or `.csv`, puts a stop wherever the track stood still,
-and makes every leg a `track` leg that follows the recorded points. The track
+reads a local `.gpx` (with a `<time>` on every point) or `.csv`, puts a stop
+wherever the track stood still, and makes every leg a `track` leg that follows
+the recorded points. Like `set_stops`, it replaces the scene's stops. The track
 is thinned once, at import, and kept in `<project>/tracks/<id>.json`. That
 folder is source data, not cache: don't delete it. Re-importing the same track
-reuses the same file.
+reuses the same file. `symbol` sets the transport of every leg, for example
+`"symbol": "cruise-ship"`.
 
 - Use `import_track` for a log you want kept as it was: a phone GPS log, a
   ship's positions. Use `import_gpx` for a planned route you may reshape,
@@ -207,14 +209,22 @@ reuses the same file.
 - Stops are named after a GPX waypoint within 1 km, otherwise `Stop 1`,
   `Stop 2`. The result lists each stop with its arrival and departure times.
   Match those to the itinerary, then rename with `update_project`'s
-  `update_stop` op, using the stop ids from `get_project`:
-  `{ "op": "update_stop", "id": "<stop id>", "changes": { "name": "Santorini", "pause": 2 } }`.
-- Fix a missed stop with `insert_stop` at the port's `[lng, lat]`, for example
-  `{ "op": "insert_stop", "index": 2, "stop": { "name": "Rhodes", "at": [28.2278, 36.4349] } }`,
-  and a false one with `remove_stop { id }`. Both keep every leg on the track: an inserted stop
-  splits its leg, and removing a stop joins the two parts. A `legMode` on an
-  inserted stop wins for the leg leaving it, so leave it out. Changing a leg's
-  `symbol` alone also keeps it on its track.
+  `update_stop` op. The stop ids are in the result's `project`, at
+  `scenes[].stops[].id`, in the same order as `import.stops` and its times.
+  (If your client shows only the text summary, call `get_project` for them.)
+
+  ```json
+  { "op": "update_stop", "id": "<stop id>", "changes": { "name": "Santorini", "pause": 2 } }
+  ```
+- Fix a missed stop with `insert_stop` at the port's `[lng, lat]`, and a false
+  one with `remove_stop { id }`. Both keep every leg on the track: an inserted
+  stop splits its leg, and removing a stop joins the two parts. A `legMode` on
+  an inserted stop wins for the leg leaving it, so leave it out. Changing a
+  leg's `symbol` alone also keeps it on its track.
+
+  ```json
+  { "op": "insert_stop", "index": 2, "stop": { "name": "Rhodes", "at": [28.2278, 36.4349] } }
+  ```
 - Validation: `track-missing` is an error (the file in `tracks/` is gone; put it
   back or import again). `track-stop-far` is a warning: a stop is more than
   2 km from the track, so the line jumps to it. Move the stop onto the track.

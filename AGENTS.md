@@ -44,8 +44,8 @@ task one tier up.
   words and build it from scratch.
 - **No data-source connectors.** Mapper takes stops through `set_stops`, a
   local GPX file through `import_gpx`, or a local recorded track through
-  `import_track`. Fetching trip data from any API is the
-  calling agent's job, outside this repo.
+  `import_track`. Fetching trip data from any API is the calling agent's job,
+  outside this repo.
 - **Map licences.** Every render must carry the map credit (OpenStreetMap
   contributors, OpenMapTiles, OpenFreeMap), burned in or in the description.
   For satellite, use only EOxCloudless **2016** (CC BY 4.0). Later years are

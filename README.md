@@ -103,7 +103,9 @@ doesn't re-route it; to re-route every sea leg on the current build, delete
 Air legs follow the great circle, bowed toward the nearer pole so even short
 flights curve (at least 15% of their length). The follow camera keeps the
 moving symbol in view, with its zoom, orientation and look-ahead set in the
-scene's camera. `import_gpx` turns a local GPX file into stops and via points, and `import_track` keeps a recorded log exactly (see [Recorded tracks](#recorded-tracks)).
+scene's camera. `import_gpx` turns a local GPX file into stops and via points,
+and `import_track` keeps a recorded log exactly (see
+[Recorded tracks](#recorded-tracks)).
 Land data credit: [Natural Earth](https://www.naturalearthdata.com/), see
 [data/README.md](data/README.md).
 

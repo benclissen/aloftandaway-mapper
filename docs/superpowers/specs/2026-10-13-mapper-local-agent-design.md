@@ -399,8 +399,10 @@ describe the layered export unless they say otherwise.
   departure times so the agent can name the stops. `stops: 'ends'` gives only
   the first and last points, as `import_gpx` does.
 - **Each leg's stretch is found, not stored.** `buildRoute` cuts the track at
-  each stop: the first run of segments within `TRACK_NEAR_KM` (2) of the stop,
-  then the nearest place in that run. A cut can fall between two kept points,
+  each stop: the first run, a stretch of track inside the circle of
+  `TRACK_NEAR_KM` (2) round the stop, then the nearest place in that run. A run
+  ends where the track leaves the circle, even partway along a segment, so an
+  out-and-back thinned to three points still gives two runs. A cut can fall between two kept points,
   so a stop on a long thinned segment is cut where it is and the points either
   side stay in the legs either side; a cut within 100 m of a kept point, along
   the track, is taken at the point. A leg draws its two stops and every kept point strictly

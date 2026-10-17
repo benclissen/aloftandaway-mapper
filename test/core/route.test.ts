@@ -769,6 +769,30 @@ describe('track legs', () => {
     expect(three[2]!.track!.stopGapKm![0]).toBe(three[1]!.track!.stopGapKm![1])
   })
 
+  test('an out-and-back imported through thinning follows the whole way', () => {
+    // 201 points out along the equator to 1° E and back thin to three. The two segments both touch the stops' circle,
+    // but their shared point is 111 km outside it, so they're two runs: the leg leaves in the first and ends in the
+    // second.
+    const logged: LngLat[] = Array.from({ length: 201 }, (_, k): LngLat => [(k <= 100 ? k : 200 - k) / 100, 0])
+    const imported = trackToStops({ points: logged }, { stops: 'ends', minStayMinutes: 120 })
+    expect(imported.points).toEqual([[0, 0], [1, 0], [0, 0]])
+    const { scene, seaPaths } = onTrack(imported.stops.map((s) => s.at), imported.points)
+    const leg = buildRoute(scene, seaPaths).legs[0]!
+    expect(leg.path).toEqual([[0, 0], [1, 0], [0, 0]])
+    expect(pathKm(leg.path)).toBeCloseTo(2 * haversineKm([0, 0], [1, 0]), 6)
+  })
+
+  test('a sparse track past a port twice cuts at the first pass', () => {
+    // The first segment passes B 1.5 km off; the next comes back 55 km and runs over B. The far point between them is
+    // outside B's circle, so the passes are two runs, and the first is taken though the second is nearer.
+    const B: LngLat = [0.5, 0]
+    const points: LngLat[] = [[0, 0.0135], [1, 0.0135], [0, -0.0135], [0, -0.3]]
+    const { scene, seaPaths } = onTrack([points[0]!, B, points[3]!], points)
+    const legs = buildRoute(scene, seaPaths).legs
+    expect(legs[0]!.path).toEqual([points[0], B])
+    expect(legs[1]!.path).toEqual([B, points[1], points[2], points[3]])
+  })
+
   test('a stop off a segment keeps a bend more than 100 m along from where it is cut', () => {
     // The corner [0.02, 0] is 556 m along the track from where the inserted stop projects, [0.015, 0], though only
     // 80 m further from the stop. The leg is cut at the projection, and the corner stays in the leg after it.

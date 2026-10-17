@@ -510,13 +510,14 @@ export function cutPoint(points: LngLat[], cut: TrackCut): LngLat {
 const before = (a: TrackCut, b: TrackCut): boolean => a.index < b.index || (a.index === b.index && a.t < b.t)
 
 /**
- * Where a leg should end at `at` on `points`, from the cut `lo` on: the nearest place in the first run of segments
- * that come within `TRACK_NEAR_KM` of it, or the nearest place from `lo` on when none comes that close. With no
+ * Where a leg should end at `at` on `points`, from the cut `lo` on: the nearest place in the first run, a stretch of
+ * track inside the circle of `TRACK_NEAR_KM` round `at`, or the nearest place from `lo` on when none comes that
+ * close. A run ends where the track leaves the circle, even partway along a segment. With no
  * segment from `lo` on, the last point. Distances are to the segment, so a stop on a long thinned segment is cut
  * there, not at a point kilometres away. `snap` then moves a cut within 100 m of a point onto it.
  *
  * `leaving`, the cut the leg leaves from, is given when searching for a leg's end. The track may then be inside
- * `at`'s circle already at `lo`, because the two ends are close, and that run needs care:
+ * `at`'s circle already at `lo`, because the two ends are close, and the run under way there needs care:
  * - If the leg leaves within `SAME_PLACE_KM` of `at`, the track hasn't left yet, as on a loop that ends where it
  *   began, so the next run is taken. This run is used only when there's no other.
  * - Otherwise it's taken if it gets nearer `at` than half the distance the leg leaves from: the track has made its way
@@ -539,8 +540,11 @@ function cutAt(points: LngLat[], at: LngLat, lo: TrackCut, leaving?: TrackCut): 
   }
   let k = lo.index
   let a = xyNear(k, q[0])
-  /** The nearest place to `at` on segment `k`, from `lo` on, with the next point in Mercator for the next segment. */
-  const nearestOn = (): { cut: Cut; b: XY } => {
+  /**
+   * The nearest place to `at` on segment `k`, from `lo` on; how far from `at` the segment ends; and its end in
+   * Mercator, for the next segment.
+   */
+  const nearestOn = (): { cut: Cut; endKm: number; b: XY } => {
     const b = xyNear(k + 1, a[0])
     const dx = b[0] - a[0]
     const dy = b[1] - a[1]
@@ -550,38 +554,37 @@ function cutAt(points: LngLat[], at: LngLat, lo: TrackCut, leaving?: TrackCut): 
     const t0 = k === lo.index ? lo.t : 0
     const t = len2 === 0 ? t0 : Math.min(1, Math.max(t0, ((qx - a[0]) * dx + (q[1] - a[1]) * dy) / len2))
     const km = Math.hypot(a[0] + dx * t - qx, a[1] + dy * t - q[1]) * kmPerUnit
-    return { cut: t >= 1 ? { index: k + 1, t: 0, km } : { index: k, t, km }, b }
-  }
-  const step = (): Cut => {
-    const { cut, b } = nearestOn()
-    a = b
-    k++
-    return cut
+    const endKm = Math.hypot(b[0] - qx, b[1] - q[1]) * kmPerUnit
+    return { cut: t >= 1 ? { index: k + 1, t: 0, km } : { index: k, t, km }, endKm, b }
   }
 
-  // The run under way at `lo`, if there is one, and how far from `at` the leg leaves.
+  // A run is a stretch of track inside `at`'s circle. A straight segment enters and leaves a circle at most once, so
+  // a run goes on into the next segment only through a point inside the circle: two segments that each dip into it,
+  // with the point between them outside, are two runs.
+  let nearest: Cut | undefined
+  /** The nearest place in the next run from segment `k` on, or undefined when no segment comes that close. */
+  const nextRun = (): Cut | undefined => {
+    let run: Cut | undefined
+    while (k < n - 1) {
+      const { cut, endKm, b } = nearestOn()
+      a = b
+      k++
+      if (!nearest || cut.km < nearest.km) nearest = cut
+      if (cut.km <= TRACK_NEAR_KM && (!run || cut.km < run.km)) run = cut
+      if (run && endKm > TRACK_NEAR_KM) return run
+    }
+    return run
+  }
+
+  // The run under way at `lo`, if the leg leaves from inside the circle, and how far from `at` it leaves.
   let early: Cut | undefined
   let leaveKm = 0
   if (leaving !== undefined) {
-    while (k < n - 1) {
-      const { cut, b } = nearestOn()
-      if (cut.km > TRACK_NEAR_KM) break
-      a = b
-      k++
-      if (!early || cut.km < early.km) early = cut
-    }
     leaveKm = haversineKm(cutPoint(points, leaving), at)
+    if (haversineKm(cutPoint(points, lo), at) <= TRACK_NEAR_KM) early = nextRun()
     if (early && leaveKm >= SAME_PLACE_KM && early.km < leaveKm / 2) return snap(points, at, lo, early)
   }
-  let run: Cut | undefined
-  let nearest: Cut | undefined
-  while (k < n - 1) {
-    const cut = step()
-    if (cut.km <= TRACK_NEAR_KM) {
-      if (!run || cut.km < run.km) run = cut
-    } else if (run) break
-    else if (!nearest || cut.km < nearest.km) nearest = cut
-  }
+  const run = nextRun()
   if (early && run && leaveKm >= SAME_PLACE_KM) return snap(points, at, lo, early.km <= run.km ? early : run)
   const found = run ?? early ?? nearest
   return found ? snap(points, at, lo, found) : last()
@@ -615,8 +618,8 @@ function snap(points: LngLat[], at: LngLat, lo: TrackCut, cut: Cut): Cut {
  * the legs either side. The leg follows every point strictly between its two cuts.
  *
  * `start` is the cut the leg starts at, the previous leg's `end` when both follow this track; without it, `from` is
- * searched for from the first point. `end` is searched for from `start` on: the nearest place in the first run of
- * segments within `TRACK_NEAR_KM` of `to`, or the nearest place when none comes that close. Taking the first run cuts
+ * searched for from the first point. `end` is searched for from `start` on: the nearest place in the first run, a
+ * stretch of track inside the circle of `TRACK_NEAR_KM` round `to`, or the nearest place when none comes that close. Taking the first run cuts
  * a port called at twice at its first call, and a cruise that ends where it began at its end. When the track is
  * already within `TRACK_NEAR_KM` of `to` where the leg leaves, `cutAt` decides whether the leg ends in that run or a
  * later one, so a loop from a stop back to it isn't cut on the way out. `gapKm` is the great-circle distance from

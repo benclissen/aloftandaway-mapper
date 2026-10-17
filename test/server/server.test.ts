@@ -8,7 +8,7 @@ import { WebSocket } from 'ws'
 import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, PATHS_ORIGIN, routeSea, seaLegKey, STALE_BASE_MESSAGE, validateProject, type LandSource, type LngLat, type Project, type ServerMessage, type ViaPoint } from '../../src/core/index.js'
 import { PROJECT_FILE, createProject, loadProject, mutateProject, saveProject } from '../../src/server/store.js'
 import type { SeaWater } from '../../src/server/sea-water.js'
-import { getServer, startServer, type MapperServer, type ServerOptions } from '../../src/server/server.js'
+import { getServer, startServer, WATCH_DEBOUNCE_MS, type MapperServer, type ServerOptions } from '../../src/server/server.js'
 
 let tmp: string
 let studioDir: string
@@ -523,15 +523,93 @@ describe('websocket sync', () => {
     ws.close()
   })
 
-  test('does not rebroadcast an unchanged updatedAt', async () => {
+  test('a hand edit that keeps updatedAt reaches the studio', async () => {
+    const { ws, next } = await connect()
+    try {
+      await next()
+      const before = await loadProject(folder)
+      await writeFile(path.join(folder, PROJECT_FILE), `${JSON.stringify({ ...before, name: 'By hand' }, null, 2)}\n`)
+      const message = await next(2000)
+      expect(message.project.name).toBe('By hand')
+      expect(Date.parse(message.project.updatedAt)).toBeGreaterThan(Date.parse(before.updatedAt))
+      expect('origin' in message).toBe(false)
+      expect((await loadProject(folder)).updatedAt).toBe(message.project.updatedAt)
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('a restored older file reaches the studio', async () => {
+    const { ws, next } = await connect()
+    try {
+      await next()
+      const file = path.join(folder, PROJECT_FILE)
+      const v1 = await saveProject(folder, { ...(await loadProject(folder)), name: 'Version 1' })
+      const v1Bytes = await readFile(file)
+      const v2 = await saveProject(folder, { ...v1, name: 'Version 2' })
+      // Two quick saves can reach the studio as one.
+      let shown = await next(2000)
+      while (shown.project.name !== 'Version 2') shown = await next(2000)
+      await writeFile(file, v1Bytes)
+      const message = await next(2000)
+      expect(message.project.name).toBe('Version 1')
+      expect({ ...message.project, updatedAt: v1.updatedAt }).toEqual(v1)
+      expect(Date.parse(message.project.updatedAt)).toBeGreaterThan(Date.parse(v2.updatedAt))
+      expect('origin' in message).toBe(false)
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('an identical rewrite sends nothing and leaves the file alone', async () => {
     const { ws, next, messages } = await connect()
-    await next()
-    await writeFile(path.join(folder, 'notes.txt'), 'unrelated')
-    const before = await loadProject(folder)
-    await writeFile(path.join(folder, PROJECT_FILE), `${JSON.stringify(before, null, 2)}\n`)
-    await new Promise((r) => setTimeout(r, 250))
-    expect(messages).toHaveLength(0)
-    ws.close()
+    try {
+      await next()
+      await writeFile(path.join(folder, 'notes.txt'), 'unrelated')
+      const before = await loadProject(folder)
+      await writeFile(path.join(folder, PROJECT_FILE), `${JSON.stringify(before, null, 2)}\n`)
+      await new Promise((r) => setTimeout(r, 4 * WATCH_DEBOUNCE_MS))
+      expect(messages).toHaveLength(0)
+      expect((await loadProject(folder)).updatedAt).toBe(before.updatedAt)
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('reformatting the file sends nothing and leaves it alone', async () => {
+    const { ws, next, messages } = await connect()
+    try {
+      await next()
+      const file = path.join(folder, PROJECT_FILE)
+      const before = await loadProject(folder)
+      const reordered = Object.fromEntries(Object.entries(before).reverse())
+      await writeFile(file, `${JSON.stringify(reordered, null, 4)}\n`)
+      const written = await readFile(file, 'utf8')
+      await new Promise((r) => setTimeout(r, 4 * WATCH_DEBOUNCE_MS))
+      expect(messages).toHaveLength(0)
+      expect(await readFile(file, 'utf8')).toBe(written)
+    } finally {
+      ws.close()
+    }
+  })
+
+  test('a schema-invalid hand edit is never rewritten', async () => {
+    const { ws, next, messages } = await connect()
+    try {
+      await next()
+      const file = path.join(folder, PROJECT_FILE)
+      const before = await loadProject(folder)
+      const invalid = { ...before, output: { ...before.output, fps: { num: 7, den: 1 } } }
+      await writeFile(file, `${JSON.stringify(invalid, null, 2)}\n`)
+      const written = await readFile(file, 'utf8')
+      await new Promise((r) => setTimeout(r, 4 * WATCH_DEBOUNCE_MS))
+      expect(messages).toHaveLength(0)
+      expect(await readFile(file, 'utf8')).toBe(written)
+      await saveProject(folder, { ...before, name: 'Valid again' })
+      expect((await next(2000)).project.name).toBe('Valid again')
+    } finally {
+      ws.close()
+    }
   })
 
   test('close shuts down clients and the listener', async () => {

@@ -25,7 +25,7 @@ import {
 import { loadLand } from './land.js'
 import { RETRY_MS, resolveSeaPaths, retriesSoon, seaLegsOf } from './paths.js'
 import { seaWaterOn, type SeaWater } from './sea-water.js'
-import { assertAbsolute, loadProject, mutateProject, PROJECT_FILE, StoreError } from './store.js'
+import { assertAbsolute, loadProject, mutateProject, PROJECT_FILE, projectHash, restampProject, StoreError } from './store.js'
 import { createTileProxy, tileStore } from './tiles.js'
 
 export interface MapperServer {
@@ -59,7 +59,8 @@ export interface ServerOptions {
 }
 
 const MAX_BODY_BYTES = 1024 * 1024
-const WATCH_DEBOUNCE_MS = 50
+/** How long the watcher waits for a burst of file events to settle before it reads the project, in ms. */
+export const WATCH_DEBOUNCE_MS = 50
 /** How many saved versions per project remember which studio client patched them. */
 const ORIGIN_MEMORY = 32
 
@@ -85,6 +86,8 @@ interface Registered {
   clients: Set<WebSocket>
   /** `updatedAt` of the last project this entry broadcast or loaded. */
   lastUpdatedAt: string
+  /** `projectHash` of that project. */
+  lastHash: string
   timer: NodeJS.Timeout | undefined
   /** The client id that patched each recent version, by the version's `updatedAt`. Oldest first. */
   origins: Map<string, string>
@@ -478,13 +481,15 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
         return // Half-written or invalid; the watcher or the next retry sees it.
       }
       if (closed || projects.get(entry.key) !== entry) return
-      if (project.updatedAt !== entry.lastUpdatedAt) {
+      const hash = projectHash(project)
+      const current = (): boolean => project.updatedAt === entry.lastUpdatedAt && hash === entry.lastHash
+      if (!current()) {
         await reload(entry)
         return
       }
       const seaPaths = await seaPathsFor(entry, project)
       // A newer version came in meanwhile; its own broadcast carries its routes.
-      if (closed || projects.get(entry.key) !== entry || project.updatedAt !== entry.lastUpdatedAt) return
+      if (closed || projects.get(entry.key) !== entry || !current()) return
       const paths = JSON.stringify(seaPaths)
       const message: ServerMessage = { type: 'project', project, seaPaths, origin: PATHS_ORIGIN }
       for (const ws of entry.clients) {
@@ -507,6 +512,11 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     }, WATCH_DEBOUNCE_MS)
   }
 
+  /**
+   * Passes on the project on disk when its content changed. A version whose `updatedAt` isn't newer than the last one
+   * (a hand edit that kept it, or an older file restored) would be dropped by the studio, so it's saved again with a
+   * later one instead, and the watcher passes that on. Only `updatedAt` moving, or a reformat, sends nothing.
+   */
   async function reload(entry: Registered): Promise<void> {
     let project
     try {
@@ -514,8 +524,22 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     } catch {
       return // Half-written or temporarily invalid; the next file event tries again.
     }
-    if (closed || projects.get(entry.key) !== entry || project.updatedAt === entry.lastUpdatedAt) return
+    if (closed || projects.get(entry.key) !== entry) return
+    const hash = projectHash(project)
+    const newer = Date.parse(project.updatedAt) > Date.parse(entry.lastUpdatedAt)
+    if (hash === entry.lastHash) {
+      if (newer) entry.lastUpdatedAt = project.updatedAt
+      return
+    }
+    if (!newer) {
+      // Leaves the file alone if anything wrote since it was read; that write fires its own change.
+      const restamped = await restampProject(entry.folder, { hash, after: entry.lastUpdatedAt }).catch(() => undefined)
+      // A change from outside the studio, even if a patch's version once had the same time.
+      if (restamped) entry.origins.delete(restamped.updatedAt)
+      return
+    }
     entry.lastUpdatedAt = project.updatedAt
+    entry.lastHash = hash
     const origin = entry.origins.get(project.updatedAt)
     const seaPaths = await seaPathsFor(entry, project)
     if (closed || projects.get(entry.key) !== entry) return
@@ -550,6 +574,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
       watcher: undefined,
       clients: new Set(),
       lastUpdatedAt: project.updatedAt,
+      lastHash: projectHash(project),
       timer: undefined,
       origins: new Map(),
       seaPathsFailed: false,

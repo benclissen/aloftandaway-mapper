@@ -117,21 +117,57 @@ export async function loadProject(folder: string): Promise<Project> {
   }
 }
 
-export async function saveProject(folder: string, project: Project): Promise<Project> {
+/**
+ * Validates and writes the project. The saved `updatedAt` is strictly later than the project's own and than `after`,
+ * even when two saves land in the same millisecond.
+ */
+export async function saveProject(folder: string, project: Project, opts: { after?: string } = {}): Promise<Project> {
   assertAbsolute(folder)
   const valid = parseProject(project)
-  const previous = Date.parse(valid.updatedAt)
+  const floor = Math.max(timeOf(valid.updatedAt), timeOf(opts.after))
   const now = Date.now()
-  // Keep updatedAt strictly increasing, even when two saves land in the same millisecond.
-  const next = Number.isFinite(previous) && now <= previous ? previous + 1 : now
+  const next = now <= floor ? floor + 1 : now
   const saved = { ...valid, updatedAt: new Date(next).toISOString() }
   await writeAtomic(folder, saved)
   return saved
 }
 
-export async function mutateProject(folder: string, fn: (project: Project) => Project): Promise<Project> {
+export async function mutateProject(
+  folder: string,
+  fn: (project: Project) => Project,
+  opts: { after?: string } = {},
+): Promise<Project> {
   assertAbsolute(folder)
-  return inFolderQueue(folder, async () => saveProject(folder, fn(await loadProject(folder))))
+  return inFolderQueue(folder, async () => saveProject(folder, fn(await loadProject(folder)), opts))
+}
+
+/**
+ * Saves the project on disk again with an `updatedAt` later than `expect.after`, changing nothing else. It writes only
+ * if the file still holds the content with `expect.hash` and isn't already later than `expect.after`, so it never
+ * stamps over a write that landed since the caller read the file. Returns the saved project, or undefined when it left
+ * the file alone.
+ */
+export async function restampProject(
+  folder: string,
+  expect: { hash: string; after: string },
+): Promise<Project | undefined> {
+  assertAbsolute(folder)
+  return inFolderQueue(folder, async () => {
+    let current: Project
+    try {
+      current = await loadProject(folder)
+    } catch {
+      return undefined // Not the file the caller read; whatever wrote it fires its own change.
+    }
+    if (projectHash(current) !== expect.hash || timeOf(current.updatedAt) > timeOf(expect.after)) return undefined
+    return saveProject(folder, current, { after: expect.after })
+  })
+}
+
+/** An ISO time in ms, or -Infinity when there's none to compare. */
+function timeOf(iso: string | undefined): number {
+  const ms = iso === undefined ? NaN : Date.parse(iso)
+  return Number.isFinite(ms) ? ms : -Infinity
 }
 
 /** SHA-256 of the project as canonical JSON (object keys sorted), leaving out `updatedAt`. */

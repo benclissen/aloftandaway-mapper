@@ -11,6 +11,7 @@ import {
   loadProject,
   mutateProject,
   projectHash,
+  restampProject,
   saveProject,
 } from '../../src/server/store.js'
 import { writeFileAtomic } from '../../src/server/atomic.js'
@@ -191,6 +192,15 @@ describe('saveProject', () => {
     expect(Date.parse(saved.updatedAt)).toBe(Date.parse(future) + 1)
   })
 
+  test('saveProject with after stamps later than after', async () => {
+    const folder = path.join(tmp, 'after')
+    const created = await createProject(folder, 'After')
+    const after = new Date(Date.now() + 3_600_000).toISOString()
+    const saved = await saveProject(folder, created, { after })
+    expect(Date.parse(saved.updatedAt)).toBeGreaterThan(Date.parse(after))
+    expect((await loadProject(folder)).updatedAt).toBe(saved.updatedAt)
+  })
+
   test('refuses to write a project that fails the schema', async () => {
     const folder = path.join(tmp, 'invalid')
     const created = await createProject(folder, 'Invalid')
@@ -227,6 +237,43 @@ describe('mutateProject', () => {
   test('rejects relative paths', async () => {
     const error = await failure(mutateProject('relative', (p) => p))
     expect(error).toBeInstanceOf(StoreError)
+  })
+})
+
+describe('restampProject', () => {
+  test('restamp leaves a file that changed since it was read', async () => {
+    const folder = path.join(tmp, 'changed')
+    const created = await createProject(folder, 'Changed')
+    const hash = projectHash(created)
+    await mutateProject(folder, (p) => ({ ...p, name: 'Changed meanwhile' }))
+    const file = path.join(folder, PROJECT_FILE)
+    const before = await readFile(file, 'utf8')
+    // Late enough that only the content can refuse it.
+    const after = new Date(Date.now() + 3_600_000).toISOString()
+    expect(await restampProject(folder, { hash, after })).toBeUndefined()
+    expect(await readFile(file, 'utf8')).toBe(before)
+  })
+
+  test('restamp leaves a file already newer than after', async () => {
+    const folder = path.join(tmp, 'newer')
+    const created = await createProject(folder, 'Newer')
+    const file = path.join(folder, PROJECT_FILE)
+    const before = await readFile(file, 'utf8')
+    const after = new Date(Date.parse(created.updatedAt) - 1000).toISOString()
+    expect(await restampProject(folder, { hash: projectHash(created), after })).toBeUndefined()
+    expect(await readFile(file, 'utf8')).toBe(before)
+  })
+
+  test('restamp saves a matching file with a later updatedAt and nothing else changed', async () => {
+    const folder = path.join(tmp, 'matching')
+    const created = await createProject(folder, 'Matching')
+    const after = new Date(Date.parse(created.updatedAt) + 3_600_000).toISOString()
+    const restamped = await restampProject(folder, { hash: projectHash(created), after })
+    expect(restamped).toBeDefined()
+    expect(Date.parse(restamped!.updatedAt)).toBeGreaterThan(Date.parse(after))
+    const loaded = await loadProject(folder)
+    expect(loaded).toEqual(restamped)
+    expect(projectHash(loaded)).toBe(projectHash(created))
   })
 })
 

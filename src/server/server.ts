@@ -521,6 +521,7 @@ export function getServer(): Promise<MapperServer> {
     const starting = startServer({
       studioDir: path.join(packageRoot(), 'dist', 'studio'),
       cacheDir: process.env.MAPPER_CACHE_DIR ?? path.join(os.homedir(), '.cache', 'mapper'),
+      tileUpstream: process.env.MAPPER_TILE_UPSTREAM || undefined,
     }).then((server) => {
       const close = server.close
       // After close, the next getServer() starts a fresh server.

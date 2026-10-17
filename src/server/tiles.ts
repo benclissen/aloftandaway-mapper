@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import type { ServerResponse } from 'node:http'
 import path from 'node:path'
@@ -9,6 +10,15 @@ export const DEFAULT_TILE_UPSTREAM = 'https://tiles.openfreemap.org'
 export const SATELLITE_UPSTREAM = 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g'
 /** AWS Terrain Tiles in Terrarium encoding: `{z}/{x}/{y}.png`. */
 export const TERRAIN_UPSTREAM = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium'
+
+/** The package version, read from the package.json above this module (it sits two levels up from src/ and dist/). */
+function packageVersion(): string {
+  const file = fileURLToPath(new URL('../../package.json', import.meta.url))
+  return (JSON.parse(readFileSync(file, 'utf8')) as { version: string }).version
+}
+
+/** Names the app and its version on every upstream request, as OpenFreeMap's usage rules ask. */
+export const USER_AGENT = `aloftandaway-mapper/${packageVersion()}`
 
 /** Glyph PBFs built by `npm run build:glyphs`, one folder per font face. */
 const GLYPHS_DIR = fileURLToPath(new URL('../../data/glyphs', import.meta.url))
@@ -27,10 +37,41 @@ export interface TileProxyOptions {
   upstream?: string
   /** `<server base>tiles/`. Read per request, since the base is only known once the server listens. */
   publicBase: () => string
-  /** Upstream requests in flight at once. Default 6. */
+  /**
+   * Upstream requests in flight at once. Default 6. Giving this or `retryDelaysMs` makes the proxy its own tile
+   * store instead of the shared one for this cache and upstream.
+   */
   maxConcurrent?: number
   /** Waits before each retry of a network error or 5xx. Default [250, 1000, 4000]. */
   retryDelaysMs?: number[]
+}
+
+export interface TileStoreOptions {
+  /** The cache root. Tiles live under `<cacheDir>/tiles/`. */
+  cacheDir: string
+  /** Defaults to https://tiles.openfreemap.org. */
+  upstream?: string
+  /** Waits before each retry of a network error or 5xx. Default [250, 1000, 4000]. */
+  retryDelaysMs?: number[]
+  /** Upstream requests in flight at once for `use: 'view'`. Default 6. */
+  viewLimit?: number
+}
+
+export interface TileReply {
+  status: number
+  body: Buffer
+  contentType?: string
+}
+
+export interface TileStore {
+  /**
+   * The bytes for a proxy subpath (the part after `tiles/`), from the disk cache when there, else fetched and cached.
+   * Concurrent calls for one path share one fetch. `view` (the studio's map) allows 6 requests at once and
+   * `download` (the sea router) 4, as OpenFreeMap asks. A path the proxy wouldn't serve answers 400.
+   */
+  get(subpath: string, opts?: { use: 'view' | 'download' }): Promise<TileReply>
+  /** The build segment of the planet TileJSON's tile URL, such as `20261011_080001_pt`. */
+  planetBuild(): Promise<string>
 }
 
 /** Takes the percent-encoded part of the URL path after `tiles/`. */
@@ -44,11 +85,7 @@ const TILEJSON_FILE = 'planet.tilejson'
 const TILEJSON_TTL_MS = 24 * 60 * 60 * 1000
 const UPSTREAM_TIMEOUT_MS = 30_000
 
-interface Reply {
-  status: number
-  contentType?: string
-  body: Buffer
-}
+type Reply = TileReply
 
 class Semaphore {
   private free: number
@@ -143,18 +180,23 @@ function badGateway(message: string): Reply {
   return { status: 502, body: Buffer.from(JSON.stringify({ error: { message } })), contentType: 'application/json; charset=utf-8' }
 }
 
+const REJECTED = 'Not a tile path Mapper serves.'
+
+function rejected(): Reply {
+  return { status: 400, body: Buffer.from(JSON.stringify({ error: { message: REJECTED } })), contentType: 'application/json; charset=utf-8' }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-export function createTileProxy(opts: TileProxyOptions): TileProxy {
+export function createTileStore(opts: TileStoreOptions): TileStore {
   const upstream = (opts.upstream ?? DEFAULT_TILE_UPSTREAM).replace(/\/+$/, '')
-  const upstreamOrigin = new URL(upstream).origin
   const satelliteUpstream = opts.upstream ? `${upstream}/satellite` : SATELLITE_UPSTREAM
   const terrainUpstream = opts.upstream ? `${upstream}/terrain` : TERRAIN_UPSTREAM
   const tilesRoot = path.resolve(opts.cacheDir, 'tiles')
   const retryDelaysMs = opts.retryDelaysMs ?? [250, 1000, 4000]
-  const semaphore = new Semaphore(opts.maxConcurrent ?? 6)
+  const semaphores = { view: new Semaphore(opts.viewLimit ?? 6), download: new Semaphore(4) }
   /** Misses being fetched right now, so concurrent requests for one tile share one upstream fetch. */
   const inFlight = new Map<string, Promise<Reply>>()
 
@@ -190,9 +232,13 @@ export function createTileProxy(opts: TileProxyOptions): TileProxy {
   }
 
   /** One upstream request, within the concurrency cap. */
-  function fetchOnce(url: string): Promise<{ status: number; body: Buffer }> {
-    return semaphore.run(async () => {
-      const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) })
+  function fetchOnce(url: string, use: 'view' | 'download'): Promise<{ status: number; body: Buffer }> {
+    return semaphores[use].run(async () => {
+      const response = await fetch(url, {
+        redirect: 'manual',
+        headers: { 'User-Agent': USER_AGENT },
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      })
       // fetch has already decoded any Content-Encoding.
       return { status: response.status, body: Buffer.from(await response.arrayBuffer()) }
     })
@@ -208,12 +254,12 @@ export function createTileProxy(opts: TileProxyOptions): TileProxy {
   }
 
   /** Fetches with retries. Network errors and 5xx retry; any other status is final. */
-  async function fetchUpstream(segments: string[]): Promise<Reply> {
+  async function fetchUpstream(segments: string[], use: 'view' | 'download'): Promise<Reply> {
     const url = upstreamUrl(segments)
     for (let attempt = 0; ; attempt++) {
       let failure: string
       try {
-        const { status, body } = await fetchOnce(url)
+        const { status, body } = await fetchOnce(url, use)
         if (status >= 500) {
           failure = `the tile server answered ${status}`
         } else if (status === 200) {
@@ -236,10 +282,10 @@ export function createTileProxy(opts: TileProxyOptions): TileProxy {
   }
 
   /** The upstream bytes for a subpath: from disk when cached, else fetched and cached. */
-  async function obtain(segments: string[], file: string): Promise<Reply> {
+  async function obtain(segments: string[], file: string, use: 'view' | 'download'): Promise<Reply> {
     const cached = await readCached(segments, file)
     if (cached) return { status: 200, body: cached, contentType: contentTypeFor(segments) }
-    const reply = await fetchUpstream(segments)
+    const reply = await fetchUpstream(segments, use)
     if (reply.status === 200) {
       if (segments.length === 1) {
         try {
@@ -252,6 +298,55 @@ export function createTileProxy(opts: TileProxyOptions): TileProxy {
     }
     return reply
   }
+
+  async function get(subpath: string, getOpts?: { use: 'view' | 'download' }): Promise<Reply> {
+    const segments = parseSubpath(subpath)
+    const file = segments && cachePath(segments)
+    if (!segments || !file) return rejected()
+    const key = segments.join('/')
+    let pending = inFlight.get(key)
+    if (!pending) {
+      pending = obtain(segments, file, getOpts?.use ?? 'view').finally(() => inFlight.delete(key))
+      inFlight.set(key, pending)
+    }
+    return pending
+  }
+
+  return {
+    get,
+    async planetBuild() {
+      const reply = await get('planet', { use: 'download' })
+      if (reply.status !== 200) throw new Error(`Could not read the tile server's TileJSON (status ${reply.status}).`)
+      const tiles = (JSON.parse(reply.body.toString('utf8')) as { tiles?: unknown }).tiles
+      for (const entry of Array.isArray(tiles) ? tiles : []) {
+        const build = typeof entry === 'string' ? /\/planet\/([\w.-]+)\/\{z\}/.exec(entry)?.[1] : undefined
+        if (build) return build
+      }
+      throw new Error("The tile server's TileJSON names no planet build.")
+    },
+  }
+}
+
+const stores = new Map<string, TileStore>()
+
+/** The one tile store for a cache and upstream in this process, so the proxy and the sea router share it. */
+export function tileStore(opts: { cacheDir: string; upstream?: string }): TileStore {
+  const key = `${path.resolve(opts.cacheDir)}\0${(opts.upstream ?? DEFAULT_TILE_UPSTREAM).replace(/\/+$/, '')}`
+  let store = stores.get(key)
+  if (!store) {
+    store = createTileStore(opts)
+    stores.set(key, store)
+  }
+  return store
+}
+
+export function createTileProxy(opts: TileProxyOptions): TileProxy {
+  const upstream = (opts.upstream ?? DEFAULT_TILE_UPSTREAM).replace(/\/+$/, '')
+  const upstreamOrigin = new URL(upstream).origin
+  const store =
+    opts.maxConcurrent !== undefined || opts.retryDelaysMs !== undefined
+      ? createTileStore({ cacheDir: opts.cacheDir, upstream: opts.upstream, viewLimit: opts.maxConcurrent, retryDelaysMs: opts.retryDelaysMs })
+      : tileStore({ cacheDir: opts.cacheDir, upstream: opts.upstream })
 
   /** Points the TileJSON's tile URLs at this server. Entries from elsewhere are left alone. */
   function rewriteTileJson(body: Buffer): Buffer {
@@ -267,8 +362,7 @@ export function createTileProxy(opts: TileProxyOptions): TileProxy {
 
   return async (subpath, res) => {
     const segments = parseSubpath(subpath)
-    const file = segments && cachePath(segments)
-    if (!segments || !file) return sendError(res, 400, 'Not a tile path Mapper serves.')
+    if (!segments) return sendError(res, 400, REJECTED)
 
     const glyphs = localGlyphRequest(segments)
     if (glyphs) {
@@ -280,13 +374,7 @@ export function createTileProxy(opts: TileProxyOptions): TileProxy {
       return send(res, 200, body ?? emptyGlyphs(glyphs.face, glyphs.range), 'application/x-protobuf')
     }
 
-    const key = segments.join('/')
-    let pending = inFlight.get(key)
-    if (!pending) {
-      pending = obtain(segments, file).finally(() => inFlight.delete(key))
-      inFlight.set(key, pending)
-    }
-    const reply = await pending
+    const reply = await store.get(subpath)
     if (reply.status === 200 && segments.length === 1) {
       send(res, 200, rewriteTileJson(reply.body), reply.contentType)
     } else {

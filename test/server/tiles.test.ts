@@ -1,12 +1,13 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, readdir, readFile, rm, stat, utimes } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { createTileProxy } from '../../src/server/tiles.js'
+import { createTileProxy, createTileStore, tileStore, USER_AGENT } from '../../src/server/tiles.js'
 import { startServer, type MapperServer } from '../../src/server/server.js'
+import { startFakeTiles } from '../helpers/fake-tiles.js'
 
 const TILE = Buffer.from([0x1a, 0x02, 0x08, 0x01, 0xff, 0x00, 0x7f])
 const TILE_PATH = 'planet/20260101_001001_pt/5/16/10.pbf'
@@ -454,5 +455,95 @@ describe('mounted in the server', () => {
     const reply = await get(`http://127.0.0.1:${server.port}/wrong/tiles/${TILE_PATH}`)
     expect(reply.status).toBe(404)
     expect(fake.hits).toEqual([])
+  })
+})
+
+describe('tile store', () => {
+  const BUILD = '20261011_080001_pt'
+  let fixtures: string
+  let tiles: Awaited<ReturnType<typeof startFakeTiles>>
+
+  beforeEach(async () => {
+    fixtures = path.join(tmp, 'fixtures')
+    await mkdir(path.join(fixtures, BUILD, '12', '2200'), { recursive: true })
+    for (let y = 0; y < 12; y++) await writeFile(path.join(fixtures, BUILD, '12', '2200', `${1000 + y}.pbf`), TILE)
+    tiles = await startFakeTiles(fixtures)
+  })
+
+  afterEach(async () => {
+    await tiles.close()
+  })
+
+  const tilePath = (y: number): string => `planet/${BUILD}/12/2200/${1000 + y}.pbf`
+
+  test('every upstream request sends the Mapper User-Agent', async () => {
+    expect(USER_AGENT).toMatch(/^aloftandaway-mapper\/\d+\.\d+\.\d+/)
+    const store = createTileStore({ cacheDir, upstream: tiles.url, retryDelaysMs: [] })
+    expect((await store.get(tilePath(0), { use: 'view' })).status).toBe(200)
+    expect((await store.get(tilePath(1), { use: 'download' })).status).toBe(200)
+    expect((await store.get('planet')).status).toBe(200)
+    expect(tiles.requests).toHaveLength(3)
+    expect(tiles.userAgents).toEqual([USER_AGENT, USER_AGENT, USER_AGENT])
+  })
+
+  test('the proxy sends the Mapper User-Agent too', async () => {
+    const proxy = createTileProxy({ cacheDir, upstream: tiles.url, publicBase: () => PUBLIC_BASE, retryDelaysMs: [] })
+    harness = http.createServer((req, res) => void proxy((req.url ?? '/').slice(1), res))
+    await new Promise<void>((resolve) => harness.listen(0, '127.0.0.1', resolve))
+    const origin = `http://127.0.0.1:${(harness.address() as AddressInfo).port}`
+    expect((await get(`${origin}/${tilePath(0)}`)).status).toBe(200)
+    expect(tiles.userAgents).toEqual([USER_AGENT])
+  })
+
+  test('download use opens at most 4 requests at once', async () => {
+    tiles.delayMs = 40
+    const store = createTileStore({ cacheDir, upstream: tiles.url, retryDelaysMs: [] })
+    const replies = await Promise.all(Array.from({ length: 12 }, (_, y) => store.get(tilePath(y), { use: 'download' })))
+    expect(replies.map((r) => r.status)).toEqual(Array(12).fill(200))
+    expect(tiles.requests).toHaveLength(12)
+    expect(tiles.inFlightMax).toBe(4)
+  })
+
+  test('view and download share the disk cache and one in-flight fetch', async () => {
+    tiles.delayMs = 40
+    const store = createTileStore({ cacheDir, upstream: tiles.url, retryDelaysMs: [] })
+    const [view, download] = await Promise.all([
+      store.get(tilePath(0), { use: 'view' }),
+      store.get(tilePath(0), { use: 'download' }),
+    ])
+    expect(view.body.equals(TILE)).toBe(true)
+    expect(download.body.equals(TILE)).toBe(true)
+    expect(tiles.requests).toEqual([`/${tilePath(0)}`])
+    // Later, from disk: either use, and a second store over the same cache.
+    await store.get(tilePath(0), { use: 'download' })
+    await createTileStore({ cacheDir, upstream: tiles.url }).get(tilePath(0), { use: 'view' })
+    expect(tiles.requests).toHaveLength(1)
+  })
+
+  test('tileStore gives one store per cache and upstream', async () => {
+    const a = tileStore({ cacheDir, upstream: tiles.url })
+    expect(tileStore({ cacheDir: path.join(cacheDir, '..', 'cache'), upstream: `${tiles.url}/` })).toBe(a)
+    expect(tileStore({ cacheDir: path.join(tmp, 'other'), upstream: tiles.url })).not.toBe(a)
+    expect(tileStore({ cacheDir, upstream: fake.origin })).not.toBe(a)
+  })
+
+  test('planetBuild reads the build from the TileJSON', async () => {
+    const store = createTileStore({ cacheDir, upstream: tiles.url, retryDelaysMs: [] })
+    expect(await store.planetBuild()).toBe(BUILD)
+    expect(await store.planetBuild()).toBe(BUILD)
+    // The second answer came from the cached TileJSON.
+    expect(tiles.requests).toEqual(['/planet'])
+  })
+
+  test('planetBuild fails when the TileJSON is not there', async () => {
+    fake.status = 404
+    const store = createTileStore({ cacheDir, upstream: fake.origin, retryDelaysMs: [] })
+    await expect(store.planetBuild()).rejects.toThrow(/TileJSON/)
+  })
+
+  test('a path the proxy would not serve answers 400 without going upstream', async () => {
+    const store = createTileStore({ cacheDir, upstream: tiles.url })
+    expect((await store.get('planet/../x')).status).toBe(400)
+    expect(tiles.requests).toEqual([])
   })
 })

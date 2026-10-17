@@ -17,7 +17,8 @@ Stages 1 to 8 (agent-driven MVP, Final Cut export, route editing, routes, look, 
 - An MCP server and CLI. The agent creates a project, sets stops, validates,
   previews, opens the studio and renders.
 - A local studio for scrubbing the preview, dragging stops and setting start
-  and end shots.
+  and end shots. A hand edit to `mapper.json` shows in an open studio, and
+  Mapper saves it once more with a new `updatedAt`.
 - Contact sheets and single-frame previews, so the agent can check its work.
 - Renders at 3840×2160 and 25 fps by default, as one flattened H.264 MP4
   (`all.mp4`) with the map credit burned in. `--codec prores` makes a

@@ -260,7 +260,7 @@ export const ProjectSchema = z
       }
       if (scene.timing.length !== undefined) {
         const fixed = scene.timing.holdStart + scene.timing.holdEnd + scene.stops.reduce((sum, s) => sum + s.pause, 0)
-        if (fixed > scene.timing.length) {
+        if (fixed > scene.timing.length + 1e-9) {
           ctx.addIssue({
             code: 'custom',
             path: ['scenes', i, 'timing', 'length'],

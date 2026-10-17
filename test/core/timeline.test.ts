@@ -287,6 +287,15 @@ describe('a fixed length', () => {
     expect(timelineOf(fixed({ length: 8 }, { num: 30000, den: 1001 })).tl.totalFrames).toBe(240)
   })
 
+  test('a fixed length with no end hold is still exact', () => {
+    const p = stopsAt([[0, 0], [10, 0]], { timing: { holdStart: 1, travel: 5, holdEnd: 0, length: 8 } })
+    const { tl } = timelineOf(p)
+    expect(tl.totalFrames).toBe(200)
+    expect(tl.arrivals.at(-1)!.frame).toBe(199)
+    expect(tl.travelEndFrame).toBe(199)
+    expect(tl.stateAt(199).distance).toBeCloseTo(timelineOf(p).route.length, 12)
+  })
+
   test('a stale travel is ignored', () => {
     expect(timelineOf(fixed({ length: 8, travel: 99 })).tl.totalFrames).toBe(200)
   })

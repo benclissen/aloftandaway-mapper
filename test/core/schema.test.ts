@@ -21,6 +21,12 @@ import {
 import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 describe('project schema', () => {
+  test('a fixed length tolerates float error in the holds', () => {
+    const p = stopsAt([[0, 0], [10, 0]], { timing: { holdStart: 0.1, travel: 0, holdEnd: 0.2, length: 0.3 } })
+    expect(() => parseProject(p)).not.toThrow()
+    expect(sceneOf(p).timing.holdStart + sceneOf(p).timing.holdEnd).toBeGreaterThan(0.3)
+  })
+
   test('default project is 4K 25p 16:9 and round-trips', () => {
     const p = defaultProject({ id: crypto.randomUUID(), name: 'Xcel', now: '2026-10-13T10:00:00Z' })
     expect(p.output).toEqual({ aspect: '16:9', height: 2160, fps: { num: 25, den: 1 } })

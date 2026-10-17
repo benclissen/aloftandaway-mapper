@@ -747,8 +747,9 @@ Mapper process. It serves several projects.
   agent or the CLI), connected studios reload the project over WebSocket.
   Edits made in the studio are sent to the server, which applies them as a
   patch through `core`. The last write wins, and `updatedAt` shows which
-  write that was. A hand edit to `mapper.json` whose `updatedAt` isn't newer
-  than the last version the server knew is saved again with a fresh one.
+  write that was. A hand edit to `mapper.json` that changes the content
+  without a newer `updatedAt`, or restores an older file, is saved again with
+  a fresh `updatedAt`.
 - **Tile cache**: map tiles, styles, fonts and terrain go through the server
   to a disk cache in `~/.cache/mapper/tiles`. Repeat previews and renders
   don't hit the upstream services again. Requests are throttled to stay

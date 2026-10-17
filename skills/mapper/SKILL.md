@@ -93,12 +93,11 @@ page.
   (default 0.2). `pitch` tilts the view from 0 to 60 (default: the start shot's
   pitch, or 0). Missing `zoom` is the fitted zoom + 3, capped at the theme's
   maximum. `get_project` shows the resolved values as `resolvedFollow`.
-- Computed sea paths are cached in `<project>/.mapper/paths.json`. The cache is
-  safe to delete; Mapper recomputes the paths on the next read, which fetches
-  map tiles again for any tiles no longer on disk. A verified route keeps the
-  OpenFreeMap build it was routed on until its stops or via points change. To
-  re-route every sea leg on the current build, delete
-  `<project>/.mapper/paths.json`.
+- Computed sea paths are cached in `<project>/.mapper/paths.json`. A verified
+  route keeps the OpenFreeMap build it was routed on until its stops or via
+  points change. To re-route every sea leg on the current build, delete the
+  file: Mapper recomputes the paths on the next read, which fetches map tiles
+  again for any tiles no longer on disk.
 - Set the transport per leg with `update_leg`, for example
   `{ "op": "update_leg", "index": 1, "changes": { "symbol": "ferry" } }`. A
   symbol without a mode also sets that transport's usual mode (a ferry sails,

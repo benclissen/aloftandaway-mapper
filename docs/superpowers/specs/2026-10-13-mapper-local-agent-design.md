@@ -394,7 +394,15 @@ describe the layered export unless they say otherwise.
   `minStayMinutes` (default 120). Points are sorted by time first. The run
   then keeps taking points within 1 km of its centre, and two stays back to
   back with centres within 1 km join into one stop. The first and last points
-  are stops too unless a stay covers them. A stop takes the name of a GPX
+  are stops too unless a stay covers them. A log of more than 10,000 points
+  is searched through a copy with the first and last point of each of 5,000
+  equal slices of its time, so the search stays well under a second however
+  the points lie; the stored points aren't changed. A stay found there covers
+  every point from its first to its last and runs on while the points stay
+  within 1 km of its centre. The cost is resolution: a stay arrives up to a
+  slice late (2 min on a week-long log), a trip away shorter than a slice can
+  be missed, and so can a stay less than about a slice over `minStayMinutes`.
+  A stop takes the name of a GPX
   waypoint within 1 km, or `Stop N`. The tool returns each stop's arrival and
   departure times so the agent can name the stops. `stops: 'ends'` gives only
   the first and last points, as `import_gpx` does.

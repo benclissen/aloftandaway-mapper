@@ -328,6 +328,36 @@ describe('findStays', () => {
     expect(stays).toEqual([])
   })
 
+  it('a dense log that keeps the window box on the circle\'s edge is quick', { timeout: 120_000 }, () => {
+    // Sol's case: 10 minutes along 50 m of the equator, then 50 minutes along 50 m of a line 0.7 km north, starting
+    // 0.71 km east, so each start's window is a box that straddles its circle and the outside point found keeps coming
+    // inside. Then one point 2 h 10 min in. Twice the size too.
+    const K = 111.1950802335329
+    const b = Math.sqrt(1 - 0.7 ** 2)
+    const t0 = Date.UTC(2026, 5, 1)
+    for (const N of [50_000, 100_000]) {
+      const points: LngLat[] = []
+      const times: number[] = []
+      for (let i = 0; i < N; i++) {
+        points.push([(0.05 * i) / N / K, 0])
+        times.push(t0 + (600_000 * i) / N)
+      }
+      for (let i = 0; i < N; i++) {
+        points.push([(b + (0.05 * i) / N) / K, 0.7 / K])
+        times.push(t0 + 1_200_000 + (3_000_000 * i) / N)
+      }
+      points.push([b / K, 0.7 / K])
+      times.push(t0 + 7_800_000)
+      let stays: { arrive: number; depart: number }[] = []
+      expect(timed(() => (stays = findStays({ points, times }, 120 * MIN))), `${2 * N + 1} points`).toBeLessThan(2000)
+      // Found in full: from the end of the first part, about 10 minutes in, to the last point.
+      expect(stays).toHaveLength(1)
+      expect(stays[0]!.depart).toBe(t0 + 7_800_000)
+      expect(stays[0]!.arrive).toBeGreaterThan(t0 + 590_000)
+      expect(stays[0]!.arrive).toBeLessThanOrEqual(t0 + 600_000)
+    }
+  })
+
   it('a dense shuttle back to the same quay is quick, and its long call is found', { timeout: 60_000 }, () => {
     // A ferry parked 1 h at the quay, out 5 km and back in 1 h, and so on, with the logger on every 50 ms while parked.
     // Each call is too short to be a stay, but the track is back at the quay when one would have lasted 2 h, so the point

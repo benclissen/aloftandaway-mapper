@@ -207,7 +207,10 @@ reuses the same file. `symbol` sets the transport of every leg, for example
 - `stops: 'stays'` (the default when every point has a time) makes a stop
   wherever the track stayed within 1 km for `minStayMinutes` (default 120),
   plus the first and last points. `stops: 'ends'` makes only the first and last.
-  Lower `minStayMinutes` for short calls, raise it to ignore traffic stops. A
+  Lower `minStayMinutes` for short calls, raise it to ignore traffic stops.
+  A log of more than 10,000 points is searched at a coarser time step (its
+  span over 5,000), so a call only just longer than `minStayMinutes` can be
+  missed: lower it a little if a known call is missing. A
   loop that ends where it began, such as a day out from a hotel, gives two
   stops at the same place and one leg round the loop. Keep both stops. If the
   way out comes back within 2 km of the start before the end, the leg is cut

@@ -213,6 +213,13 @@ class WindowMin {
 }
 
 /**
+ * A log of more than `STAY_POINTS` points is searched for stays through a copy with the first and last point of each of
+ * `STAY_SLICES` equal slices of its time: at most `STAY_POINTS` points, and one more.
+ */
+export const STAY_SLICES = 5_000
+export const STAY_POINTS = 2 * STAY_SLICES
+
+/**
  * Where the track stood still: each maximal run of consecutive points, in time order, all within `STAY_RADIUS_KM` of
  * the run's first point and spanning at least `minStayMs`. Greedy from the left: a run that's long enough is a stay and
  * the search goes on after it; one that isn't moves the start on one point. `start` and `end` index the time-sorted
@@ -223,21 +230,66 @@ class WindowMin {
  * within `STAY_RADIUS_KM` of the stay's centre so far. And a stay that follows another with no point between, and has
  * its centre within `STAY_RADIUS_KM` of the other's, joins it.
  *
+ * A log of more than `STAY_POINTS` (10,000) points is searched through a copy with the first and last point logged in
+ * each of `STAY_SLICES` (5,000) equal slices of its time; the points themselves are never changed. That bounds the
+ * work however the points lie (see `staysIn`), at a cost in resolution. The points either side of a gap in the log
+ * are always in the copy. A stay found in the copy is mapped back onto every point from its first to its last, and
+ * then runs on through the points after while each is within `STAY_RADIUS_KM` of its centre. So a stay arrives within
+ * one slice of where the full search would put it, and its centre is that of all its points. But a trip away shorter
+ * than a slice can go unseen, and a stay that lasts less than about a slice more than `minStayMs` can be missed. A
+ * slice is the log's span over 5,000: 2 min for a week-long log and 8 min for four weeks.
+ */
+export function findStays(track: RecordedTrack, minStayMs: number): Stay[] {
+  const { points, times } = byTime(track)
+  if (!times) throw noTimes(track)
+  const n = points.length
+  const span = n > 0 ? times[n - 1]! - times[0]! : 0
+  // Without `minStayMs` of log, or a positive one, there's nothing to bound.
+  if (n <= STAY_POINTS || span < minStayMs || minStayMs <= 0) return staysIn(points, times, minStayMs)
+  const slice = span / STAY_SLICES
+  const sliceOf = (i: number): number => Math.min(Math.floor((times[i]! - times[0]!) / slice), STAY_SLICES - 1)
+  const kept: number[] = []
+  for (let i = 0; i < n; i++) {
+    const at = sliceOf(i)
+    if (i === 0 || i === n - 1 || sliceOf(i - 1) !== at || sliceOf(i + 1) !== at) kept.push(i)
+  }
+  const found = staysIn(kept.map((i) => points[i]!), kept.map((i) => times[i]!), minStayMs)
+  return found.map((s, k): Stay => {
+    const start = kept[s.start]!
+    // Up to the point before the copy's next one, or the next stay's first.
+    const limit = Math.min(s.end + 1 < kept.length ? kept[s.end + 1]! - 1 : n - 1, (kept[found[k + 1]?.start ?? kept.length] ?? n) - 1)
+    const ref = points[start]![0]
+    let sumLng = 0
+    let sumLat = 0
+    let end = start - 1
+    const take = (): void => {
+      end++
+      sumLng += unwrapLng(ref, points[end]![0])
+      sumLat += points[end]![1]
+    }
+    while (end < kept[s.end]!) take()
+    while (end < limit && haversineKm([sumLng / (end + 1 - start), sumLat / (end + 1 - start)], points[end + 1]!) <= STAY_RADIUS_KM) take()
+    const count = end + 1 - start
+    return { start, end, at: [wrapLng(sumLng / count), sumLat / count], arrive: times[start]!, depart: times[end]! }
+  })
+}
+
+/**
+ * The stays in `points`, already in time order, with `times`, as `findStays` describes them.
+ *
  * Speed: a start is a stay exactly when every point from it up to the first one `minStayMs` later (its window) is
  * within the radius, so only that window is looked at, never the points beyond. The search ends when less than
  * `minStayMs` of log is left. The windows slide forward with the start, and four deques keep the box round each one's
  * points, so each start costs O(1) when its box settles it: inside the circle, it's a stay; reaching beyond the radius
  * north, south, east or west, a point in it is outside. Only a window whose box straddles the circle's edge is checked
  * point by point, and the outside point found is tried first on the next start. A stay's points are scanned once and
- * consumed, and its centre is kept as running sums. So a log costs O(points), a dense stop shorter than `minStayMs`
- * included. Only a window that fills the box but not the circle for most of `minStayMs`, at each of many starts in a
- * row, costs as much as its own points. Each test is a flat-earth sum of squares on typed arrays, exact to well under
- * 1% at 1 km; only a pair within 2% of the radius falls back to `haversineKm`, and the boxes keep that 2% margin, so
- * they decide just as the tests would.
+ * consumed, and its centre is kept as running sums. So most logs cost O(points), but windows that straddle the edge at
+ * start after start cost up to O(points²). `findStays` keeps that to `STAY_POINTS` points, at most 50 million tests,
+ * well under a second. Each test is a flat-earth sum of squares on typed arrays, exact to well under 1%
+ * at 1 km; only a pair within 2% of the radius falls back to `haversineKm`, and the boxes keep that 2% margin, so they
+ * decide just as the tests would.
  */
-export function findStays(track: RecordedTrack, minStayMs: number): Stay[] {
-  const { points, times } = byTime(track)
-  if (!times) throw noTimes(track)
+function staysIn(points: LngLat[], times: number[], minStayMs: number): Stay[] {
   const n = points.length
   const rad = Math.PI / 180
   const lng = new Float64Array(n)

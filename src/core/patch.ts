@@ -414,6 +414,15 @@ function checkKeys(patch: Record<string, unknown>, forbidden: Map<string, string
  * `ProjectError`.
  */
 export function applyPatch(project: Project, patch: ProjectPatch): Project {
+  return fitLength(parseProject(patchSteps(project, patch)))
+}
+
+/**
+ * `applyPatch` before the result is checked: `set`, then `sceneSet`, then each op, in order, with no check in between,
+ * since the patch is all or nothing. `visit` is called with the state each op runs on, before it runs, and must not
+ * keep or change it. `invertPatch` uses it to invert each op against what applyPatch would run it on.
+ */
+export function patchSteps(project: Project, patch: ProjectPatch, visit?: (state: Project, op: PatchOp) => void): Project {
   const { ops, scene: ref } = parseOrThrow(ProjectPatchSchema, patch)
   // Read `set` and `sceneSet` from the caller's object: Zod's copy silently drops a `__proto__` key, and we want it
   // rejected.
@@ -440,8 +449,9 @@ export function applyPatch(project: Project, patch: ProjectPatch): Project {
     edit((scene) => mergePatch(scene, merged) as Scene)
   }
   ops?.forEach((op, i) => {
+    visit?.(work, op)
     if (isSceneOp(op)) work = applySceneOp(work, op, i, newStopId)
     else edit((scene) => applyOp(scene, op, i), i)
   })
-  return fitLength(parseProject(work))
+  return work
 }

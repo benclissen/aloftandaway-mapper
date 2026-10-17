@@ -1,4 +1,4 @@
-import { applyPatch, isSceneOp, legChangesFor, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
+import { applyPatch, isSceneOp, legChangesFor, patchSteps, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
 import { resolveScene, sceneTitleOf } from './scenes.js'
 import type { Project } from './schema.js'
 
@@ -122,14 +122,10 @@ export function invertPatch(before: Project, patch: ProjectPatch): ProjectPatch 
       inverse.sceneSet.timing = { ...timing, travel }
     }
   }
-  // Invert each op against the state it ran on, then undo them last to first.
-  let state = before
+  // Invert each op against the state applyPatch runs it on, after `sceneSet` and the ops before it, then undo them last
+  // to first. Those states aren't checked on their own: only the whole patch's result is.
   const inverted: PatchOp[] = []
-  for (const op of ops) {
-    inverted.push(invertOp(state, op, sceneId))
-    // A scene op doesn't need the chosen scene, which it may have removed.
-    state = applyPatch(state, isSceneOp(op) ? { ops: [op] } : { scene: sceneId, ops: [op] })
-  }
+  patchSteps(before, { ...patch, scene: sceneId }, (state, op) => inverted.push(invertOp(state, op, sceneId)))
   if (inverted.length) inverse.ops = inverted.reverse()
   return inverse
 }

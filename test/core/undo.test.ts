@@ -234,6 +234,16 @@ describe('invertPatch with a fixed length', () => {
     roundTrip(p, { sceneSet: { timing: { length: 9, holdEnd: 1 } }, ops: [{ op: 'update_stop', id: id(p, 1), changes: { pause: 2 } }] })
   })
 
+  test('undo of a longer length and a pause that only fits it', () => {
+    // The pause fits only the new length, so the ops are inverted against the scene with the length already set, as
+    // applyPatch runs them.
+    const p = applyPatch(free(), { sceneSet: { timing: { length: 8 } } })
+    expect(timing(p)).toEqual({ holdStart: 1, travel: 5, holdEnd: 2, length: 8 })
+    const patch: ProjectPatch = { sceneSet: { timing: { length: 12 } }, ops: [{ op: 'update_stop', id: id(p, 1), changes: { pause: 6 } }] }
+    expect(timing(applyPatch(p, patch))).toEqual({ holdStart: 1, travel: 3, holdEnd: 2, length: 12 })
+    roundTrip(p, patch)
+  })
+
   test('undo of a pause change on a fixed-length scene', () => {
     const p = applyPatch(free(), { sceneSet: { timing: { length: 8 } } })
     const patch: ProjectPatch = { ops: [{ op: 'update_stop', id: id(p, 1), changes: { pause: 2 } }] }

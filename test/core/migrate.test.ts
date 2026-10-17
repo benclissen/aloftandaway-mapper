@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { ProjectError, parseProject } from '../../src/core/index.js'
+import { ProjectError, parseProject, upgradeV2 } from '../../src/core/index.js'
 
 const ID = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
 
@@ -44,7 +44,7 @@ describe('version 1 upgrade', () => {
   test('upgrades a version 1 project to one scene', () => {
     const v1 = v1Project()
     const project = parseProject(JSON.parse(JSON.stringify(v1)))
-    expect(project.schemaVersion).toBe(2)
+    expect(project.schemaVersion).toBe(3)
     expect(project.id).toBe(ID)
     expect(project.name).toBe('Aegean')
     expect(project.createdAt).toBe(v1.createdAt)
@@ -80,12 +80,44 @@ describe('version 1 upgrade', () => {
   })
 
   test('rejects a newer schema version', () => {
-    const e = failure(() => parseProject({ ...v1Project(), schemaVersion: 3 }))
+    const e = failure(() => parseProject({ ...v1Project(), schemaVersion: 4 }))
     expect(e.issues).toEqual([
       {
         path: ['schemaVersion'],
-        message: 'This project was made by a newer version of Mapper (schema version 3). Update Mapper to open it.',
+        message: 'This project was made by a newer version of Mapper (schema version 4). Update Mapper to open it.',
       },
     ])
+  })
+})
+
+describe('version 2 upgrade', () => {
+  function v2Project(): Record<string, unknown> {
+    const v1 = v1Project()
+    const upgraded = parseProject(JSON.parse(JSON.stringify(v1))) as unknown as Record<string, unknown>
+    return { ...JSON.parse(JSON.stringify(upgraded)), schemaVersion: 2 }
+  }
+
+  test('a v2 file opens as v3', () => {
+    const v2 = v2Project()
+    const project = parseProject(JSON.parse(JSON.stringify(v2)))
+    expect(project.schemaVersion).toBe(3)
+    expect({ ...project, schemaVersion: 2 }).toEqual(v2)
+  })
+
+  test('a v1 file ends as v3', () => {
+    expect(parseProject(v1Project()).schemaVersion).toBe(3)
+  })
+
+  test('upgradeV2 changes only the version, on a copy', () => {
+    const v2 = v2Project()
+    const out = upgradeV2(v2) as Record<string, unknown>
+    expect(out).toEqual({ ...v2, schemaVersion: 3 })
+    expect(v2.schemaVersion).toBe(2)
+  })
+
+  test('a broken v2 file reports its issues against the current schema', () => {
+    const v2 = v2Project()
+    v2.name = 5
+    expect(failure(() => parseProject(v2)).issues[0]!.path).toEqual(['name'])
   })
 })

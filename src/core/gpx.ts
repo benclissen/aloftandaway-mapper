@@ -2,7 +2,7 @@ import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { haversineKm, toXY, type XY } from './geo.js'
 import { setStops } from './patch.js'
 import { resolveScene, type SceneRef } from './scenes.js'
-import { MAX_LAT, parseProject, type LegMode, type LngLat, type Project, type SymbolKind, type ViaPoint } from './schema.js'
+import { MAX_LAT, parseProject, type InputLegMode, type LngLat, type Project, type SymbolKind, type ViaPoint } from './schema.js'
 
 export interface GpxLine {
   kind: 'track' | 'route'
@@ -292,7 +292,7 @@ function waypointsOnly(gpx: Gpx): GpxImport {
 export function importGpx(
   project: Project,
   imported: GpxImport,
-  opts: { scene?: SceneRef; legMode?: LegMode; symbol?: SymbolKind },
+  opts: { scene?: SceneRef; legMode?: InputLegMode; symbol?: SymbolKind },
 ): Project {
   const legMode = opts.legMode ?? 'line'
   const last = imported.stops.length - 1

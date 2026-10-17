@@ -12,7 +12,7 @@ import {
   gpxToStops,
   importGpx,
   isSceneOp,
-  LegModeSchema,
+  InputLegModeSchema,
   MAP_CREDIT,
   OutputSchema,
   parseGpx,
@@ -488,7 +488,7 @@ export const TOOLS: ToolDef<any>[] = [
       folder,
       scene: sceneInput,
       stops: z.array(StopInputSchema),
-      legMode: LegModeSchema.optional().describe("Mode of every new leg; a stop's own legMode wins"),
+      legMode: InputLegModeSchema.optional().describe("Mode of every new leg; a stop's own legMode wins"),
       replace: z.boolean().optional().describe('Default true; false appends to the existing stops'),
     }),
     async run({ folder, scene: ref, stops, legMode, replace }) {
@@ -507,7 +507,7 @@ export const TOOLS: ToolDef<any>[] = [
       path: z.string().describe('Absolute path of a .gpx file, at most 20 MB'),
       track: z.union([z.number().int().min(1), z.string()]).optional().describe('Track or route, by 1-based index or name'),
       stops: z.enum(['waypoints', 'ends']).optional().describe("Default 'ends'"),
-      legMode: LegModeSchema.optional().describe("Mode of every leg; default 'line'"),
+      legMode: InputLegModeSchema.optional().describe("Mode of every leg; default 'line'"),
       symbol: SymbolKindSchema.optional().describe('Symbol of every leg'),
     }),
     async run({ folder, scene: ref, path: file, track, stops, legMode, symbol }) {

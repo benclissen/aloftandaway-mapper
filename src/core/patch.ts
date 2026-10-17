@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import {
-  LegModeSchema,
+  InputLegModeSchema,
   LegSchema,
   LngLatSchema,
   SymbolKindSchema,
@@ -238,7 +238,7 @@ export function setStops(
   args: { scene?: SceneRef; stops: StopInput[]; legMode?: LegMode; replace?: boolean },
 ): Project {
   const inputs = parseOrThrow(z.array(StopInputSchema), args.stops, ['stops'])
-  const legMode = parseOrThrow(LegModeSchema.optional(), args.legMode, ['legMode'])
+  const legMode = parseOrThrow(InputLegModeSchema.optional(), args.legMode, ['legMode'])
   const work = structuredClone(project)
   const { scene, index: at } = resolveScene(work, args.scene)
   const old = args.replace === false ? { stops: scene.stops, legs: scene.legs } : { stops: [], legs: [] }

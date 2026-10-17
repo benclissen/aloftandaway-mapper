@@ -106,7 +106,7 @@ describe('createProject and loadProject', () => {
   })
 
   test('a file from a newer Mapper says to update Mapper', async () => {
-    const newer = { ...JSON.parse(JSON.stringify(greekIslands())), schemaVersion: 3 }
+    const newer = { ...JSON.parse(JSON.stringify(greekIslands())), schemaVersion: 4 }
     await writeFile(path.join(tmp, PROJECT_FILE), JSON.stringify(newer))
     const error = await failure(loadProject(tmp))
     expect(error).toBeInstanceOf(StoreError)
@@ -116,7 +116,7 @@ describe('createProject and loadProject', () => {
 })
 
 describe('version 1 files', () => {
-  test('load upgrades in memory, and the next save writes version 2', async () => {
+  test('load upgrades in memory, and the next save writes version 3', async () => {
     const v2 = greekIslands()
     const scene = sceneOf(v2)
     const v1 = {
@@ -137,7 +137,7 @@ describe('version 1 files', () => {
     await writeFile(file, JSON.stringify(v1))
 
     const loaded = await loadProject(tmp)
-    expect(loaded.schemaVersion).toBe(2)
+    expect(loaded.schemaVersion).toBe(3)
     expect(sceneOf(loaded).id).toBe(v2.id)
     expect(sceneOf(loaded).legs[0]!.via).toEqual([{ at: [24, 37.5] }])
     // Loading alone leaves the file as it was.
@@ -145,7 +145,7 @@ describe('version 1 files', () => {
 
     await mutateProject(tmp, (p) => ({ ...p, name: 'Saved' }))
     const written = JSON.parse(await readFile(file, 'utf8'))
-    expect(written.schemaVersion).toBe(2)
+    expect(written.schemaVersion).toBe(3)
     expect(written).not.toHaveProperty('stops')
     expect(written.scenes).toHaveLength(1)
     expect(written.scenes[0].id).toBe(v2.id)

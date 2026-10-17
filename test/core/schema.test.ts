@@ -14,6 +14,9 @@ import {
   parseProject,
   SYMBOLS,
   defaultModeFor,
+  InputLegModeSchema,
+  StopInputSchema,
+  TRACK_ID,
 } from '../../src/core/index.js'
 import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
 
@@ -27,7 +30,7 @@ describe('project schema', () => {
 
   test('default project carries the documented defaults and no stops', () => {
     const p = emptyProject()
-    expect(p.schemaVersion).toBe(2)
+    expect(p.schemaVersion).toBe(3)
     expect(p.scenes).toHaveLength(1)
     const scene = sceneOf(p)
     expect(scene.id).toBe(p.id)
@@ -241,6 +244,73 @@ describe('project schema', () => {
     scene.stops[1]!.sharp = true
     scene.legs[0] = { mode: 'line', via: [{ at: [24, 37], sharp: true }, { at: [24.5, 37.2] }] }
     expect(parseProject(JSON.parse(JSON.stringify(p)))).toEqual(p)
+  })
+})
+
+describe('schema version 3', () => {
+  function withLeg(leg: unknown): unknown {
+    const p = greekIslands()
+    sceneOf(p).legs[0] = leg as never
+    return JSON.parse(JSON.stringify(p))
+  }
+  function failureOf(json: unknown): ProjectError {
+    try {
+      parseProject(json)
+    } catch (e) {
+      expect(e).toBeInstanceOf(ProjectError)
+      return e as ProjectError
+    }
+    throw new Error('expected the call to throw')
+  }
+
+  test('a track leg needs a track id', () => {
+    const e = failureOf(withLeg({ mode: 'track', via: [] }))
+    expect(e.issues).toContainEqual({
+      path: ['scenes', 0, 'legs', 0, 'track'],
+      message: 'a recorded track leg needs a track; import one with import_track',
+    })
+  })
+
+  test('a track leg has no via points', () => {
+    const e = failureOf(withLeg({ mode: 'track', track: 'abcdef012345', via: [{ at: [1, 2] }] }))
+    expect(e.issues).toContainEqual({
+      path: ['scenes', 0, 'legs', 0, 'via'],
+      message: "a recorded track leg can't have via points; remove them or change the mode",
+    })
+  })
+
+  test('a track leg with a track and no via parses', () => {
+    const leg = { mode: 'track', track: 'abcdef012345', via: [] }
+    expect(sceneOf(parseProject(withLeg(leg))).legs[0]).toEqual(leg)
+  })
+
+  test('track may stay on a line leg', () => {
+    const leg = { mode: 'line', track: 'abcdef012345', via: [] }
+    expect(sceneOf(parseProject(withLeg(leg))).legs[0]).toEqual(leg)
+  })
+
+  test('a track id is 12 hex characters', () => {
+    expect(() => parseProject(withLeg({ mode: 'line', track: 'ABC', via: [] }))).toThrow(/track/)
+    expect(() => parseProject(withLeg({ mode: 'line', track: 'ABCDEF012345', via: [] }))).toThrow(/track/)
+    expect(TRACK_ID.test('abcdef012345')).toBe(true)
+    expect(TRACK_ID.test('abcdef01234')).toBe(false)
+  })
+
+  test('timing.length must be positive', () => {
+    const withLength = (length: number): unknown => {
+      const p = greekIslands()
+      sceneOf(p).timing = { ...sceneOf(p).timing, length }
+      return JSON.parse(JSON.stringify(p))
+    }
+    expect(() => parseProject(withLength(0))).toThrow(/length/)
+    expect(sceneOf(parseProject(withLength(8))).timing.length).toBe(8)
+  })
+
+  test('set_stops refuses legMode track', () => {
+    const stop = { name: 'A', at: [1, 2] }
+    expect(StopInputSchema.safeParse({ ...stop, legMode: 'track' }).success).toBe(false)
+    expect(StopInputSchema.safeParse({ ...stop, legMode: 'sea' }).success).toBe(true)
+    expect(InputLegModeSchema.options).toEqual(['sea', 'air', 'land', 'line'])
   })
 })
 

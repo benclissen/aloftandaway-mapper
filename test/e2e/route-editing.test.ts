@@ -228,7 +228,7 @@ test('a version 1 file opens in the studio and is saved as version 2', async () 
     expect(JSON.parse(await readFile(file, 'utf8')).schemaVersion).toBe(1)
 
     await page.getByTestId('leg-symbol-1').selectOption('ferry')
-    await expect.poll(async () => JSON.parse(await readFile(file, 'utf8')).schemaVersion, { timeout: 3000 }).toBe(2)
+    await expect.poll(async () => JSON.parse(await readFile(file, 'utf8')).schemaVersion, { timeout: 3000 }).toBe(3)
     const saved = JSON.parse(await readFile(file, 'utf8'))
     expect(saved.scenes[0].legs[0].via).toEqual([{ at: [24.4, 37.9] }])
     expect(saved.scenes[0].legs[0].symbol).toBe('cruise-ship')

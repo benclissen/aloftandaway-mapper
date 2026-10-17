@@ -25,7 +25,7 @@ export const SYMBOL_LABELS: Record<SymbolKind, string> = {
   balloon: 'Hot air balloon',
 }
 
-export const MODE_LABELS: Record<LegMode, string> = { line: 'Line', land: 'Land', sea: 'Sea', air: 'Air' }
+export const MODE_LABELS: Record<LegMode, string> = { line: 'Line', land: 'Land', sea: 'Sea', air: 'Air', track: 'Recorded track' }
 
 export const THEME_NAMES: Record<ThemeId, string> = {
   aloftandaway: 'Aloft & Away',

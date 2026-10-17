@@ -8,14 +8,18 @@ import {
   buildTimeline,
   formatTimecode,
   frameSize,
+  chooseLine,
   GpxError,
   gpxToStops,
   importGpx,
+  importTrack,
   isSceneOp,
   InputLegModeSchema,
   MAP_CREDIT,
   OutputSchema,
   parseGpx,
+  parseTrackCsv,
+  recordedFromGpx,
   ProjectError,
   ProjectPatchSchema,
   resolveFollow,
@@ -28,6 +32,8 @@ import {
   setStops,
   StopInputSchema,
   SymbolKindSchema,
+  TrackError,
+  trackToStops,
   unwrapLng,
   validateProject,
   zodIssues,
@@ -38,6 +44,9 @@ import {
   type SceneRef,
   type SeaPaths,
   type GpxImport,
+  type LngLat,
+  type RecordedTrack,
+  type TrackImport,
   type Shot,
 } from '../core/index.js'
 import { contactSheet, PreviewAtSchema, previewFrame } from '../render/preview.js'
@@ -46,6 +55,7 @@ import type { RenderResult } from '../render/render.js'
 import { resolveSeaPaths } from '../server/paths.js'
 import { fixOf } from '../server/errors.js'
 import { getServer } from '../server/server.js'
+import { writeTrack } from '../server/tracks.js'
 import { assertAbsolute, createProject, loadProject, mutateProject } from '../server/store.js'
 
 /** An error the agent can act on. `fix` says what to do next. */
@@ -205,14 +215,16 @@ function scenesLine(project: Project): string {
 
 // GPX
 
-const MAX_GPX_BYTES = 20 * 1024 * 1024
+const MAX_FILE_BYTES = 20 * 1024 * 1024
 
-async function readGpxFile(file: string): Promise<string> {
+/** The text of a local file the agent named: absolute, one of `exts`, and at most 20 MB. `kind` words the messages. */
+async function readLocalFile(file: string, kind: string, exts: string[], tooBigFix: string): Promise<string> {
   if (!path.isAbsolute(file)) {
-    throw new ToolError(`The GPX path '${file}' is not absolute.`, 'Pass the full path to the file, starting with /.')
+    throw new ToolError(`The ${kind} path '${file}' is not absolute.`, 'Pass the full path to the file, starting with /.')
   }
-  if (path.extname(file).toLowerCase() !== '.gpx') {
-    throw new ToolError(`'${path.basename(file)}' does not end in .gpx.`, 'Choose a GPX file, whose name ends in .gpx.')
+  if (!exts.includes(path.extname(file).toLowerCase())) {
+    const names = exts.join(' or ')
+    throw new ToolError(`'${path.basename(file)}' does not end in ${names}.`, `Choose a ${kind} file, whose name ends in ${names}.`)
   }
   let size: number
   try {
@@ -220,13 +232,10 @@ async function readGpxFile(file: string): Promise<string> {
     if (!info.isFile()) throw new Error('not a file')
     size = info.size
   } catch {
-    throw new ToolError(`There is no GPX file at ${file}.`, 'Check the path. It must be absolute and point to a file.')
+    throw new ToolError(`There is no ${kind} file at ${file}.`, 'Check the path. It must be absolute and point to a file.')
   }
-  if (size > MAX_GPX_BYTES) {
-    throw new ToolError(
-      `${path.basename(file)} is ${(size / 1024 / 1024).toFixed(1)} MB, more than the 20 MB limit.`,
-      'Trim the track in your GPS app or route planner, then export it again.',
-    )
+  if (size > MAX_FILE_BYTES) {
+    throw new ToolError(`${path.basename(file)} is ${(size / 1024 / 1024).toFixed(1)} MB, more than the 20 MB limit.`, tooBigFix)
   }
   try {
     return await readFile(file, 'utf8')
@@ -235,6 +244,12 @@ async function readGpxFile(file: string): Promise<string> {
   }
 }
 
+const readGpxFile = (file: string): Promise<string> =>
+  readLocalFile(file, 'GPX', ['.gpx'], 'Trim the track in your GPS app or route planner, then export it again.')
+
+const readTrackFile = (file: string): Promise<string> =>
+  readLocalFile(file, 'track', ['.gpx', '.csv'], 'Trim the track in your GPS app or logger, then export it again.')
+
 function importLine(imported: GpxImport): string {
   const { line, stops, skipped } = imported
   const source = line ? `${line.kind}${line.name ? ` "${line.name}"` : ''}` : 'waypoints'
@@ -242,6 +257,11 @@ function importLine(imported: GpxImport): string {
   if (!skipped.length) return `${head}.`
   const list = skipped.map((s) => `${s.name}, ${s.km.toFixed(1)} km`).join('; ')
   return `${head}; skipped ${plural(skipped.length, 'waypoint')} more than 2 km from the track (${list}).`
+}
+
+function trackLine(imported: TrackImport, minStayMinutes: number): string {
+  const { recorded, points, stops, stays } = imported
+  return `Imported a recorded track: ${recorded} points kept as ${points.length}, ${stops.length} stops (${stays} stays of ${minStayMinutes} min or more).`
 }
 
 // Errors
@@ -525,6 +545,64 @@ export const TOOLS: ToolDef<any>[] = [
       return {
         summary: result.summary,
         data: { ...result.data, import: { line: imported.line, stops: imported.stops.length, skipped: imported.skipped } },
+      }
+    },
+  }),
+
+  tool({
+    name: 'import_track',
+    description:
+      "Read a recorded GPS or AIS track from a local .gpx or .csv (lng,lat,time columns) into the scene's stops, replacing them. Legs follow the recorded points exactly; the track is kept in tracks/ in the project folder. stops: 'stays' (default when every point has a time) puts a stop wherever the track stayed within 1 km for minStayMinutes (default 120); 'ends' uses the first and last points. Stops come back with arrival and departure times; rename them with update_stop. symbol sets every leg. path and folder must be absolute.",
+    input: z.strictObject({
+      folder,
+      scene: sceneInput,
+      path: z.string().describe('Absolute path of a .gpx or .csv file, at most 20 MB'),
+      track: z.union([z.number().int().min(1), z.string()]).optional().describe('GPX only: track or route, by 1-based index or name'),
+      stops: z.enum(['stays', 'ends']).optional().describe("Default 'stays' when every point has a time, otherwise 'ends'"),
+      minStayMinutes: z.number().int().min(1).default(120).describe('Shortest stay that makes a stop, in minutes'),
+      symbol: SymbolKindSchema.optional().describe('Symbol of every leg'),
+    }),
+    async run({ folder, scene: ref, path: file, track, stops, minStayMinutes, symbol }) {
+      const text = await readTrackFile(file)
+      let recorded: RecordedTrack
+      let waypoints: { name: string; at: LngLat }[] | undefined
+      let skippedRows = 0
+      let imported: TrackImport
+      try {
+        if (path.extname(file).toLowerCase() === '.gpx') {
+          const gpx = parseGpx(text)
+          const line = chooseLine(gpx, track)
+          if (!line) throw new GpxError('This GPX file has no track or route.', 'Choose a file with a track, or use import_gpx for waypoints.')
+          recorded = recordedFromGpx(line)
+          waypoints = gpx.waypoints
+        } else {
+          const { skippedRows: skipped, ...csv } = parseTrackCsv(text)
+          recorded = csv
+          skippedRows = skipped
+        }
+        imported = trackToStops(recorded, { stops: stops ?? (recorded.times ? 'stays' : 'ends'), minStayMinutes, waypoints })
+      } catch (e) {
+        if (e instanceof GpxError || e instanceof TrackError) throw new ToolError(e.message, e.fix)
+        throw e
+      }
+      // The track file goes down first, so the project never names a file that isn't there.
+      const id = await writeTrack(folder, { name: recorded.name, points: imported.points })
+      const project = await mutateProject(folder, (p) => importTrack(p, { scene: ref, stops: imported.stops.map(({ name, at }) => ({ name, at })), track: id, symbol }))
+      const result = await withChange(folder, project, resolveScene(project, ref).scene.id, { note: trackLine(imported, minStayMinutes) })
+      return {
+        summary: result.summary,
+        data: {
+          ...result.data,
+          import: {
+            track: id,
+            file: `tracks/${id}.json`,
+            recorded: imported.recorded,
+            points: imported.points.length,
+            skippedRows,
+            ...(recorded.badTimes ? { badTimes: recorded.badTimes } : {}),
+            stops: imported.stops,
+          },
+        },
       }
     },
   }),

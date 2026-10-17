@@ -262,7 +262,8 @@ export interface GpxImport {
   skipped: { name: string; km: number }[]
 }
 
-function chooseLine(gpx: Gpx, track: number | string | undefined): GpxLine | undefined {
+/** The track or route `track` picks (the first when it's missing), or undefined when the file has none. */
+export function chooseLine(gpx: Gpx, track: number | string | undefined): GpxLine | undefined {
   if (gpx.lines.length === 0) return undefined
   if (track === undefined) return gpx.lines[0]
   const found = typeof track === 'number' ? gpx.lines[track - 1] : (gpx.lines.find((l) => l.name === track) ?? gpx.lines.find((l) => l.name?.toLowerCase() === track.toLowerCase()))

@@ -769,6 +769,37 @@ describe('track legs', () => {
     expect(three[2]!.track!.stopGapKm![0]).toBe(three[1]!.track!.stopGapKm![1])
   })
 
+  test('a stop off a segment keeps a bend more than 100 m along from where it is cut', () => {
+    // The corner [0.02, 0] is 556 m along the track from where the inserted stop projects, [0.015, 0], though only
+    // 80 m further from the stop. The leg is cut at the projection, and the corner stays in the leg after it.
+    const logged: LngLat[] = [
+      ...Array.from({ length: 21 }, (_, k): LngLat => [k / 1000, 0]),
+      ...Array.from({ length: 100 }, (_, k): LngLat => [0.02, (k + 1) / 1000]),
+    ]
+    const imported = trackToStops({ points: logged }, { stops: 'ends', minStayMinutes: 120 })
+    expect(imported.points).toEqual([[0, 0], [0.02, 0], [0.02, 0.1]])
+    const seaPaths: SeaPaths = { [trackKey(TRACK)]: { status: 'ok', path: imported.points, knots: [] } }
+    const base = importTrack(greekIslands(), { stops: imported.stops, track: TRACK })
+    const p = applyPatch(base, { ops: [{ op: 'insert_stop', index: 1, stop: { name: 'Off', at: [0.015, -0.017] } }] })
+    expect(buildRoute(sceneOf(p), seaPaths).legs.map((l) => l.path)).toEqual([
+      [[0, 0], [0.015, -0.017]],
+      [[0.015, -0.017], [0.02, 0], [0.02, 0.1]],
+    ])
+    // Dragged to 220 m short of the corner, the corner still stays; dragged to 50 m short, the cut moves onto it.
+    const id = sceneOf(p).stops[1]!.id
+    const drag = (at: LngLat) => buildRoute(sceneOf(applyPatch(p, { ops: [{ op: 'update_stop', id, changes: { at } }] })), seaPaths).legs
+    expect(drag([0.018, -0.01]).map((l) => l.path)).toEqual([
+      [[0, 0], [0.018, -0.01]],
+      [[0.018, -0.01], [0.02, 0], [0.02, 0.1]],
+    ])
+    const snapped = drag([0.01955, -0.01])
+    expect(snapped.map((l) => l.path)).toEqual([
+      [[0, 0], [0.01955, -0.01]],
+      [[0.01955, -0.01], [0.02, 0.1]],
+    ])
+    expect(snapped[0]!.track!.stopGapKm![1]).toBeCloseTo(haversineKm([0.01955, -0.01], [0.02, 0]), 9)
+  })
+
   test('a stop inserted on a thinned segment across 180° keeps the bend after it', () => {
     // The same L shape from 179.5° E, logged with each longitude in [-180, 180].
     const wrap = (lng: number): number => ((lng + 180) % 360) - 180

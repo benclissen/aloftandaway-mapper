@@ -493,7 +493,7 @@ export interface TrackCut {
 
 type Cut = TrackCut & { km: number }
 
-/** A cut moves onto an end of its segment when that point is less than this much further from the stop. */
+/** A cut this close to a point along the track is taken at the point. */
 const SNAP_KM = 0.1
 
 /** Where `cut` lies. A point exactly; between points, its longitude may be off by whole turns. */
@@ -513,7 +513,7 @@ const before = (a: TrackCut, b: TrackCut): boolean => a.index < b.index || (a.in
  * Where a leg should end at `at` on `points`, from the cut `lo` on: the nearest place in the first run of segments
  * that come within `TRACK_NEAR_KM` of it, or the nearest place from `lo` on when none comes that close. With no
  * segment from `lo` on, the last point. Distances are to the segment, so a stop on a long thinned segment is cut
- * there, not at a point kilometres away. `snap` then moves the cut onto a point that's nearly as near.
+ * there, not at a point kilometres away. `snap` then moves a cut within 100 m of a point onto it.
  *
  * `leaving`, the cut the leg leaves from, is given when searching for a leg's end. The track may then be inside
  * `at`'s circle already at `lo`, because the two ends are close, and that run needs care:
@@ -588,18 +588,23 @@ function cutAt(points: LngLat[], at: LngLat, lo: TrackCut, leaving?: TrackCut): 
 }
 
 /**
- * `cut` moved onto the nearer end of its segment when that point is less than `SNAP_KM` further from `at`, so a stop
- * by a logged point is cut there, and no sliver of track is left between the cut and the point. Only a point from
- * `lo` on is taken. The distance is great-circle.
+ * `cut` moved onto the nearer end of its segment when that point is within `SNAP_KM` of it along the track, so a stop
+ * by a logged point is cut there, and no sliver of track is left between the cut and the point. A point further along
+ * stays on its side of the cut, however near the stop it is. Only a point from `lo` on is taken. The distance is
+ * great-circle.
  */
 function snap(points: LngLat[], at: LngLat, lo: TrackCut, cut: Cut): Cut {
   if (cut.t === 0) return { ...cut, km: haversineKm(at, points[cut.index]!) }
-  const km = haversineKm(at, cutPoint(points, cut))
-  let best: Cut = { ...cut, km }
+  const place = cutPoint(points, cut)
+  let best: Cut = { ...cut, km: haversineKm(at, place) }
+  let bestAlong = SNAP_KM
   for (const index of [cut.index, cut.index + 1]) {
     if (before({ index, t: 0 }, lo)) continue
-    const vertexKm = haversineKm(at, points[index]!)
-    if (vertexKm - km < SNAP_KM && (best.t !== 0 || vertexKm < best.km)) best = { index, t: 0, km: vertexKm }
+    const along = haversineKm(place, points[index]!)
+    if (along < bestAlong) {
+      best = { index, t: 0, km: haversineKm(at, points[index]!) }
+      bestAlong = along
+    }
   }
   return best
 }

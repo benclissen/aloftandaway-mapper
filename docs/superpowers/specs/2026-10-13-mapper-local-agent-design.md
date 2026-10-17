@@ -402,8 +402,8 @@ describe the layered export unless they say otherwise.
   each stop: the first run of segments within `TRACK_NEAR_KM` (2) of the stop,
   then the nearest place in that run. A cut can fall between two kept points,
   so a stop on a long thinned segment is cut where it is and the points either
-  side stay in the legs either side; a cut within 100 m of a kept point is
-  taken at the point. A leg draws its two stops and every kept point strictly
+  side stay in the legs either side; a cut within 100 m of a kept point, along
+  the track, is taken at the point. A leg draws its two stops and every kept point strictly
   between its cuts. The first run handles a ship that calls
   at one port twice and a cruise that ends where it started. A leg that
   follows another leg of the same track starts where that leg ended, and its

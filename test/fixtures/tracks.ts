@@ -101,10 +101,10 @@ const KM_PER_DEG = M_PER_DEG / 1000
 /**
  * A day loop logged once a minute: `stayMinutes` at home (default 180), a drive once round a 40 km circle that starts
  * and ends at home, in `samples` steps (default 200), then `stayMinutes` at home again. The drive gives `samples + 1`
- * points, the first and last at home; with `stayMinutes: 0` there are no stays. Stays jitter by ±50 m and the drive by
- * ±20 m.
+ * points, the first and last at home; with `stayMinutes: 0` there are no stays. Stays jitter by ±`stayJitterM` (default
+ * 50 m), like a logger left parked, and the drive by ±20 m.
  */
-export function syntheticLoop(opts: { seed?: number; stayMinutes?: number; samples?: number } = {}): {
+export function syntheticLoop(opts: { seed?: number; stayMinutes?: number; samples?: number; stayJitterM?: number } = {}): {
   csv: string
   points: LngLat[]
   home: LngLat
@@ -114,11 +114,12 @@ export function syntheticLoop(opts: { seed?: number; stayMinutes?: number; sampl
   const rand = lcg(opts.seed ?? 1)
   const stayMinutes = opts.stayMinutes ?? 180
   const samples = opts.samples ?? 200
+  const stayJitterM = opts.stayJitterM ?? 50
   const lengthKm = 40
   const r = lengthKm / (2 * Math.PI)
   const cos = Math.cos((HOME[1] * Math.PI) / 180)
   const points: LngLat[] = []
-  for (let i = 0; i < stayMinutes; i++) points.push(jitter(rand, HOME, 50))
+  for (let i = 0; i < stayMinutes; i++) points.push(jitter(rand, HOME, stayJitterM))
   // The circle's centre is r km north of home, so home is on it, and the drive goes round it clockwise from the south.
   for (let k = 0; k <= samples; k++) {
     const a = (2 * Math.PI * k) / samples
@@ -126,7 +127,7 @@ export function syntheticLoop(opts: { seed?: number; stayMinutes?: number; sampl
     const north = r - r * Math.cos(a)
     points.push(jitter(rand, [HOME[0] + east / (KM_PER_DEG * cos), HOME[1] + north / KM_PER_DEG], 20))
   }
-  for (let i = 0; i < stayMinutes; i++) points.push(jitter(rand, HOME, 50))
+  for (let i = 0; i < stayMinutes; i++) points.push(jitter(rand, HOME, stayJitterM))
 
   const f = (n: number): string => n.toFixed(6)
   const rows = points.map((p, i) => `${f(p[0])},${f(p[1])},${new Date(START_MS + i * MINUTE).toISOString()}`)

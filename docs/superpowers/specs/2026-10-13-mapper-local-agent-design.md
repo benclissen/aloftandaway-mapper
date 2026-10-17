@@ -401,14 +401,18 @@ describe the layered export unless they say otherwise.
   then the nearest point in that run. The first run handles a ship that calls
   at one port twice and a cruise that ends where it started. A leg that
   follows another leg of the same track starts where that leg ended, and its
-  end is looked for after its start. When the two stops are close, the track
-  may still be within 2 km of the end stop when the leg leaves. That run
-  counts only if the track gets nearer the end stop than half the distance
-  between the two stops. Otherwise the track hasn't left yet, so the leg ends
-  in the next run, or in this one if there's no other. So a day loop from a hotel back to
-  it follows the whole loop, and a short hop to a stop nearby still ends on
-  the way out. If no point is within 2 km, the nearest one is used and
-  `track-stop-far` warns.
+  end is looked for after its start. The track may already be within 2 km of
+  the end stop where the leg leaves it. If that point is within
+  `SAME_PLACE_KM` (0.5) of the end stop, the track hasn't left yet, so the leg
+  ends in the next run, or in this one if there's no other. That keeps a loop
+  from a stop back to it whole, even when the logger sat jittering at both
+  ends or a stop is dragged a little. Further out, this run is taken if it
+  gets nearer the end stop than half the leaving distance; if not, it competes
+  with the next run and the nearer wins. A loop whose way out dips back within
+  2 km of its end stop is still cut there. If no point is within 2 km, the
+  nearest one is used and `track-stop-far` warns. Validation doesn't give
+  `same-place` for two stops with a track leg between them, since merging them
+  would lose the loop.
 - **Adding or removing a stop keeps the track.** A new leg from a to b is a
   track leg of T, with no via points, when the old legs leaving a and arriving
   at b are both track legs of T. That covers inserting a stop on a track leg
@@ -746,7 +750,7 @@ render; warnings don't. It checks:
 - Durations under one second per leg.
 - Fewer than two stops in a scene.
 - Two consecutive stops at the same place (an overnight that should be one
-  stop with a pause).
+  stop with a pause), unless a recorded track leg runs between them.
 
 ## Getting stops in
 

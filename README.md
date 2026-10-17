@@ -147,9 +147,10 @@ and no via points. A stop goes wherever the track stayed within 1 km for two
 hours (`minStayMinutes` changes that), plus the first and last points, and the
 result lists each stop's arrival and departure times so the agent can name them.
 `stops: 'ends'` uses only the first and last points. A loop that ends where it
-began, such as a day out from a hotel, draws as one leg round the whole loop.
-The track is thinned to at most 10,000 points and every leg becomes a `track`
-leg. Use `import_gpx` instead when the file is a plan you want to reshape.
+began, such as a day out from a hotel, draws as one leg round the loop, unless
+the way out comes back within 2 km of the start before the end. The track is
+thinned to at most 10,000 points and every leg becomes a `track` leg. Use
+`import_gpx` instead when the file is a plan you want to reshape.
 
 Mapper reads the file you give it and fetches nothing. A track from a provider
 or an API is the agent's job to download and write out as a CSV first.

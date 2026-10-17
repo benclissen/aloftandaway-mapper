@@ -3,7 +3,7 @@ import { haversineKm } from './geo.js'
 import { buildRoute } from './route.js'
 import { THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
 import { NO_LAND_DATA, STOP_FAR_KM, STRAIGHT_LINE, UNVERIFIED_CAUSE, type SeaPaths } from './sea.js'
-import { TRACK_NEAR_KM } from './track.js'
+import { SAME_PLACE_KM, TRACK_NEAR_KM } from './track.js'
 import { signBox, signLift, signText } from './signs.js'
 import { buildTimeline, formatTimecode, legSeconds, sceneTravel, SIGN_FADE_SECONDS } from './timeline.js'
 
@@ -16,8 +16,6 @@ export interface Issue {
 
 /** A leg that lasts less than this many seconds is a warning. */
 const MIN_LEG_SECONDS = 1
-/** Consecutive stops closer than this many km are reported as the same place. */
-const SAME_PLACE_KM = 0.5
 
 /**
  * Checks a project for what blocks a render (errors) and what an agent should fix or explain (warnings). Every scene
@@ -139,7 +137,8 @@ function validateScene(
 
     for (let i = 1; i < stops.length; i++) {
       const km = haversineKm(stops[i - 1]!.at, stops[i]!.at)
-      if (km < SAME_PLACE_KM) {
+      // Two stops at one place with a recorded track between them are a loop, and merging them would lose its leg.
+      if (km < SAME_PLACE_KM && route.legs[i - 1]?.drawnAs !== 'track') {
         warnings.push({
           code: 'same-place',
           message: `${nameOf(i - 1)} and ${nameOf(i)} are ${km.toFixed(2)} km apart`,

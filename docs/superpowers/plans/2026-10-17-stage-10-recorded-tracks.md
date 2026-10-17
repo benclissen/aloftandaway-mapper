@@ -45,10 +45,11 @@
 **5. Each leg's stretch is found, not stored.** For leg *i* of track T in `buildRoute`:
 - **Start index:** if leg *i − 1* is a track leg of T, the start index `s` is where that leg ended. Otherwise `s` is found by the same search as the end, from index 0, for stop *i*.
 - **End index:** among the points from `s + 1` on, take the first run of consecutive points within `TRACK_NEAR_KM = 2` of stop *i + 1*, and the point in that run nearest to it.
-- **When the track starts inside the end stop's circle** (the run is under way at `s + 1`, because the stops are close): that run counts only if its nearest point to stop *i + 1* is closer than half the distance between stops *i* and *i + 1*. Otherwise the track hasn't left yet, so the end is in the next run, or in this one when there's no other. A loop from a stop back to it follows the whole loop, and a short hop to a stop nearby still ends on the way out, even with the stop dragged a little off the track.
+- **When the track starts inside the end stop's circle** (the run is under way at `s + 1`, because the stops are close): if point `s` is within `SAME_PLACE_KM = 0.5` of stop *i + 1*, the track hasn't left, so the end is in the next run, or in this run when there's no other. Otherwise this run is taken if its nearest point to stop *i + 1* is closer than half the distance from point `s` to it; if not, it competes with the next run and the nearer wins. A loop from a stop back to it follows the whole loop, even with a parked logger's jitter at both ends or a stop dragged a little. A loop whose way out dips back within 2 km of its end stop is still cut at the dip.
+- **Validation:** `same-place` isn't raised for two stops with a track leg between them.
 - **When no run is near:** the end is the nearest point from `s + 1` on, and the gap is reported.
 - **The path:** `[stop i, points s+1 … e−1, stop i+1]`, unwrapped in travel order like every other leg.
-- **Why this works:** "first run" handles a ship that calls at the same port twice, and a cruise that ends where it started. Skipping a run the leg starts in handles a day loop with only two stops.
+- **Why this works:** "first run" handles a ship that calls at the same port twice, and a cruise that ends where it started. Not ending in the run a leg starts in, while the track is still within 0.5 km, handles a day loop with only two stops.
 
 **6. Adding or removing a stop keeps the track.**
 - **The rule:** a new leg from a to b is a track leg of T, with no via points, when both the old leg leaving a and the old leg arriving at b are track legs of T. That covers inserting a stop on a track leg (both are the same old leg) and removing a stop between two parts of T. It also inherits `symbol` when both old legs have the same one.

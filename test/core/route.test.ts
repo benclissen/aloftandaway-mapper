@@ -12,6 +12,7 @@ import {
   headingDeg,
   landIndex,
   nearestOnLeg,
+  parseTrackCsv,
   pointAt,
   routeSea,
   seaLegKey,
@@ -19,6 +20,7 @@ import {
   toLngLat,
   toXY,
   trackKey,
+  trackToStops,
   unwrapLng,
   type LngLat,
   type RouteLeg,
@@ -673,6 +675,42 @@ describe('track legs', () => {
     expect(r.length).toBe(leg.length)
   })
 
+  /** The great-circle length of `path`, in km. */
+  const pathKm = (path: LngLat[]): number => path.slice(1).reduce((km, p, k) => km + haversineKm(path[k]!, p), 0)
+  /** `p` moved `east` and `north` km. */
+  const moved = (p: LngLat, east: number, north: number): LngLat => [
+    p[0] + east / (111.32 * Math.cos((p[1] * Math.PI) / 180)),
+    p[1] + north / 111.32,
+  ]
+
+  test('a loop imported in ends mode follows the whole loop, however the logger sat while parked', () => {
+    // 3 h parked at home before and after the drive, jittering by ±20 m or ±50 m. The ends are a few metres apart,
+    // and every parked point is within 2 km of both.
+    for (const stayJitterM of [20, 50]) {
+      for (const seed of [1, 2, 3]) {
+        const imported = trackToStops(parseTrackCsv(syntheticLoop({ seed, stayJitterM }).csv), { stops: 'ends', minStayMinutes: 120 })
+        const { scene, seaPaths } = onTrack(imported.stops.map((s) => s.at), imported.points)
+        const leg = buildRoute(scene, seaPaths).legs[0]!
+        expect(leg.path, `±${stayJitterM} m, seed ${seed}`).toEqual(imported.points)
+      }
+    }
+  })
+
+  test('a loop keeps about its whole length with the start stop dragged off it', () => {
+    // Points every 100 m. A start stop 100 m, 200 m or 1 km off home still leaves from home, and the leg runs round.
+    const { points, home, lengthKm } = syntheticLoop({ stayMinutes: 0, samples: 400 })
+    for (const km of [0.1, 0.2, 1]) {
+      for (const from of [moved(home, 0, -km), moved(home, km, 0), moved(home, -km, 0)]) {
+        const { scene, seaPaths } = onTrack([from, points.at(-1)!], points)
+        const leg = buildRoute(scene, seaPaths).legs[0]!
+        expect(pathKm(leg.path), `${km} km`).toBeGreaterThan(lengthKm * 0.95)
+      }
+    }
+    // An end stop moved 100 m along the way out still waits for the track to come back.
+    const { scene, seaPaths } = onTrack([points[0]!, points[1]!], points)
+    expect(pathKm(buildRoute(scene, seaPaths).legs[0]!.path)).toBeGreaterThan(lengthKm * 0.95)
+  })
+
   test('a short hop from near the start still ends at the first arrival', () => {
     // A to C along the equator and back 220 m north of it. B is 1.6 km from A, so the track starts inside B's circle,
     // and it passes B again on the way back. The leg to B ends on the way out, with B on a point or dragged 100 m off.
@@ -687,6 +725,18 @@ describe('track legs', () => {
       expect(legs[0]!.path).toEqual([[0, 0], ...points.slice(1, 14), B])
       expect(legs[1]!.path).toEqual([B, ...points.slice(15, 200), [0.2, 0]])
     }
+  })
+
+  test('a hop to a stop 1 km off the track takes the nearer of two passes', () => {
+    // B is 1 km south of the way out and 1.22 km from the way back, so leg 0 ends on the way out and leg 1 runs on to C.
+    const points: LngLat[] = []
+    for (let k = 0; k <= 200; k++) points.push([k * 0.001, 0])
+    for (let k = 199; k >= 0; k--) points.push([k * 0.001, 0.002])
+    const B: LngLat = [0.014, -0.009]
+    const { scene, seaPaths } = onTrack([[0, 0], B, [0.2, 0]], points)
+    const legs = buildRoute(scene, seaPaths).legs
+    expect(legs[0]!.path).toEqual([[0, 0], ...points.slice(1, 14), B])
+    expect(legs[1]!.path).toEqual([B, ...points.slice(15, 200), [0.2, 0]])
   })
 
   test('a stop far from the track reports the gap', () => {

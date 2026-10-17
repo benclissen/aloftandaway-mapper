@@ -209,8 +209,9 @@ reuses the same file. `symbol` sets the transport of every leg, for example
   plus the first and last points. `stops: 'ends'` makes only the first and last.
   Lower `minStayMinutes` for short calls, raise it to ignore traffic stops. A
   loop that ends where it began, such as a day out from a hotel, gives two
-  stops at the same place and one leg round the whole loop. Validation warns
-  `same-place` for it; keep both stops, since merging them drops the leg.
+  stops at the same place and one leg round the loop. Keep both stops. If the
+  way out comes back within 2 km of the start before the end, the leg is cut
+  there, so check a preview.
 - Stops are named after a GPX waypoint within 1 km, otherwise `Stop 1`,
   `Stop 2`. The result lists each stop with its arrival and departure times.
   Match those to the itinerary, then rename with `update_project`'s

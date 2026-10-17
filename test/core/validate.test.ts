@@ -615,6 +615,19 @@ describe('validateProject', () => {
       expect(codes(validateProject(project).warnings)).not.toContain('track-stop-far')
     })
 
+    test('a two-stop loop on a track is not the same place, but two stops on a line still are', () => {
+      // Out 5 km and back to where it began: the stops are 10 m apart, with a 10 km leg between them.
+      const project = stopsAt([[25, 37], [25, 37.00009]])
+      const scene = sceneOf(project)
+      const points: LngLat[] = [[25, 37], [25.03, 37.02], [25.06, 37], [25.03, 36.98], [25, 37.00009]]
+      const seaPaths: SeaPaths = { [trackKey(TRACK)]: { status: 'ok', path: points, knots: [] } }
+      expect(codes(validateProject(project, { seaPaths }).warnings)).toContain('same-place')
+      scene.legs = [{ mode: 'track', track: TRACK, via: [] }]
+      expect(codes(validateProject(project, { seaPaths }).warnings)).not.toContain('same-place')
+      // With its file gone the leg is a straight line again, and the stops are the same place.
+      expect(codes(validateProject(project, { seaPaths: {} }).warnings)).toContain('same-place')
+    })
+
     test('no sea warnings on a track leg', () => {
       const { project, seaPaths } = trackProject()
       expect(validateProject(project, { seaPaths })).toEqual({ errors: [], warnings: [] })

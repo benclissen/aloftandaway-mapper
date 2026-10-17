@@ -30,6 +30,8 @@ const pixelRatio = Number(params.get('pixelRatio') ?? 1);
 // plain 256-point line; the recorded-track case asks for 10,000 points with noise.
 const ROUTE_POINTS = Number(params.get('routePoints') ?? 256);
 const NOISE_METRES = Number(params.get('noise') ?? 0);
+// A fixed zoom for the whole sweep, instead of 6 to 8. At 11 or 12 the tiler keeps the jitter instead of simplifying it away.
+const FIXED_ZOOM = params.has('zoom') ? Number(params.get('zoom')) : undefined;
 
 const map = new maplibregl.Map({
   container: 'map',
@@ -149,7 +151,7 @@ window.bench = {
     const t = i / n;
     const start = performance.now();
     const settled = idle();
-    map.jumpTo({ center: lerpPoint(PIRAEUS.center, RHODES.center, t), zoom: lerp(PIRAEUS.zoom, RHODES.zoom, t) });
+    map.jumpTo({ center: lerpPoint(PIRAEUS.center, RHODES.center, t), zoom: FIXED_ZOOM ?? lerp(PIRAEUS.zoom, RHODES.zoom, t) });
     const built = performance.now();
     map.getSource('route').setData(routeTo(t));
     cpuMs.push(performance.now() - built);

@@ -387,6 +387,9 @@ function writeDoc(section: string, heading = SECTION) {
 const TRACK_CASES = [
   { name: 'plain line', query: '' },
   { name: 'track-10k', query: '&routePoints=10000&noise=100' },
+  // The same two at zoom 11, where the tiler keeps the jitter instead of simplifying it away.
+  { name: 'plain line, zoom 11', query: '&zoom=11' },
+  { name: 'track-10k, zoom 11', query: '&routePoints=10000&noise=100&zoom=11' },
   // Ten times the limit, to show the bench can see a cost when there is one. Not part of the verdict.
   { name: 'stress-100k', query: '&routePoints=100000&noise=100' },
 ] as const;
@@ -444,26 +447,32 @@ async function trackBench(frames: number, write: boolean): Promise<void> {
       ),
     ];
     const verdicts: string[] = [];
+    const pairs = [['plain line', 'track-10k'], ['plain line, zoom 11', 'track-10k, zoom 11']] as const;
     for (const pixelRatio of [1, 2]) {
-      const [plain, track] = rows.filter((r) => r.pixelRatio === pixelRatio);
-      const medianOf = (r: TrackRow) => mean(r.samples.map(median));
-      const meanOf = (r: TrackRow) => mean(r.samples.map(mean));
-      const size = pixelRatio === 2 ? '3840×2160' : '1920×1080';
-      const byMedian = medianOf(track) / medianOf(plain) - 1;
-      const byMean = meanOf(track) / meanOf(plain) - 1;
-      verdicts.push(
-        `- ${size}: track-10k against the plain line is ${(byMedian * 100).toFixed(1)}% by median (${ms(medianOf(track))} against ${ms(medianOf(plain))}) and ${(byMean * 100).toFixed(1)}% by mean (${ms(meanOf(track))} against ${ms(meanOf(plain))})${Math.max(byMedian, byMean) > TRACK_LIMIT ? `: OVER the ${TRACK_LIMIT * 100}% limit` : ''}`,
-      );
+      for (const [plainName, trackName] of pairs) {
+        const plain = rows.find((r) => r.pixelRatio === pixelRatio && r.name === plainName)!;
+        const track = rows.find((r) => r.pixelRatio === pixelRatio && r.name === trackName)!;
+        const medianOf = (r: TrackRow) => mean(r.samples.map(median));
+        const meanOf = (r: TrackRow) => mean(r.samples.map(mean));
+        const size = pixelRatio === 2 ? '3840×2160' : '1920×1080';
+        const byMedian = medianOf(track) / medianOf(plain) - 1;
+        const byMean = meanOf(track) / meanOf(plain) - 1;
+        verdicts.push(
+          `- ${size}, ${trackName}: ${(byMedian * 100).toFixed(1)}% by median (${ms(medianOf(track))} against ${ms(medianOf(plain))}) and ${(byMean * 100).toFixed(1)}% by mean (${ms(meanOf(track))} against ${ms(meanOf(plain))})${Math.max(byMedian, byMean) > TRACK_LIMIT ? `: OVER the ${TRACK_LIMIT * 100}% limit` : ''}`,
+        );
+      }
     }
     const over = verdicts.some((v) => v.includes('OVER'));
     const reading = [
       '',
-      'Frames settle on the display\'s 60 Hz tick, so the medians sit near 16 ms and the means near 17.7 ms whatever the',
-      'route: a change under a tick can\'t show. The last row of each size, a route of 100,000 points, is there to prove the',
-      'bench can see a cost: it lands on the next tick.',
+      'This bench only resolves whole display ticks. Frames settle on the display\'s 60 Hz tick, so at the sweep\'s zoom the',
+      'medians sit near 16 ms and the means near 17.7 ms whatever the route, and a cost under a tick can\'t show. At zoom 11',
+      'both routes\' means are higher (about 28 ms), from loading tiles. The `stress-100k` rows, a route of 100,000 points,',
+      'are there to prove the bench can see a cost: they land on the next tick. For the cost of Mapper\'s own per-frame work',
+      'at a finer grain, see the next section.',
       over
         ? 'A row is over the limit. The remedy is a lower `MAX_TRACK_POINTS`, which is the user\'s decision.'
-        : `Neither size is over the ${TRACK_LIMIT * 100}% limit, so \`MAX_TRACK_POINTS\` stays at 10,000.`,
+        : `No pair is over the ${TRACK_LIMIT * 100}% limit.`,
     ];
     const body = [table.join('\n'), '', ...verdicts, ...reading].join('\n');
     process.stdout.write(`${body}\n`);
@@ -472,10 +481,10 @@ async function trackBench(frames: number, write: boolean): Promise<void> {
         [
           TRACK_SECTION,
           '',
-          '`npm run bench:render -- --track` times the frame loop with a route of 256 points on a straight line (the plain',
+          '`npm run bench:render -- --track` times the page\'s frame loop with a route of 256 points on a straight line (the plain',
           'line the Task 1 benchmark uses) against one of 10,000 points, each moved up to 100 m off the line: the most a',
-          'recorded track can carry (`MAX_TRACK_POINTS`). Both draw the way the studio does, by slicing the path to the head',
-          'and calling `setData` on every frame. Each pass is a warm 100 frame settle (jump the camera, set the route, wait for',
+          'recorded track can carry (`MAX_TRACK_POINTS`), at the sweep\'s zoom of 6 to 8 and at a fixed zoom 11. Both draw the',
+          'way the studio does, by slicing the path to the head and calling `setData` on every frame. Each pass is a warm 100 frame settle (jump the camera, set the route, wait for',
           'idle) over the same Piraeus to Rhodes sweep, taken after a warm-up pass and a first pass of that route. The routes',
           'alternate, so a slow moment on the machine hits both. Needs the network, for the map style.',
           '',

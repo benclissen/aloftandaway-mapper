@@ -75,6 +75,7 @@ npm test                          # unit tests
 npm run test:e2e                  # build, then end-to-end tests
 npm run typecheck                 # type-check the server, bench and studio code
 npm run bench:render              # render speed benchmark
+npm run bench:core                # per-frame cost of a recorded track in core
 npm run bench:pipeline            # build, then pipeline benchmark
 node dist/cli/main.js doctor      # check Chrome, ffmpeg, WebGL and disk space
 npm link                          # put `mapper` on PATH

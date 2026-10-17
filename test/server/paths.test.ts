@@ -5,7 +5,8 @@ import path from 'node:path'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { decodeLand, defaultProject, encodeLand, landIndex, ROUTER_VERSION, routeSea, seaLegKey, type LandSource, type LngLat, type Project, type ViaPoint } from '../../src/core/index.js'
 import { CACHE_VERSION, PATHS_FILE, resolveSeaPaths } from '../../src/server/paths.js'
-import { SEA_BUDGET_TILES, SEA_WATER_VERSION, type SeaBudget, type SeaWater, type WaterNote } from '../../src/server/sea-water.js'
+import { createSeaWater, SEA_BUDGET_TILES, SEA_WATER_VERSION, type SeaBudget, type SeaWater, type WaterNote } from '../../src/server/sea-water.js'
+import type { TileStore } from '../../src/server/tiles.js'
 
 vi.mock('node:fs/promises', async (original) => {
   const fs = await original<typeof import('node:fs/promises')>()
@@ -342,4 +343,67 @@ test('one resolve shares one budget across legs', async () => {
   await resolveSeaPaths(folder, projectWith([{ from: C, to: A }]), { land: island(), water })
   expect(water.budgets[2]).not.toBe(water.budgets[0])
   expect(water.seen[2]).toBe(SEA_BUDGET_TILES)
+})
+
+test('an offline call with several legs waits for the network once', async () => {
+  const C: LngLat = [11, 51]
+  const D: LngLat = [9, 51]
+  const p = projectWith([{ from: A, to: B }, { from: B, to: C }, { from: C, to: D }])
+  const water = fakeWater({ online: false })
+  const paths = await resolveSeaPaths(folder, p, { land: island(), water, now: () => 0 })
+  // The first leg found the network down; the others went straight to Natural Earth.
+  expect(water.calls).toBe(1)
+  const file = await readCacheFile()
+  for (const [from, to] of [[A, B], [B, C], [C, D]] as const) {
+    const key = seaLegKey(from, to, [])
+    expect(paths[key]!.status).toBe('ok')
+    expect(paths[key]!.unverified).toBe('offline')
+    expect(paths[key]!.path).toEqual(routeSea(from, to, [], island()).path.map(([x, y], i, all) => (i === 0 || i === all.length - 1 ? [x, y] : [Math.round(x * 1e6) / 1e6, Math.round(y * 1e6) / 1e6])))
+    expect(file.paths[key].water).toEqual({ unverified: 'offline' })
+    expect(file.paths[key].retryAt).toBe(new Date(60_000).toISOString())
+  }
+})
+
+test('a failed network is remembered for a minute', async () => {
+  // A tile server that can't be reached, then can, counting every attempt.
+  const state = { online: false, attempts: 0 }
+  const store: TileStore = {
+    async get() {
+      state.attempts++
+      return { status: 204, body: Buffer.alloc(0), fromCache: false }
+    },
+    async planetBuild() {
+      state.attempts++
+      if (!state.online) throw new Error('offline')
+      return '20260101_000000_pt'
+    },
+  }
+  let clock = 0
+  const water = createSeaWater({ store, now: () => clock })
+  const C: LngLat = [11, 51]
+  const D: LngLat = [9, 51]
+  const resolve = (from: LngLat, to: LngLat) => resolveSeaPaths(folder, projectWith([{ from, to }]), { land: island(), water, now: () => clock })
+
+  expect((await resolve(A, B))[seaLegKey(A, B, [])]!.unverified).toBe('offline')
+  expect(state.attempts).toBe(1)
+  // Half a minute on, a new leg doesn't try the network again.
+  clock = 30_000
+  expect((await resolve(B, C))[seaLegKey(B, C, [])]!.unverified).toBe('offline')
+  expect(state.attempts).toBe(1)
+  // Past the minute it tries again; still down, so the minute starts over.
+  clock = 61_000
+  await resolve(C, D)
+  expect(state.attempts).toBe(2)
+  clock = 100_000
+  await resolve(D, A)
+  expect(state.attempts).toBe(2)
+  // Back up: the next try succeeds, and from then on every leg goes to the network.
+  state.online = true
+  clock = 122_000
+  expect((await resolve(A, C))[seaLegKey(A, C, [])]!.unverified).toBeUndefined()
+  const after = state.attempts
+  expect(after).toBeGreaterThan(2)
+  clock = 123_000
+  await resolve(B, D)
+  expect(state.attempts).toBeGreaterThan(after)
 })

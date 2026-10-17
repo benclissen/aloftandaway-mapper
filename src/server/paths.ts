@@ -3,14 +3,14 @@ import path from 'node:path'
 import { ROUTER_VERSION, routeSea, seaLegKey, type LandSource, type LngLat, type Project, type SeaPath, type SeaPaths, type ViaPoint } from '../core/index.js'
 import { writeFileAtomic } from './atomic.js'
 import { loadLand } from './land.js'
-import { SEA_BUDGET_TILES, SEA_WATER_VERSION, seaWater, type SeaBudget, type SeaWater, type WaterNote } from './sea-water.js'
+import { OFFLINE_MS, SEA_BUDGET_TILES, SEA_WATER_VERSION, seaWater, type SeaBudget, type SeaWater, type WaterNote } from './sea-water.js'
 
 export const PATHS_FILE = path.join('.mapper', 'paths.json')
 
 /** The shape of paths.json. A file of any other version is dropped. */
 export const CACHE_VERSION = 2
-/** How long an unverified path is used as it is before the next call routes it again. */
-export const RETRY_MS = 60_000
+/** How long an unverified path is used as it is before the next call routes it again: the router's offline minute. */
+export const RETRY_MS = OFFLINE_MS
 const MAX_ENTRIES = 200
 
 /**
@@ -115,6 +115,16 @@ async function routeOnWater(
   return entry
 }
 
+/** A leg routed on Natural Earth alone because the network is down, as `water` would have answered it. */
+function offlineEntry(sea: SeaPath, clock: number): Entry {
+  return {
+    ...rounded({ ...sea, unverified: 'offline' }),
+    usedAt: new Date(clock).toISOString(),
+    water: { unverified: 'offline' },
+    retryAt: new Date(clock + RETRY_MS).toISOString(),
+  }
+}
+
 /** Folders whose cache couldn't be written, logged once each. */
 const unwritable = new Set<string>()
 
@@ -180,11 +190,16 @@ export function resolveSeaPaths(folder: string, project: Project, opts: ResolveO
     const now = new Date(clock).toISOString()
     const budget: SeaBudget = { tiles: SEA_BUDGET_TILES }
     let routed = false
+    // Once one leg finds the network down, the rest of this call doesn't wait for it again.
+    let offline = false
     const result: SeaPaths = {}
     for (const [key, [from, to, via]] of legs) {
       let entry = cache[key]
       if (!entry || due(entry, clock)) {
-        entry = water ? await routeOnWater(water, from, to, via, land, budget, clock) : { ...rounded(routeSea(from, to, via, land)), usedAt: now }
+        if (!water) entry = { ...rounded(routeSea(from, to, via, land)), usedAt: now }
+        else if (offline) entry = offlineEntry(routeSea(from, to, via, land), clock)
+        else entry = await routeOnWater(water, from, to, via, land, budget, clock)
+        if (entry.unverified === 'offline') offline = true
         cache[key] = entry
         routed = true
       }

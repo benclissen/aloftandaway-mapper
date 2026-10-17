@@ -23,7 +23,7 @@ import {
   type ServerMessage,
 } from '../core/index.js'
 import { loadLand } from './land.js'
-import { RETRY_MS, resolveSeaPaths, seaLegsOf } from './paths.js'
+import { RETRY_MS, resolveSeaPaths, retriesSoon, seaLegsOf } from './paths.js'
 import { seaWaterOn, type SeaWater } from './sea-water.js'
 import { assertAbsolute, loadProject, mutateProject, PROJECT_FILE, StoreError } from './store.js'
 import { createTileProxy, tileStore } from './tiles.js'
@@ -90,9 +90,9 @@ interface Registered {
   origins: Map<string, string>
   /** Whether a failure to work out sea routes has been logged for this project. */
   seaPathsFailed: boolean
-  /** What each open socket was last sent: the version, its sea routes as JSON, and whether any is unverified. */
+  /** What each open socket was last sent: the version, its sea routes as JSON, and whether any is retried soon. */
   shown: Map<WebSocket, Shown>
-  /** The next retry of unverified sea routes, while a socket shows one. */
+  /** The next retry of unverified sea routes, while a socket shows one that's retried within the minute. */
   retry: NodeJS.Timeout | undefined
   /** Whether a retry is running now. */
   retrying: boolean
@@ -101,7 +101,8 @@ interface Registered {
 interface Shown {
   updatedAt: string
   paths: string
-  unverified: boolean
+  /** Whether a route it shows was left unverified by the network or the budget, so is routed again within the minute. */
+  retry: boolean
 }
 
 interface RouteContext {
@@ -435,18 +436,19 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   function send(entry: Registered, ws: WebSocket, message: ServerMessage, paths = JSON.stringify(message.seaPaths)): void {
     if (ws.readyState !== WebSocket.OPEN || !entry.clients.has(ws)) return
     ws.send(JSON.stringify(message))
-    const unverified = Object.values(message.seaPaths).some((p) => p.unverified !== undefined)
-    entry.shown.set(ws, { updatedAt: message.project.updatedAt, paths, unverified })
+    const retry = Object.values(message.seaPaths).some(retriesSoon)
+    entry.shown.set(ws, { updatedAt: message.project.updatedAt, paths, retry })
   }
 
   // Retrying unverified sea routes
 
   /**
-   * Keeps a retry coming while an open socket shows an unverified sea route, and none otherwise. Each retry is
-   * `retryMs` after the last one finished, so a slow one never overlaps the next.
+   * Keeps a retry coming while an open socket shows a sea route the network or the budget left unverified, and none
+   * otherwise: an unsettled route waits a day, for the next call after that. Each retry is `retryMs` after the last
+   * one finished, so a slow one never overlaps the next.
    */
   function updateRetry(entry: Registered): void {
-    const wanted = !closed && projects.get(entry.key) === entry && [...entry.shown.values()].some((s) => s.unverified)
+    const wanted = !closed && projects.get(entry.key) === entry && [...entry.shown.values()].some((s) => s.retry)
     if (!wanted) {
       clearTimeout(entry.retry)
       entry.retry = undefined

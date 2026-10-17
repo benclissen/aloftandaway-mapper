@@ -294,6 +294,61 @@ test("offline routes come back unverified and aren't retried within a minute", a
   expect(water.calls).toBe(2)
 })
 
+test('a slow offline call counts its retry minute from when routing finished', async () => {
+  // The first leg waits about two minutes for the network before it gives up; the second doesn't wait again.
+  const C: LngLat = [11, 51]
+  const p = projectWith([{ from: A, to: B }, { from: B, to: C }])
+  let clock = 0
+  let calls = 0
+  const slow: SeaWater = {
+    async route(from, to, via, base) {
+      calls++
+      clock += 125_000
+      return { ...routeSea(from, to, via, base), unverified: 'offline' as const, water: { unverified: 'offline' as const } }
+    },
+  }
+  const resolve = () => resolveSeaPaths(folder, p, { land: island(), water: slow, now: () => clock })
+  await resolve()
+  expect(calls).toBe(1)
+  for (const [from, to] of [[A, B], [B, C]] as const) {
+    const stored = (await readCacheFile()).paths[seaLegKey(from, to, [])]
+    expect(stored.usedAt).toBe(new Date(125_000).toISOString())
+    expect(stored.retryAt).toBe(new Date(185_000).toISOString())
+  }
+  // Not yet due, though more than a minute has passed since the call began.
+  clock = 130_000
+  await resolve()
+  expect(calls).toBe(1)
+  clock = 186_000
+  await resolve()
+  expect(calls).toBe(2)
+})
+
+test('an unsettled route is routed again a day on, not every minute', async () => {
+  const p = projectWith([{ from: A, to: B }])
+  const key = seaLegKey(A, B, [])
+  let calls = 0
+  const unsettled: SeaWater = {
+    async route(from, to, via, base) {
+      calls++
+      return { ...routeSea(from, to, via, base), unverified: 'unsettled' as const, water: { unverified: 'unsettled' as const } }
+    },
+  }
+  let clock = 0
+  const resolve = () => resolveSeaPaths(folder, p, { land: island(), water: unsettled, now: () => clock })
+  expect((await resolve())[key]!.unverified).toBe('unsettled')
+  const day = 24 * 60 * 60 * 1000
+  expect((await readCacheFile()).paths[key].retryAt).toBe(new Date(day).toISOString())
+  clock = 61_000
+  await resolve()
+  clock = day - 1
+  await resolve()
+  expect(calls).toBe(1)
+  clock = day
+  await resolve()
+  expect(calls).toBe(2)
+})
+
 test('an upgraded entry replaces the unverified one', async () => {
   const p = projectWith([{ from: A, to: B }])
   const key = seaLegKey(A, B, [])

@@ -9,8 +9,16 @@ export const PATHS_FILE = path.join('.mapper', 'paths.json')
 
 /** The shape of paths.json. A file of any other version is dropped. */
 export const CACHE_VERSION = 2
-/** How long an unverified path is used as it is before the next call routes it again: the router's offline minute. */
+/**
+ * How long a path unverified for the network or the budget is used as it is before the next call routes it again: the
+ * router's offline minute, counted from when its routing finished.
+ */
 export const RETRY_MS = OFFLINE_MS
+/**
+ * The same for an unsettled path. Its result depends only on its inputs and the planet build, so routing it again
+ * soon gives the same path; a day on, the build may have changed.
+ */
+export const UNSETTLED_RETRY_MS = 24 * 60 * 60 * 1000
 const MAX_ENTRIES = 200
 
 /**
@@ -85,6 +93,16 @@ async function readCache(file: string, land: string): Promise<Record<string, Ent
   return kept
 }
 
+/** Whether a path is worth routing again within the minute: one the network or the budget left unverified. */
+export function retriesSoon(sea: SeaPath): boolean {
+  return sea.unverified === 'offline' || sea.unverified === 'budget'
+}
+
+/** When a path unverified for `why`, routed at `done`, is next routed again, as an ISO time. */
+function retryTime(why: NonNullable<SeaPath['unverified']>, done: number): string {
+  return new Date(done + (why === 'unsettled' ? UNSETTLED_RETRY_MS : RETRY_MS)).toISOString()
+}
+
 /** Whether a cached path is due to be routed again: it's unverified and its retry time has come (or is unreadable). */
 function due(entry: Entry, now: number): boolean {
   return entry.unverified !== undefined && !(Date.parse(entry.retryAt ?? '') > now)
@@ -99,7 +117,10 @@ function rounded(sea: SeaPath): SeaPath {
   return out
 }
 
-/** A leg routed on `water`, as a cache entry: with its note, and a retry time when it couldn't be checked. */
+/**
+ * A leg routed on `water`, as a cache entry: with its note, and a retry time when it couldn't be checked. Its times
+ * are read from `clock` once routing has finished, which can be minutes after it began when the network is slow to fail.
+ */
 async function routeOnWater(
   water: SeaWater,
   from: LngLat,
@@ -107,21 +128,22 @@ async function routeOnWater(
   via: ViaPoint[],
   land: LandSource,
   budget: SeaBudget,
-  clock: number,
+  clock: () => number,
 ): Promise<Entry> {
   const { water: note, ...sea } = await water.route(from, to, via, land, budget)
-  const entry: Entry = { ...rounded(sea), usedAt: new Date(clock).toISOString(), water: note }
-  if (sea.unverified !== undefined) entry.retryAt = new Date(clock + RETRY_MS).toISOString()
+  const done = clock()
+  const entry: Entry = { ...rounded(sea), usedAt: new Date(done).toISOString(), water: note }
+  if (sea.unverified !== undefined) entry.retryAt = retryTime(sea.unverified, done)
   return entry
 }
 
-/** A leg routed on Natural Earth alone because the network is down, as `water` would have answered it. */
-function offlineEntry(sea: SeaPath, clock: number): Entry {
+/** A leg routed on Natural Earth alone because the network is down, as `water` would have answered it, at `done`. */
+function offlineEntry(sea: SeaPath, done: number): Entry {
   return {
     ...rounded({ ...sea, unverified: 'offline' }),
-    usedAt: new Date(clock).toISOString(),
+    usedAt: new Date(done).toISOString(),
     water: { unverified: 'offline' },
-    retryAt: new Date(clock + RETRY_MS).toISOString(),
+    retryAt: retryTime('offline', done),
   }
 }
 
@@ -170,9 +192,9 @@ export interface ResolveOptions {
 /**
  * The path of every sea leg in every scene, keyed by `seaLegKey`. Paths come from `<folder>/.mapper/paths.json`
  * when it holds them and are routed (then saved) when it doesn't. A verified path is used as it is until its leg
- * changes. An unverified one is used until its retry time, a minute after it was routed; the first call after that
- * routes it again. The legs of one call share one tile budget. If the cache can't be written the routes are still
- * answered. Calls for one folder run one at a time.
+ * changes. An unverified one is used until its retry time, a minute after its routing finished (a day for an
+ * unsettled one); the first call after that routes it again. The legs of one call share one tile budget. If the
+ * cache can't be written the routes are still answered. Calls for one folder run one at a time.
  */
 export function resolveSeaPaths(folder: string, project: Project, opts: ResolveOptions = {}): Promise<SeaPaths> {
   const dir = path.resolve(folder)
@@ -186,8 +208,7 @@ export function resolveSeaPaths(folder: string, project: Project, opts: ResolveO
     const version = water ? `${land.version}+${SEA_WATER_VERSION}` : land.version
     const file = path.join(dir, PATHS_FILE)
     const cache = await readCache(file, version)
-    const clock = (opts.now ?? Date.now)()
-    const now = new Date(clock).toISOString()
+    const clock = opts.now ?? Date.now
     const budget: SeaBudget = { tiles: SEA_BUDGET_TILES }
     let routed = false
     // Once one leg finds the network down, the rest of this call doesn't wait for it again.
@@ -195,9 +216,9 @@ export function resolveSeaPaths(folder: string, project: Project, opts: ResolveO
     const result: SeaPaths = {}
     for (const [key, [from, to, via]] of legs) {
       let entry = cache[key]
-      if (!entry || due(entry, clock)) {
-        if (!water) entry = { ...rounded(routeSea(from, to, via, land)), usedAt: now }
-        else if (offline) entry = offlineEntry(routeSea(from, to, via, land), clock)
+      if (!entry || due(entry, clock())) {
+        if (!water) entry = { ...rounded(routeSea(from, to, via, land)), usedAt: new Date(clock()).toISOString() }
+        else if (offline) entry = offlineEntry(routeSea(from, to, via, land), clock())
         else entry = await routeOnWater(water, from, to, via, land, budget, clock)
         if (entry.unverified === 'offline') offline = true
         cache[key] = entry
@@ -208,6 +229,7 @@ export function resolveSeaPaths(folder: string, project: Project, opts: ResolveO
     }
 
     if (routed) {
+      const now = new Date(clock()).toISOString()
       for (const key of legs.keys()) cache[key]!.usedAt = now
       const newest = Object.fromEntries(
         Object.entries(cache)

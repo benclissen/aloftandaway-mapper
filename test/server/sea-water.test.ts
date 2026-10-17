@@ -18,7 +18,7 @@ import {
   type SeaPath,
 } from '../../src/core/index.js'
 import { createSeaWater, type SeaBudget, type SeaWater } from '../../src/server/sea-water.js'
-import { createTileStore, USER_AGENT, type TileStore } from '../../src/server/tiles.js'
+import { createTileStore, USER_AGENT, type TileReply, type TileStore } from '../../src/server/tiles.js'
 import { startFakeTiles, type FakeTiles } from '../helpers/fake-tiles.js'
 
 const SPAN = 2 ** WATER_ZOOM
@@ -363,6 +363,80 @@ describe('SeaWater.route', () => {
     // Only the requests that went out are charged: one per worker before the first failure.
     expect(left.tiles).toBeGreaterThanOrEqual(2500 - 4)
     expect(Date.now() - t0).toBeLessThan(10_000)
+  })
+
+  it('a slow network failure is remembered from when it came back', async () => {
+    // Each failure takes as long as the store's timeouts and retries can: about two minutes on the router's clock.
+    let clock = 0
+    let tilesFail = false
+    const calls = { build: 0, tiles: 0 }
+    const store: TileStore = {
+      async get() {
+        calls.tiles++
+        clock += 125_000
+        throw new Error('timed out')
+      },
+      async planetBuild() {
+        calls.build++
+        if (tilesFail) return BUILD
+        clock += 125_000
+        throw new Error('timed out')
+      },
+    }
+    const water = createSeaWater({ store, now: () => clock })
+    const offline = { ...routeSea(FROM, TO, [], coastBase), unverified: 'offline', water: { unverified: 'offline' } }
+    expect(await water.route(FROM, TO, [], coastBase, budget())).toEqual(offline)
+    expect(calls).toEqual({ build: 1, tiles: 0 })
+    // Straight after, the next route doesn't wait for the network again.
+    expect(await water.route(FROM, TO, [], coastBase, budget())).toEqual(offline)
+    expect(calls).toEqual({ build: 1, tiles: 0 })
+    // A minute after the failure came back it tries again. This time the tiles are slow to fail.
+    clock += 61_000
+    tilesFail = true
+    expect(await water.route(FROM, TO, [], coastBase, budget())).toEqual(offline)
+    expect(calls.build).toBe(2)
+    const tried = calls.tiles
+    expect(tried).toBeGreaterThan(0)
+    expect(await water.route(FROM, TO, [], coastBase, budget())).toEqual(offline)
+    expect(calls).toEqual({ build: 2, tiles: tried })
+  })
+
+  it('a route that verifies clears the memory of a failure', async () => {
+    // One route's tiles are held back while another's fail, then the first finishes and verifies.
+    let mode: 'hold' | 'fail' | 'open' = 'hold'
+    let builds = 0
+    let release!: () => void
+    const gate = new Promise<void>((go) => (release = go))
+    let asked!: () => void
+    const held = new Promise<void>((go) => (asked = go))
+    const empty: TileReply = { status: 204, body: Buffer.alloc(0), fromCache: false }
+    const store: TileStore = {
+      async get() {
+        if (mode === 'fail') throw new Error('refused')
+        if (mode === 'hold') {
+          asked()
+          await gate
+        }
+        return empty
+      },
+      async planetBuild() {
+        builds++
+        return BUILD
+      },
+    }
+    const water = createSeaWater({ store, now: () => 0 })
+    const first = water.route(FROM, TO, [], coastBase, budget())
+    await held
+    mode = 'fail'
+    expect((await water.route(FROM, TO, [], coastBase, budget())).unverified).toBe('offline')
+    mode = 'open'
+    release()
+    expect((await first).water).toMatchObject({ build: BUILD })
+    // Within the failure's minute, but the network has answered since: the next route goes to it.
+    const before = builds
+    const next = await water.route(FROM, TO, [], coastBase, budget())
+    expect(builds).toBe(before + 1)
+    expect(next.water).toMatchObject({ build: BUILD })
   })
 
   it('a tunnel is not water', async () => {

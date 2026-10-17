@@ -33,8 +33,8 @@ export const SEA_WATER_VERSION = `ofm-z${WATER_ZOOM}-p${TILE_PIXELS}-v1`
 export const SEA_BUDGET_TILES = 2500
 
 /**
- * How long a network failure is remembered. Within it, `route` doesn't try the network again and answers offline at
- * once. It's the same minute an unverified path waits before it's routed again.
+ * How long a network failure is remembered, from when it came back. Within it, `route` doesn't try the network again
+ * and answers offline at once. It's the same minute an unverified path waits before it's routed again.
  */
 export const OFFLINE_MS = 60_000
 
@@ -107,7 +107,10 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
   const coastKm = opts.coastKm ?? 20
   const cacheTiles = opts.cacheTiles ?? 1500
   const now = opts.now ?? Date.now
-  /** When the last route that found the network down began. Cleared by a route that verifies. */
+  /**
+   * When a route last saw the network fail: when the failure came back, which can be minutes after the route began.
+   * Cleared by a route that verifies.
+   */
   let downAt: number | undefined
   if (!(bufferKm > 0)) throw new Error('createSeaWater needs a positive bufferKm')
   const span = 2 ** WATER_ZOOM
@@ -223,14 +226,13 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
       })
 
       // The network was down a moment ago: don't wait for it again yet.
-      const started = now()
-      if (downAt !== undefined && started < downAt + OFFLINE_MS) return unverified(routeSea(from, to, via, base), 'offline')
+      if (downAt !== undefined && now() < downAt + OFFLINE_MS) return unverified(routeSea(from, to, via, base), 'offline')
 
       let build: string
       try {
         build = await store.planetBuild()
       } catch {
-        downAt = started
+        downAt = now()
         return unverified(routeSea(from, to, via, base), 'offline')
       }
 
@@ -257,7 +259,7 @@ export function createSeaWater(opts: SeaWaterOptions): SeaWater {
         const got = await obtain(build, need, base, budget)
         // A round that couldn't finish is dropped, so the route is the one on the rounds that did, whatever this one
         // happened to fetch before it stopped.
-        if (got.down) downAt = started
+        if (got.down) downAt = now()
         if (got.stop) return unverified(sea, got.stop)
         for (const [key, tile] of got.tiles) loaded.set(key, tile)
         sea = routeSea(from, to, via, land)

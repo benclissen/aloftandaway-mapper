@@ -113,7 +113,7 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
               {sea?.status === 'pending' && <p className="leg-note">Finding a sea route…</p>}
               {sea?.unverified && (
                 <p className="leg-note" data-testid={`leg-unverified-${i}`}>
-                  {unverifiedNote(sea.unverified)}
+                  {unverifiedNote(sea.unverified, sea.status)}
                 </p>
               )}
             </li>

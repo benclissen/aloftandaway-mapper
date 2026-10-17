@@ -383,7 +383,7 @@ describe('validateProject', () => {
           },
           {
             code: 'sea-unverified',
-            message: "Leg 1 (Piraeus → Mykonos)'s sea route was checked against Natural Earth only, because OpenFreeMap couldn't be reached. It may cross small islands.",
+            message: "Leg 1 (Piraeus → Mykonos) has no checked sea route, because OpenFreeMap couldn't be reached. It's drawn as a straight line, which may cross land.",
             path: ['scenes', 0, 'legs', 0],
             fix: 'Reconnect to the internet; Mapper routes the leg again by itself within a minute. Then validate again.',
           },
@@ -395,6 +395,34 @@ describe('validateProject', () => {
         const unsettled = fellBack('unsettled')
         expect(unsettled.map((w) => w.code)).toEqual(['sea-fallback', 'sea-unverified'])
         expect(unsettled[0]!.fix).toContain('insert_via')
+      })
+
+      test('sea-unverified on a fallback leg says straight line', () => {
+        const { project, key } = seaProject()
+        const causes = {
+          offline: "OpenFreeMap couldn't be reached",
+          budget: 'the project needed more map tiles at once than Mapper fetches in one go',
+          unsettled: 'it kept finding new islands',
+        } as const
+        const fixes = {
+          offline: 'Reconnect to the internet; Mapper routes the leg again by itself within a minute. Then validate again.',
+          budget: 'Validate again in a minute; Mapper carries on where it stopped.',
+          unsettled: 'Add a via point over open water with insert_via to steer it.',
+        } as const
+        for (const why of ['offline', 'budget', 'unsettled'] as const) {
+          const warnings = validateProject(project, {
+            seaPaths: { [key]: { status: 'fallback', reason: 'No sea route found', path: [], knots: [], unverified: why } },
+          }).warnings
+          expect(warnings.filter((w) => w.code === 'sea-unverified')).toEqual([
+            {
+              code: 'sea-unverified',
+              message: `Leg 1 (Piraeus → Mykonos) has no checked sea route, because ${causes[why]}. It's drawn as a straight line, which may cross land.`,
+              path: ['scenes', 0, 'legs', 0],
+              fix: fixes[why],
+            },
+          ])
+          expect(codes(warnings)).toContain('sea-fallback')
+        }
       })
 
       test('names the leg by its number', () => {

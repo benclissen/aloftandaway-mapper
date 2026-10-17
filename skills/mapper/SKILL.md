@@ -74,6 +74,8 @@ page.
   `sea-unverified` means the route wasn't checked against all of OpenFreeMap's
   water. With no network, or too many tiles at once, it was checked against
   Natural Earth's coarser land outlines only, and it may cross small islands.
+  A leg left unverified that also falls back is drawn as a straight line,
+  which may cross land.
   Don't edit the leg for that, even if it also reports `sea-fallback`: once a
   minute has passed, the next call (or a studio left open) routes it again, so
   validate again then. If the route kept finding new islands, it was only

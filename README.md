@@ -78,8 +78,9 @@ and the tiles come from disk if it is ever routed again, in about a second. Numb
 
 - Offline, a route is checked against Natural Earth only. It is flagged
   `sea-unverified` and may cross small islands, and the studio's legs panel
-  notes it. Once a minute has passed, the next call, or a studio left open,
-  routes it again.
+  notes it. A leg left unverified that also falls back is drawn as a straight
+  line, which may cross land. Once a minute has passed, the next call, or a
+  studio left open, routes it again.
 - A stop more than 30 km from the sea, or a leg with no route found, is drawn
   as a straight line with a `sea-fallback` warning. A stop more than 2 km from
   the water its route starts or ends in gets `sea-stop-far`: put the stop on

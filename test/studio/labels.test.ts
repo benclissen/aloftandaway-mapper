@@ -10,9 +10,19 @@ test('every symbol, mode and theme has a label', () => {
 })
 
 test('an unverified sea route has a leg note for each reason', () => {
-  expect(unverifiedNote('offline')).toBe("Checked against Natural Earth only: OpenFreeMap couldn't be reached. Mapper checks it again by itself.")
-  expect(unverifiedNote('budget')).toBe(
+  expect(unverifiedNote('offline', 'ok')).toBe("Checked against Natural Earth only: OpenFreeMap couldn't be reached. Mapper checks it again by itself.")
+  expect(unverifiedNote('budget', 'ok')).toBe(
     'Checked against Natural Earth only: the project needed more map tiles at once than Mapper fetches in one go. Mapper checks it again by itself.',
   )
-  expect(unverifiedNote('unsettled')).toBe('Only partly checked: it kept finding new islands. It may cross small islands near the ones it found.')
+  expect(unverifiedNote('unsettled', 'ok')).toBe('Only partly checked: it kept finding new islands. It may cross small islands near the ones it found.')
+})
+
+test('an unverified sea route drawn as a straight line says it may cross land', () => {
+  expect(unverifiedNote('offline', 'fallback')).toBe(
+    "No route found: OpenFreeMap couldn't be reached. Drawn as a straight line, which may cross land. Mapper checks it again by itself.",
+  )
+  expect(unverifiedNote('budget', 'fallback')).toBe(
+    'No route found: the project needed more map tiles at once than Mapper fetches in one go. Drawn as a straight line, which may cross land. Mapper checks it again by itself.',
+  )
+  expect(unverifiedNote('unsettled', 'fallback')).toBe('No route found: it kept finding new islands. Drawn as a straight line, which may cross land.')
 })

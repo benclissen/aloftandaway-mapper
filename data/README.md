@@ -2,7 +2,10 @@
 
 ## land-10m.bin
 
-Land outlines used by the sea router.
+Land outlines used by the sea router. They are the base for open water: they
+cover everywhere no OpenFreeMap tile is loaded, which is the open sea and any
+stretch the router didn't need tiles for. Inside a loaded tile, the tile's own
+water decides instead (see "Sea water" below).
 
 - **Source:** [Natural Earth](https://www.naturalearthdata.com/) v5.1.2, the `ne_10m_land` and
   `ne_10m_minor_islands` layers, from
@@ -13,6 +16,52 @@ Land outlines used by the sea router.
   `decodeLand`). Lakes are land: only the coastline layers are included.
 - **Rebuild:** `npm run build:land` downloads the layers into a fresh temp folder, encodes them
   and rewrites this file.
+
+## Sea water
+
+Near the coast the sea router reads water from OpenFreeMap's own vector tiles, the same data the
+basemap draws, so a route and the map agree. Nothing from these tiles is stored in the repo except
+the test fixtures below. Tiles are fetched at run time and cached on disk under `~/.cache/mapper/tiles`
+by the tile store (`src/server/tiles.ts`), which the map views share.
+
+- **Source:** `https://tiles.openfreemap.org/planet/<build>/<z>/<x>/<y>.pbf`, where `<build>` is the
+  planet build the OpenFreeMap TileJSON names that day. OpenStreetMap data under the ODbL, through
+  OpenMapTiles and OpenFreeMap.
+- **Zoom:** 12 (`WATER_ZOOM` in `src/core/land.ts`).
+- **Pixels:** each tile is read onto 512 by 512 pixels (`TILE_PIXELS`), about 10 m at 60° N and 19 m at
+  the equator. A pixel is water when its centre lies inside a water polygon (even-odd per polygon, any
+  polygon counts).
+- **Feature filter:** every polygon in the tile's `water` layer except `brunnel: tunnel`. That is the
+  filter the basemap style's own water layer uses, so lakes, rivers and docks count as water. A lake that
+  doesn't join the sea stays unreachable, since a stop snaps only to water connected to the other end.
+- **Which tiles:** the router loads the tiles within 2 km of its route, then routes again, up to 12
+  rounds, until it needs no tile it doesn't have. A tile is loaded only when Natural Earth land lies
+  within 20 km of it, so a crossing of open sea fetches tiles only near the coasts. Every leg starts from
+  no tiles, so its route doesn't depend on what an earlier leg loaded.
+- **Download rules** (openfreemap.org, read 2026-10-17): each download at most 3,000 tiles or 50 MB, at
+  most 4 requests at once, and a User-Agent that names the app. Router fetches use at most 4 requests at
+  once. One call that resolves sea paths fetches at most 2,500 new tiles from OpenFreeMap (tiles already on
+  disk don't count); past that the legs still to route are marked unverified, and the next call carries on.
+- **User-Agent:** every request to OpenFreeMap, studio map views included, sends
+  `aloftandaway-mapper/<package version>`.
+- **Credit:** `© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap`. A route drawn from this data
+  needs it, so a `blank` scene with a sea leg carries the credit too.
+- **Offline or too many tiles:** the leg is routed on Natural Earth, and on any tiles it did get, and
+  flagged `sea-unverified`. It is routed again after 60 seconds.
+- **Cache:** a routed leg is kept in `<project>/.mapper/paths.json`, with the planet build it was routed
+  on. It isn't routed again until its stops, via points or `ROUTER_VERSION` (`src/core/sea.ts`) change.
+  A new planet build alone does not re-route anything. Bump `ROUTER_VERSION` when the routing code or its
+  parameters change, or the way water is read changes (zoom, pixels, the feature filter).
+
+### Dev and test settings
+
+- `MAPPER_TILE_UPSTREAM` points the tile cache (map views and sea routing) at another server instead of
+  `https://tiles.openfreemap.org`. Vitest sets it to `http://127.0.0.1:9`, an address that refuses
+  connections, so tests never reach the network. Tests that need tiles start a local fake that serves the
+  fixtures below.
+- `MAPPER_NET=1` turns on the tests that use the real network.
+- `npm run bench:sea` times five sea legs cold, from disk and from memory against live OpenFreeMap. The
+  numbers are in [docs/render-speed.md](../docs/render-speed.md#sea-routing-stage-8-task-9).
 
 ## Sea-route test tiles
 

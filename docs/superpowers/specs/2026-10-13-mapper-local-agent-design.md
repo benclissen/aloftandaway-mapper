@@ -1,7 +1,7 @@
 # Mapper: local, agent-driven design
 
 Date: 2026-10-13
-Status: approved; revised 2026-10-16
+Status: approved; revised 2026-10-17
 
 **Revision, 2026-10-14:** the studio gains hands-on route editing (waypoints,
 curved/sharp points, transport per leg, map style, undo). The transport list
@@ -215,6 +215,105 @@ describe the layered export unless they say otherwise.
 - **A rare corrupt capture** (one page in about 400 in a probe) is parked:
   it didn't reproduce in 3,000 loads. See "Known capture glitch" in
   `docs/render-speed.md`.
+
+**Revision, 2026-10-17 (stage 8 decisions):**
+
+- **Data source:** OpenFreeMap's own vector tiles, zoom 12, the `water` layer.
+  - It is the data the basemap draws, from the same planet build, so the
+    route and the map agree. It carries the credit every render already
+    carries and needs no new download.
+  - Rejected: Natural Earth plus land added from the tiles (it can add land
+    but never remove Natural Earth's false land, and it draws solid land over
+    the real Stockholm fairways), and OSM land polygons from
+    osmdata.openstreetmap.de (one 928 MB worldwide download, and from a
+    different date than the basemap).
+- **Water is what the basemap paints as water:** every feature in the `water`
+  layer except `brunnel: tunnel`. Lakes, rivers and docks count, so a sea leg
+  may follow a river to a port. A lake that doesn't join the sea stays
+  unreachable, because a stop snaps only to water that connects to the other
+  end.
+- **Natural Earth stays as the base** for everywhere no tile is loaded: open
+  ocean, and anywhere the rounds didn't reach. Inside a loaded tile, only the
+  tile counts. `data/land-10m.bin` is unchanged.
+- **Tile pixels:** 512 per side at zoom 12, about 10 m at 60° N. A pixel is
+  water when its centre lies inside a water feature. Grid cells read pixels
+  conservatively: a cell is land when any land pixel overlaps it.
+- **Fine cells drop from 200 m to 50 m.** A tight stretch too long for one
+  2048-cell fine grid is cut into pieces, so cells never grow past 50 m. A
+  sea piece joins the next only at their shared water point. A stretch that
+  can't continue is shut and routed again, never bridged across land. A stop
+  whose water doesn't connect inside its fine grid gets one retry with room
+  for the usual 30 km snap.
+- **Rounds.** The router runs, the server loads every zoom-12 tile within 2 km
+  of the route, and it runs again. It stops when the route needs no tile it
+  doesn't have, at most 12 rounds.
+  - A tile is loaded only when Natural Earth land lies within 20 km of it, so
+    ocean crossings fetch tiles only near the coasts.
+  - Every leg starts from no tiles, so the tiles a route uses depend on its
+    inputs and the planet build alone, not on what an earlier leg loaded.
+    Tile bytes still come from memory or disk when they're there.
+- **OpenFreeMap's download rules** (read 2026-10-17): at most 3,000 tiles or
+  50 MB per download, at most 4 requests at once, and a User-Agent that names
+  the app.
+  - Router fetches use at most 4 requests at once. Every upstream request,
+    studio map views included, sends `User-Agent: aloftandaway-mapper/<package
+    version>`.
+  - One `resolveSeaPaths` call fetches at most 2,500 new tiles. The budget
+    counts only tiles fetched from OpenFreeMap; tiles already on disk don't
+    count. Past it, the legs still to route are routed without tiles and
+    marked unverified, and the next call carries on.
+- **Determinism.** A routed leg is cached in `.mapper/paths.json` and never
+  routed again until its stops, via points or `ROUTER_VERSION` change. The
+  studio, previews and renders all read that one entry, so they agree.
+  - The planet build is not part of a leg's cache key. The entry records it.
+    A new planet build doesn't re-route anything.
+  - `ROUTER_VERSION` is now 3. Bump it when the routing code or its
+    parameters change (cell sizes, rounds, buffer, coast filter), or the way
+    water is read from tiles changes (zoom, pixels, the feature filter).
+- **Offline or cold.** If the tiles can't be had (no network, OpenFreeMap
+  down, the budget used up, or 12 rounds without settling), the leg is routed
+  on Natural Earth plus the tiles it did get, and is **unverified**.
+  - The path says why (`unverified: 'offline' | 'budget' | 'unsettled'`) and
+    the cache keeps it with a retry time 60 seconds on.
+  - A leg stopped by the budget or the network is routed on the tiles from
+    completed rounds only, so unverified results are repeatable too.
+  - Offline, one resolve waits for the network once, not once per leg. The
+    router remembers a network failure for 60 s, the same minute an
+    unverified path waits before it is routed again.
+  - A studio left open on such a project retries every 60 seconds. When a
+    fixed route reaches an open studio without an edit, the server sends it
+    with origin `paths`. The studio updates the drawn route and keeps its undo
+    history. `paths` is refused as a client id.
+  - Nothing hangs: tile requests keep the proxy's 30-second timeout and
+    retries.
+- **Validation** uses the router's own land, so it sees the tile land too.
+  - `sea-unverified`, worded by reason. A render that uses an unverified path
+    finishes with a warning.
+  - `sea-stop-far`: a stop more than 2 km from the water its route starts or
+    ends in. `SeaPath.stopGapKm` (km from each stop to that water) backs it.
+    It catches a route that couldn't reach its stop and hides a long straight
+    line across land.
+- **Credit.** A route drawn from OpenStreetMap data is a produced work under
+  ODbL, so it needs the credit. A `blank` scene with a sea leg now carries the
+  map credit, burned in or written. A `blank` scene with no sea leg and no
+  terrain still needs none.
+- **New dependencies:** `@mapbox/vector-tile` 3.0.0 and `pbf` 5.1.2 (both
+  BSD-3-Clause, pinned to the versions `maplibre-gl` 6.14.0 already installs),
+  and `@maplibre/vt-pbf` 4.3.2 (MIT) as a dev dependency for synthetic tiles
+  in tests. MVT decoding lives in `server`; rasterising decoded rings lives in
+  `core`, which still imports nothing from the network or filesystem.
+- **Test fixtures.** `npm run build:sea-fixtures` fetches the tiles the
+  fixture routes need and commits only their `water` layer under
+  `test/fixtures/sea-tiles/`, copied byte for byte, with a README for the ODbL
+  credit. The fixture stop for Sandhamn harbour is [18.9073, 59.2893]; the
+  plan's first point was on land.
+- **Tests stay offline** unless `MAPPER_NET` is set. `MAPPER_TILE_UPSTREAM`
+  points the tile cache (map views and sea routing) at another server. Vitest
+  sets it to an address that refuses connections, and tests that need tiles
+  start a local fake that serves the fixtures.
+- **Speed.** Numbers are in `docs/render-speed.md`. From disk, Stockholm to
+  Mariehamn took 0.99 s and Stockholm to Helsinki 1.07 s. A cold Helsinki
+  route took 12.6 s, bound by the network.
 
 ## Purpose
 
@@ -436,16 +535,24 @@ Each leg becomes a polyline in `[lng, lat]`:
 - **air**: follows the great circle, bowed toward the nearer pole so even
   short flights curve (at least 15% of their length). If `via` is given, arcs
   between each pair.
-- **sea**: the shortest path over water. Natural Earth 1:10m land polygons
-  (public domain) are rasterised into a coarse water grid around the leg's
-  bounds, where any cell with some water in it is passable. A* finds the way
+- **sea**: the shortest path over water. Land comes from two sources.
+  OpenFreeMap's zoom-12 `water` layer is used inside every tile the router
+  has loaded. Natural Earth 1:10m land polygons (public domain) are used
+  everywhere else, so open ocean needs no tiles. Both are rasterised into a
+  coarse water grid around the leg's bounds, where any cell with some water in
+  it is passable (a cell with any tile land pixel is land). A* finds the way
   on it; each stretch that passes near land is then routed again on a fine
-  grid (about 200 m cells) over just that stretch, so narrow straits and
-  harbours stay open while the line stays off land. Each stop snaps to the
-  nearest water connected to the other end. The path is then simplified and
-  smoothed with a check that the smoothed line still stays off land. `via` points are forced
-  waypoints, and smoothing never rounds off a `sharp` one. If no path is found the leg falls back to `line`, and
-  `validate_project` reports it.
+  grid (50 m cells, cut into pieces when a stretch is long) over just that
+  stretch, so narrow straits, harbours and skerry channels stay open while the
+  line stays off land. Each stop snaps to the nearest water connected to the
+  other end. The path is then simplified and smoothed with a check that the
+  smoothed line still stays off land. The server runs this in rounds: after
+  each pass it loads the tiles within 2 km of the route and routes again,
+  until the route needs no new tile (see "Revision, 2026-10-17"). `via` points
+  are forced waypoints, and smoothing never rounds off a `sharp` one. If no
+  path is found the leg falls back to `line`, and `validate_project` reports
+  it. Without tiles (offline, over budget) the leg is routed on Natural Earth
+  alone and flagged unverified.
 - **land**: same as `line` for now. Road snapping is out of scope.
 
 ### Timeline
@@ -484,6 +591,12 @@ render; warnings don't. It checks:
 - `sea-crosses-land`: a sea leg whose path crosses land (sampled against the
   water grid). Sea checks run only when sea paths are given.
 - `sea-fallback`: a sea leg that fell back to `line`.
+- `sea-unverified`: a sea leg routed without all the OpenFreeMap tiles it
+  needed (offline, over the tile budget, or unsettled after 12 rounds). The
+  message gives the reason. The route may cross small islands.
+- `sea-stop-far`: a stop more than 2 km from the water its sea route starts
+  or ends in, so the line crosses land to reach it. A stop that ends one leg
+  and starts the next is warned once, for the worse gap.
 - `sign-overlap`: estimated sign boxes overlapping at each stop arrival, from
   text size at the shot zoom.
 - Camera zoom above the tile source's maximum zoom. This also checks
@@ -710,6 +823,7 @@ lists the names.
 | Chrome, ffmpeg or ProRes missing | `doctor` and the render say what's missing and how to install it |
 | Invalid patch | Tool error with the Zod path and message; project unchanged |
 | Sea routing fails | Falls back to `line`; warning |
+| OpenFreeMap unreachable while routing | Natural Earth route, flagged `sea-unverified`, routed again after 60 s |
 | Tile or WebGL failure mid-render | Retry, reload, resume from the failed frame |
 | Port in use | Pick another free port |
 | Project changed during render | Render uses the snapshot it started with; the manifest records the hash |
@@ -724,6 +838,17 @@ lists the names.
   same however it's reached), flight arcs, sea routing fixtures
   (Athens → Mykonos and Barcelona → Marseille stay at sea; a path between
   two landlocked points fails cleanly).
+- **Sea routes against tile water** (Vitest, offline, on the committed
+  fixture tiles and synthetic tiles): the archipelago proof is Stockholm →
+  Sandhamn and Stockholm → Mariehamn checked against the zoom-14 polygons of
+  the tiles themselves (point in polygon on the decoded geometry, not the
+  router's pixels), so no sample falls on an island. A control shows Natural Earth alone
+  crosses the archipelago. The Greek Islands legs
+  are a regression test. Others cover determinism (a warm cache of unrelated
+  tiles doesn't change a route), coverage seams (a cell half on a tile, tile
+  columns across 180°), the download rules, offline legs coming back
+  unverified and not retried within a minute, and an open studio getting the
+  fixed path.
 - **GPX**: parser fixtures (tracks, routes, named waypoints, multiple tracks).
 - **server**: Host and token checks, folder confinement, file-watch sync.
 - **studio**: Playwright tests for inserting, dragging and removing via
@@ -767,8 +892,11 @@ Each stage gets its own implementation plan.
 7. **Fix pass** (built): the open items from stages 4 to 6, each fixed with a
    test or parked with a reason. Render warnings, sign lift, screen-angle
    turning symbols, blank scene names, source-aware map-data errors.
-8. **Sea routes against OpenFreeMap water** (planned): sea routing that uses
+8. **Sea routes against OpenFreeMap water** (built): sea routing that uses
    the water the basemap draws, so a route stays off every island it shows.
+   Vector tiles decoded in Node, rounds of routing, 50 m fine cells,
+   `sea-unverified` and `sea-stop-far` warnings, and a credit for `blank`
+   scenes with a sea leg.
 
 ## Risks
 

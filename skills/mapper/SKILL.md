@@ -60,19 +60,23 @@ page.
   `remove_via` deletes it.
 - Mark a stop or a via point `sharp` for a corner. Without it, the line curves
   through.
-- Sea legs route around land over the water. If validation reports
-  `sea-fallback`, the leg couldn't be routed (or the stop is more than 30 km
+- Sea legs route over the water the map draws, so a route stays off the islands
+  you can see. The first route through an archipelago fetches map tiles and can
+  take several seconds, up to about 20 s for a long one. After that it is
+  cached. If validation reports `sea-fallback`, the leg couldn't be routed (or the stop is more than 30 km
   from the sea, or Mapper's land data couldn't be loaded) and is drawn as a
   straight line. If it reports
   `sea-crosses-land`, a via point has pulled the route ashore. Add via points
   over open water to fix either. `sea-stop-far` means a stop is more than 2 km
   from the water its route starts or ends in, so the line crosses land to reach
-  it: move the stop to the quay or add a via point at the harbour mouth.
-  `sea-unverified` means the route was checked against Natural Earth only,
-  because OpenFreeMap's water couldn't be had (no network, too many tiles at
-  once, or the route kept finding new islands). It may cross small islands.
-  Mapper routes the leg again by itself within a minute of the network coming
-  back; validate again then.
+  it. Put a ferry or cruise stop on the quay, not in the town centre, or add a
+  via point at the harbour mouth.
+  `sea-unverified` means the route was checked against Natural Earth's coarser
+  land outlines only, because OpenFreeMap's water couldn't be had (no network,
+  too many tiles at once, or the route kept finding new islands). It may cross
+  small islands. Mapper routes the leg again by itself within a minute of the
+  network coming back; validate again then. A render that uses such a route
+  finishes with a warning.
 - Air legs follow the great circle, bowed toward the nearer pole so even short
   flights curve (at least 15% of their length). Via points split an air leg
   into arcs that meet at corners.
@@ -85,7 +89,8 @@ page.
   pitch, or 0). Missing `zoom` is the fitted zoom + 3, capped at the theme's
   maximum. `get_project` shows the resolved values as `resolvedFollow`.
 - Computed sea paths are cached in `<project>/.mapper/paths.json`. The cache is
-  safe to delete; Mapper recomputes the paths on the next read.
+  safe to delete; Mapper recomputes the paths on the next read, which fetches
+  map tiles again for any tiles no longer on disk.
 - Set the transport per leg with `update_leg`, for example
   `{ "op": "update_leg", "index": 1, "changes": { "symbol": "ferry" } }`. A
   symbol without a mode also sets that transport's usual mode (a ferry sails,

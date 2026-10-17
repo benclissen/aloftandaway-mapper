@@ -42,8 +42,9 @@ task one tier up.
   themes, icons, sign artwork, UI text or project file format. Don't download
   its bundle or demo files into this repo. Describe behaviour in your own
   words and build it from scratch.
-- **No data-source connectors.** Mapper takes stops through `set_stops` or a
-  local GPX file through `import_gpx`. Fetching trip data from any API is the
+- **No data-source connectors.** Mapper takes stops through `set_stops`, a
+  local GPX file through `import_gpx`, or a local recorded track through
+  `import_track`. Fetching trip data from any API is the
   calling agent's job, outside this repo.
 - **Map licences.** Every render must carry the map credit (OpenStreetMap
   contributors, OpenMapTiles, OpenFreeMap), burned in or in the description.

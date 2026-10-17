@@ -14,7 +14,8 @@ page.
 
 1. Get the stops from wherever the user points you. Mapper has no data
    connectors, so you supply the stops. A local GPX file can be used instead
-   (see step 3).
+   (see step 3). For a log of where something really went, see "Recorded
+   tracks".
 2. `create_project` with an absolute `folder` and a `name`. Defaults are
    3840×2160, 25 fps, 16:9.
 3. `set_stops` with the stops in travel order. Each `at` is `[lng, lat]`. For a
@@ -170,6 +171,71 @@ Output folders with several scenes (`<scene-slug>` is the scene's name, and
 | Preview | `preview.mp4` | `01-<scene-slug>-preview.mp4` |
 | Layers | `01-<scene-slug>/map.mov`, `route.mov`, `signs.mov` | same |
 | FCPXML | compound clips plus a project timeline | compound clips only |
+
+## Recorded tracks
+
+`import_track` draws a path that was really travelled, exactly as logged. It
+reads a local `.gpx` (with a `<time>` on every point) or `.csv`, puts a stop wherever the track stood still,
+and makes every leg a `track` leg that follows the recorded points. The track
+is thinned once, at import, and kept in `<project>/tracks/<id>.json`. That
+folder is source data, not cache: don't delete it. Re-importing the same track
+reuses the same file.
+
+- Use `import_track` for a log you want kept as it was: a phone GPS log, a
+  ship's positions. Use `import_gpx` for a planned route you may reshape,
+  where the track only becomes via points and a sea leg is still routed over
+  water. A track leg is never re-routed.
+- Mapper never fetches the data. If the positions come from a provider or an
+  API, you fetch them and write a CSV file first. The first row names the
+  columns: `lng`, `lat` and `time` (`lon`, `longitude`, `latitude` and
+  `timestamp` also work, in any order and case). Longitude first, as everywhere
+  else. Write `time` in ISO 8601 with a `Z` or an offset, or as Unix seconds:
+
+  ```
+  lng,lat,time
+  23.6469,37.9426,2026-06-01T06:00:00Z
+  23.6471,37.9427,2026-06-01T06:05:00Z
+  ```
+
+  Rows with a bad coordinate are skipped and counted in the result. Rows may
+  come in any order. If any time is missing or unreadable, `stops: 'stays'` is
+  refused with a fix: repair the times, or pass `stops: 'ends'`.
+- `stops: 'stays'` (the default when every point has a time) makes a stop
+  wherever the track stayed within 1 km for `minStayMinutes` (default 120),
+  plus the first and last points. `stops: 'ends'` makes only the first and last.
+  Lower `minStayMinutes` for short calls, raise it to ignore traffic stops.
+- Stops are named after a GPX waypoint within 1 km, otherwise `Stop 1`,
+  `Stop 2`. The result lists each stop with its arrival and departure times.
+  Match those to the itinerary, then rename with `update_project`'s
+  `update_stop` op, using the stop ids from `get_project`:
+  `{ "op": "update_stop", "id": "<stop id>", "changes": { "name": "Santorini", "pause": 2 } }`.
+- Fix a missed stop with `insert_stop` at the port's `[lng, lat]`, for example
+  `{ "op": "insert_stop", "index": 2, "stop": { "name": "Rhodes", "at": [28.2278, 36.4349] } }`,
+  and a false one with `remove_stop { id }`. Both keep every leg on the track: an inserted stop
+  splits its leg, and removing a stop joins the two parts. A `legMode` on an
+  inserted stop wins for the leg leaving it, so leave it out. Changing a leg's
+  `symbol` alone also keeps it on its track.
+- Validation: `track-missing` is an error (the file in `tracks/` is gone; put it
+  back or import again). `track-stop-far` is a warning: a stop is more than
+  2 km from the track, so the line jumps to it. Move the stop onto the track.
+- A track leg takes no via points, and the studio shows it read-only.
+- Timing uses distance only. The recorded times don't set the clip's pace.
+
+### Exact length
+
+`timing.length` fixes a scene's length in seconds, for a clip that has to fit
+a gap in the edit. Set it with `sceneSet`:
+
+```json
+{ "folder": "/abs/path", "sceneSet": { "timing": { "length": 8 } } }
+```
+
+At 25 fps that renders exactly 200 frames. Mapper works out `travel` as the
+length minus both holds and all pauses, and writes it back into `timing.travel`.
+A `travel` you set by hand on that scene is overwritten, so change the length,
+holds or pauses instead. Changing a pause leaves the total at 8 s. If the holds
+and pauses add up to more than the length, the patch is refused. `null` clears
+the length. The summary shows `(200 frames, fixed length)`.
 
 ## Look and camera
 

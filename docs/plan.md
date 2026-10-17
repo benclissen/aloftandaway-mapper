@@ -16,6 +16,7 @@ something that works.
 | 7 | **Fix pass** (built): every open item from stages 4–6 fixed with a test or parked with a reason. Render warnings, sign lift, turning symbols that follow the line on screen, blank scene names. The rare corrupt capture is parked (0 glitches in 3,000 loads, see [render-speed.md](render-speed.md)) | Every open item from stages 4–6 is fixed with a test or parked with a reason |
 | 8 | **Sea routes against OpenFreeMap water** (built): vector tiles decoded in Node, land rebuilt from the tiles' water, the router given network access and run in rounds, 50 m fine cells, `sea-unverified` and `sea-stop-far` warnings, offline routes flagged and retried, a map credit for `blank` scenes with a sea leg. Replaces the Baltic skerries item. See [render-speed.md](render-speed.md#sea-routing-stage-8-task-9) for timings | A route through the Stockholm archipelago stays off every island the basemap draws |
 | 9 | **Fix pass 2** (built): every open item from stages 7 and 8 fixed with a test or parked with a reason. Straight-line sea legs say they may cross land, the sea router's offline minute starts on every failure and only the network clears it, a stale planet build is refetched, hand edits to the project file reach the studio. A new weekly OpenFreeMap build doesn't re-route cached legs, and the render test hooks stay (both parked) | Every open item from stages 7 and 8, and from the Stage 8 hand-over check, is fixed with a test or parked with a reason |
+| 10 | **Recorded tracks and exact length** (built): `import_track` reads a GPX or CSV track, puts a stop wherever it stood still, and draws `track` legs along the recorded points, kept in `tracks/`. Project files are schema version 3. A scene can hold an exact length (`timing.length`) that stays put when pauses change | A recorded cruise track renders along its logged path with a stop at each port call, and a scene set to 4 s at 25 fps renders exactly 100 frames |
 
 **Decision, 2026-10-14:** the default render is one flattened H.264 MP4
 (`all.mp4`). Layered ProRes plus FCPXML stays as an option (`layers`), and a
@@ -33,7 +34,7 @@ frame rate, relink) weren't reported one by one.
 
 Out of scope for now: connecting to trip-data APIs (the agent fetches the
 data and passes stops in), hosting, a full manual editor, editable Final Cut titles,
-render-to-exact-length, photos on the map, photo signs, stats overlays.
+photos on the map, photo signs, stats overlays.
 
 ## Parked: real ship tracks (AIS)
 
@@ -47,7 +48,7 @@ only record from now on.
 
 | Source | Cost | Notes |
 |---|---|---|
-| Phone GPS log (GPX) | Free | Future trips only; already covered by GPX import |
+| Phone GPS log (GPX) | Free | Future trips only; already covered by GPX import (a planned route to reshape) and `import_track` (a log kept as recorded) |
 | [aisstream.io](https://aisstream.io) live feed, recorded locally | Free | Future trips only; shore receivers, gaps mid-ocean |
 | [Datalastic](https://datalastic.com/pricing/) historical API | About €199/month, billed per vessel-day; €9 trial | Up to 31 days per request, by IMO/MMSI |
 | [VesselFinder](https://www.vesselfinder.com/vessel-positions-api) historical API | €330 per 10,000 credits; 1 credit per shore position, 10 per satellite position | Archive from 2009 |
@@ -56,11 +57,9 @@ Prices are from vendor pages and third-party comparisons as of 2026-10-13.
 Confirm current prices, and check that the licence allows derived routes in
 commercial videos, before buying.
 
-If we pick it up again:
-
-- An `import_track` tool that takes a recorded track (from a provider the
-  agent calls, or a file) and turns it into legs.
-- A `track` leg mode that draws a recorded path as-is, with port calls
-  detected from stationary periods, and optionally the real timing.
-- One month of a historical provider would be enough to backfill every past
-  cruise in one go.
+Built in Stage 10: `import_track` takes a recorded track from a local GPX or
+CSV file (the agent fetches the data, Mapper doesn't), and the `track` leg
+mode draws it as logged, with a stop wherever the track stood still. Buying
+historical data stays parked. If we pick it up again, one month of a
+historical provider would be enough to backfill every past cruise in one go;
+the agent would write each ship's positions to a CSV and call `import_track`.

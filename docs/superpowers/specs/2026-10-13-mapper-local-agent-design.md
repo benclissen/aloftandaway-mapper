@@ -365,6 +365,73 @@ describe the layered export unless they say otherwise.
   tool's input is a strict schema, so unknown keys such as these are refused.
   The CLI passes only its named options. A test pins that.
 
+**Revision, 2026-10-17 (stage 10 decisions):**
+
+- **A recorded track is drawn as logged.** A leg with `mode: 'track'` and
+  `track: '<id>'` follows the recorded points between its two stops, with its
+  ends pinned to the stops. The sea router never runs on it and it takes no
+  via points. Its timing is distance only, like every other leg. Recorded times
+  are used only to find stops and aren't stored.
+- **Tracks live in `tracks/`, next to `mapper.json`.** Not in `mapper.json`,
+  because every tool returns the whole project and thousands of points would
+  flood the agent's context. Not in `.mapper/`, because that folder is cache
+  you can delete and a track is source data. `tracks/<id>.json` is
+  `{"version":1,"name"?:string,"points":[[lng,lat],…]}` as compact JSON with
+  coordinates rounded to 6 decimals. The id is the first 12 hex characters of
+  the SHA-256 of that text, so importing the same track again reuses the file.
+  Files are written once, never changed, and never deleted, since another
+  scene may use the same one.
+- **Thinned once, at import.** Each stay collapses to one point at its centre.
+  Douglas-Peucker then runs in Mercator from a 10 m tolerance, doubling until
+  at most `MAX_TRACK_POINTS` (10,000) remain. The first point, the last point
+  and each stay's point are always kept.
+- **Stops come from where the track stood still** (`stops: 'stays'`, the
+  default when every point has a time). A stay is a run of points within
+  `STAY_RADIUS_KM` (1) of the run's first point that lasts at least
+  `minStayMinutes` (default 120). Points are sorted by time first. The run
+  then keeps taking points within 1 km of its centre, and two stays back to
+  back with centres within 1 km join into one stop. The first and last points
+  are stops too unless a stay covers them. A stop takes the name of a GPX
+  waypoint within 1 km, or `Stop N`. The tool returns each stop's arrival and
+  departure times so the agent can name the stops. `stops: 'ends'` gives only
+  the first and last points, as `import_gpx` does.
+- **Each leg's stretch is found, not stored.** `buildRoute` cuts the track at
+  each stop: the first run of points within `TRACK_NEAR_KM` (2) of the stop,
+  then the nearest point in that run. The first run handles a ship that calls
+  at one port twice and a cruise that ends where it started. A leg that
+  follows another leg of the same track starts where that leg ended. If no
+  point is within 2 km, the nearest one is used and `track-stop-far` warns.
+- **Adding or removing a stop keeps the track.** A new leg from a to b is a
+  track leg of T, with no via points, when the old legs leaving a and arriving
+  at b are both track legs of T. That covers inserting a stop on a track leg
+  and removing a stop between two parts of one track. Otherwise a leg that
+  would inherit `track` becomes `line`. An explicit `legMode` on an inserted
+  stop wins for the leg leaving it. Dragging a stop moves the cut.
+- **A transport alone doesn't take a leg off its track.** `update_leg { symbol }`
+  without `mode` keeps `mode: 'track'`, and undo restores the leg exactly.
+- **Schema version 3.** `LegMode` gains `track`, `Leg` gains `track?`
+  (12 hex characters) and `Timing` gains `length?` (> 0). A `track` leg must
+  have `track` set and no via points. `track` may stay on a leg of another
+  mode, so the studio can switch back without losing it. Version 2 files
+  upgrade by changing only `schemaVersion`, a version 1 file goes through
+  version 2 first, and both are written as version 3 on the next save.
+  `set_stops`, `import_gpx` and `StopInput.legMode` take every mode except
+  `track`.
+- **Tracks ride in `seaPaths`.** The server adds `track:<id>` entries (status
+  `ok` and the points) for each track the project uses, so every route
+  consumer already receives them. Sea keys are 16 hex characters and never
+  start with `track:`. A missing or unreadable file has no entry: the leg is
+  drawn as a straight line, validation gives the error `track-missing` and a
+  render refuses. The studio shows the leg read-only, with no via points, and
+  offers "Recorded track" only on legs that have a track.
+- **Exact length holds.** `sceneSet: { timing: { length: 8 } }` fixes the scene
+  at `round(length × fps)` frames, 200 for 8 s at 25 fps. While it is set,
+  `travel = length − holdStart − holdEnd − Σ pause`. The value is written back
+  into `timing.travel`, so a `travel` set by hand on that scene is overwritten.
+  `null` clears the length. If the holds and pauses add up to more than the
+  length, the schema refuses the project, which catches a patch and a hand edit
+  alike. The tool summary reads `(N frames, fixed length)`.
+
 ## Purpose
 
 Mapper turns a trip into an animated map clip for a travel film. An AI agent
@@ -397,14 +464,15 @@ layered clip with an FCPXML file.
   (waypoints, curved/sharp points, transport per leg, map style, undo).
   Everything else (line styling, sign text, camera tuning, timing) goes
   through the agent.
-- Editable Final Cut titles and render-to-exact-length (possible later).
+- Editable Final Cut titles (possible later).
 - Photos on the map (on the symbol or at a stop), photo signs, and stats
   overlays such as speed and elevation (possible later).
 - Browser-side video encoding. Rendering uses headless Chrome and ffmpeg.
 - Connecting to any trip-data API. Mapper takes stops as input; fetching them
   is the agent's job.
-- Real ship tracks from AIS data. Parked, see [docs/plan.md](../../plan.md#parked-real-ship-tracks-ais).
-  The `Leg` type leaves room to add a recorded-track leg later without breaking project files.
+- Buying historical AIS data. Parked, see [docs/plan.md](../../plan.md#parked-real-ship-tracks-ais).
+  `import_track` and the `track` leg mode (stage 10) draw a track the agent
+  already has as a local file, but Mapper fetches nothing.
 
 ## Decisions
 
@@ -416,7 +484,7 @@ layered clip with an FCPXML file.
 | Output | Flattened H.264 MP4 by default; optional ProRes layers plus FCPXML, and an optional H.264 preview | One simple file by default; layers are what Final Cut handles best |
 | Defaults | 3840×2160, 25 fps, 16:9 | The user's usual Final Cut format |
 | Coordinates | `[lng, lat]` in WGS84 (GeoJSON order) | Agents and data sources speak lat/lng; Mercator maths stays internal |
-| Trip data | Supplied by the agent as stops, or read from a GPX file | Mapper knows no data sources; the agent fetches data from wherever the user points it |
+| Trip data | Supplied by the agent as stops, or read from a local GPX file or recorded track | Mapper knows no data sources; the agent fetches data from wherever the user points it |
 
 ## Architecture
 
@@ -454,17 +522,18 @@ A project is a folder:
 ```
 celebrity-xcel/
 ├── mapper.json         The project
+├── tracks/<id>.json    Recorded tracks (source data); never deleted by Mapper
 ├── renders/<timestamp>/  One folder per render
 └── .mapper/            Cache (computed paths, preview frames); safe to delete
 ```
 
-`mapper.json`, schema version 2 (validated with Zod; unknown keys rejected):
+`mapper.json`, schema version 3 (validated with Zod; unknown keys rejected):
 
 ```ts
 type LngLat = [number, number]
 
 interface Project {
-  schemaVersion: 2
+  schemaVersion: 3
   id: string                      // UUID
   name: string
   createdAt: string               // ISO 8601
@@ -485,6 +554,7 @@ interface Scene {
     holdStart: number             // seconds before the line starts
     travel: number                // seconds of line drawing, excluding pauses
     holdEnd: number               // seconds after the line finishes
+    length?: number               // fixed scene length in seconds; travel is then worked out from it
   }
   stops: Stop[]                   // in travel order, at least 2
   legs: Leg[]                     // stops.length - 1, leg i joins stop i and i+1
@@ -511,8 +581,9 @@ interface ViaPoint {
 }
 
 interface Leg {
-  mode: 'sea' | 'air' | 'land' | 'line'
-  via: ViaPoint[]                 // waypoints that shape the leg, in order (may be empty)
+  mode: 'sea' | 'air' | 'land' | 'line' | 'track'
+  via: ViaPoint[]                 // waypoints that shape the leg, in order (empty for a track leg)
+  track?: string                  // id of tracks/<id>.json; required when mode is 'track'
   symbol?: SymbolKind             // overrides look.symbol for this leg
 }
 
@@ -552,7 +623,8 @@ interface Camera {
 `legs`, `look`, `camera`) directly on the project, `via` as plain `LngLat[]`,
 no `sharp` flags, and shorter symbol and theme lists. From stage 3, loading a
 version 1 file upgrades it in memory: one scene named after the project, and
-each via point becomes `{ at }`. It is saved as version 2 on the next write.
+each via point becomes `{ at }`. It is saved as the current version on the next write.
+A version 2 file upgrades by changing only `schemaVersion`.
 Old symbol names map to new ones (`ship` → `cruise-ship`).
 
 Transports and themes are drawn and styled from scratch for Mapper. None
@@ -604,6 +676,9 @@ Each leg becomes a polyline in `[lng, lat]`:
   it. Without tiles (offline, over budget) the leg is routed on Natural Earth
   alone and flagged unverified.
 - **land**: same as `line` for now. Road snapping is out of scope.
+- **track**: the recorded points of `tracks/<id>.json` between the leg's two
+  stops, as logged (see "Revision, 2026-10-17 (stage 10 decisions)"). No
+  smoothing, no router, no via points.
 
 ### Timeline
 
@@ -611,6 +686,8 @@ Times are whole frames at `output.fps`. Each scene has its own timeline
 starting at frame 0. A joined render plays the scenes back to back.
 
 - Total frames = `round((holdStart + travel + Σ pauses + holdEnd) × fps)`.
+  With `timing.length` set, it is `round(length × fps)`, and `travel` is
+  `length − holdStart − holdEnd − Σ pauses`.
 - `travel` is split across legs in proportion to each leg's length in
   Mercator units, with a minimum of 0.5 s per leg.
 - Within a leg, progress follows the camera easing curve.
@@ -643,6 +720,10 @@ render; warnings don't. It checks:
 - `sea-fallback`: a sea leg that fell back to `line`. When the network or the
   budget left it unverified, its fix says to wait, since Mapper routes it
   again by itself, not to edit the leg.
+- `track-missing` (error): a `track` leg whose `tracks/<id>.json` is missing
+  or unreadable.
+- `track-stop-far` (warning): a stop more than 2 km from the recorded track
+  of the leg it ends or starts, so the line jumps to it.
 - `sea-unverified`: a sea leg routed without all the OpenFreeMap tiles it
   needed (offline, over the tile budget, or unsettled after 12 rounds),
   whether it found a route or fell back. The message gives the reason. The
@@ -686,6 +767,14 @@ interface StopInput {
   `stops: 'waypoints'` makes a stop of each named waypoint; `'ends'` (the
   default) uses the start and end only. The track between stops becomes
   `via` points, simplified.
+- `import_track({ folder, scene?, path, track?, stops?, minStayMinutes?, symbol? })`
+  reads a recorded track from a local `.gpx` or `.csv` (`lng,lat,time`
+  columns). `stops: 'stays'` (default when every point has a time) puts a stop
+  at each stay of `minStayMinutes` (default 120) or more; `'ends'` uses the
+  first and last points. The track is thinned and written to `tracks/<id>.json`
+  before the project changes, and every leg becomes a `track` leg. The result
+  lists each stop with its arrival and departure times. Use `import_gpx` for a
+  planned route to reshape and `import_track` for a log kept exactly.
 
 The agent should pass stops already in travel order, with sea days dropped
 and overnights merged. `validate_project` warns if it didn't.
@@ -703,6 +792,7 @@ position). Without it they use the first scene.
 | `get_project` | `folder` | Full project, with each scene's timeline summary (duration, arrival times) |
 | `set_stops` | `folder`, `scene?`, `stops`, `legMode?`, `replace?` (default true) | Project summary and validation |
 | `import_gpx` | `folder`, `scene?`, `path`, `track?`, `stops?` | Project summary and validation |
+| `import_track` | `folder`, `scene?`, `path`, `track?`, `stops?`, `minStayMinutes?`, `symbol?` | Project summary and validation, plus the stops with arrival and departure times |
 | `update_project` | `folder`, `scene?`, `set?` (JSON Merge Patch over the project's `name`, `output` and `credit`), `sceneSet?` (JSON Merge Patch over the scene's `name`, `timing`, `look` and `camera`), `ops?` (ops below) | Project summary and validation |
 | `validate_project` | `folder` | Errors and warnings, per scene |
 | `preview_frame` | `folder`, `scene?`, `at` (exactly one of `{ seconds }`, `{ frame }`, `{ progress }` where progress is 0–1), `width?` | PNG image |
@@ -865,6 +955,9 @@ lists the names.
 - Shaping routes: add via points to bend a line around something, and mark
   them `sharp` for corners. Split a trip into scenes when the film cuts
   away between parts of it.
+- Recorded tracks: when to use `import_track` instead of `import_gpx`, how to
+  write a `lng,lat,time` CSV from data the agent fetched, naming the stops
+  from the returned times, fixing a missed or false stop, and `timing.length`.
 - Rules: always look at a contact sheet before rendering. Fix validation
   warnings or explain them. Never edit `mapper.json` by hand. Tell the user
   which credit is required.
@@ -958,6 +1051,11 @@ Each stage gets its own implementation plan.
    planet build is refetched, and hand edits reach the studio. A new planet
    build doesn't re-route cached legs, and the render test hooks stay (both
    parked).
+10. **Recorded tracks and exact length** (built): `import_track` reads a GPX or
+    CSV track and puts a stop at each stay. `track` legs draw the recorded
+    points as logged, kept in `tracks/`. Project files are schema version 3. A
+    scene can hold an exact length (`timing.length`). Buying historical AIS
+    data stays parked.
 
 ## Risks
 

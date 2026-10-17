@@ -1,0 +1,221 @@
+{
+  "build": "20261011_080001_pt",
+  "note": "Water layer only, copied byte for byte from OpenFreeMap tiles. Written by npm run build:sea-fixtures.",
+  "legs": [
+    {
+      "name": "Stockholm to Sandhamn",
+      "from": {
+        "name": "Stockholm, Stadsgården quay",
+        "at": [
+          18.087,
+          59.317
+        ]
+      },
+      "to": {
+        "name": "Sandhamn harbour",
+        "at": [
+          18.9073,
+          59.2893
+        ]
+      },
+      "verified": true,
+      "rounds": 1,
+      "z12Tiles": 34,
+      "z14TilesNear": 103,
+      "km": 62.4,
+      "pathPoints": 2753
+    },
+    {
+      "name": "Stockholm to Mariehamn",
+      "from": {
+        "name": "Stockholm, Stadsgården quay",
+        "at": [
+          18.087,
+          59.317
+        ]
+      },
+      "to": {
+        "name": "Mariehamn, Västra hamnen",
+        "at": [
+          19.925,
+          60.0935
+        ]
+      },
+      "verified": true,
+      "rounds": 4,
+      "z12Tiles": 166,
+      "z14TilesNear": 250,
+      "km": 145.1,
+      "pathPoints": 3457
+    },
+    {
+      "name": "Piraeus to Mykonos",
+      "from": {
+        "name": "Piraeus",
+        "at": [
+          23.6466,
+          37.942
+        ]
+      },
+      "to": {
+        "name": "Mykonos",
+        "at": [
+          25.3289,
+          37.4467
+        ]
+      },
+      "verified": true,
+      "rounds": 2,
+      "z12Tiles": 54,
+      "z14TilesNear": 151,
+      "km": 173.3,
+      "pathPoints": 897
+    },
+    {
+      "name": "Mykonos to Santorini",
+      "from": {
+        "name": "Mykonos",
+        "at": [
+          25.3289,
+          37.4467
+        ]
+      },
+      "to": {
+        "name": "Santorini",
+        "at": [
+          25.4317,
+          36.4166
+        ]
+      },
+      "verified": true,
+      "rounds": 2,
+      "z12Tiles": 40,
+      "z14TilesNear": 102,
+      "km": 123.7,
+      "pathPoints": 641
+    },
+    {
+      "name": "Santorini to Rhodes",
+      "from": {
+        "name": "Santorini",
+        "at": [
+          25.4317,
+          36.4166
+        ]
+      },
+      "to": {
+        "name": "Rhodes",
+        "at": [
+          28.2278,
+          36.451
+        ]
+      },
+      "verified": true,
+      "rounds": 2,
+      "z12Tiles": 46,
+      "z14TilesNear": 260,
+      "km": 271.4,
+      "pathPoints": 513
+    }
+  ],
+  "stops": [
+    {
+      "name": "Stockholm, Stadsgården quay",
+      "given": [
+        18.087,
+        59.317
+      ],
+      "at": [
+        18.087,
+        59.317
+      ],
+      "metresToWater": 110
+    },
+    {
+      "name": "Sandhamn harbour",
+      "given": [
+        18.9105,
+        59.288
+      ],
+      "at": [
+        18.9073,
+        59.2893
+      ],
+      "metresToWater": 0,
+      "adjusted": "The given point is on land, over 150 m from zoom-14 water; moved about 230 m north-west into the middle of the harbour inlet."
+    },
+    {
+      "name": "Mariehamn, Västra hamnen",
+      "given": [
+        19.925,
+        60.0935
+      ],
+      "at": [
+        19.925,
+        60.0935
+      ],
+      "metresToWater": 0
+    },
+    {
+      "name": "Piraeus",
+      "given": [
+        23.6466,
+        37.942
+      ],
+      "at": [
+        23.6466,
+        37.942
+      ],
+      "metresToWater": 225,
+      "note": "More than 150 m from zoom-14 water. Existing fixture coordinates, left as they are."
+    },
+    {
+      "name": "Mykonos",
+      "given": [
+        25.3289,
+        37.4467
+      ],
+      "at": [
+        25.3289,
+        37.4467
+      ],
+      "metresToWater": 95
+    },
+    {
+      "name": "Santorini",
+      "given": [
+        25.4317,
+        36.4166
+      ],
+      "at": [
+        25.4317,
+        36.4166
+      ],
+      "metresToWater": 50
+    },
+    {
+      "name": "Rhodes",
+      "given": [
+        28.2278,
+        36.451
+      ],
+      "at": [
+        28.2278,
+        36.451
+      ],
+      "metresToWater": 30
+    }
+  ],
+  "tiles": {
+    "z12": {
+      "written": 299,
+      "noWater": 0
+    },
+    "z14": {
+      "written": 806,
+      "noWater": 0
+    },
+    "bytes": 945080,
+    "files": 1105
+  }
+}

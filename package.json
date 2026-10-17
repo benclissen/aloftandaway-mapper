@@ -19,7 +19,8 @@
     "bench:pipeline": "npm run build && tsx bench/pipeline.ts",
     "bench:capture": "npm run build && tsx bench/capture-stress.ts",
     "build:glyphs": "tsx scripts/build-glyphs.ts",
-    "build:icons": "tsx scripts/build-icons.ts"
+    "build:icons": "tsx scripts/build-icons.ts",
+    "build:sea-fixtures": "tsx scripts/build-sea-fixtures.ts"
   },
   "dependencies": {
     "@fontsource/plus-jakarta-sans": "^5.3.0",

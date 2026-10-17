@@ -14,6 +14,15 @@ Land outlines used by the sea router.
 - **Rebuild:** `npm run build:land` downloads the layers into a fresh temp folder, encodes them
   and rewrites this file.
 
+## Sea-route test tiles
+
+The sea-route tests don't use the network. `test/fixtures/sea-tiles/` holds the water layer of the
+OpenFreeMap tiles their five fixture legs need: Stockholm to Sandhamn and Mariehamn, and the three
+Greek Islands legs. It is OpenStreetMap data under the ODbL, and the folder's README has the credit,
+the licence and how it's built. About 1,100 small files, just under 1 MB.
+
+- **Rebuild:** `npm run build:sea-fixtures`, with network.
+
 ## Transport icons
 
 The transport drawings are not in this folder. They're in `src/studio/stage/icons.ts`, and

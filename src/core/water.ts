@@ -1,5 +1,5 @@
 import { toLngLat, type XY } from './geo.js'
-import type { LandSource } from './land.js'
+import type { LandSource, LandTile, TileLand } from './land.js'
 
 /** A Mercator box. x may be unwrapped (outside 0 to 1). */
 export interface Box {
@@ -196,7 +196,90 @@ export function waterGridAt(land: LandSource, frame: GridFrame): WaterGrid {
     landMask[i] = fillMask[i]! | edgeMask[i]!
     solid[i] = fillMask[i]! & (edgeMask[i]! ^ 1)
   }
+  if (land.tiles) overlayTiles(land.tiles, frame, landMask, solid)
   return { x0, y0, cell, cols, rows, land: landMask, solid, cost: coastCost(landMask, cols, rows) }
+}
+
+/**
+ * Read loaded tiles over the ring result. A pixel counts for a cell when their squares overlap with positive area.
+ * A cell wholly on loaded tiles is land when any of its pixels is land, and solid when all are. A cell partly on
+ * them keeps its ring land and adds the tiles' land, and stays solid only if the rings and every pixel say so.
+ */
+function overlayTiles(tiles: TileLand, frame: GridFrame, land: Uint8Array, solid: Uint8Array): void {
+  const { x0, y0, cell, cols, rows } = frame
+  const n = tiles.pixels
+  const span = 2 ** tiles.zoom
+  const world = span * n
+  // Each column's pixels in world pixel units (x unwrapped), and its tiles.
+  const pc0 = new Float64Array(cols)
+  const pc1 = new Float64Array(cols)
+  for (let c = 0; c < cols; c++) {
+    pc0[c] = Math.floor((x0 + c * cell) * world)
+    pc1[c] = Math.ceil((x0 + (c + 1) * cell) * world) - 1
+  }
+  const txFirst = Math.floor(pc0[0]! / n)
+  const txLast = Math.floor(pc1[cols - 1]! / n)
+  // Loaded tiles along a tile row, from txFirst, or null if it has none. Rows only move down the grid.
+  const tileRows = new Map<number, (LandTile | undefined)[] | null>()
+  const tileRow = (ty: number): (LandTile | undefined)[] | null => {
+    let row = tileRows.get(ty)
+    if (row === undefined) {
+      row = null
+      if (ty >= 0 && ty < span) {
+        const found: (LandTile | undefined)[] = []
+        for (let tx = txFirst; tx <= txLast; tx++) found.push(tiles.tile(((tx % span) + span) % span, ty))
+        if (found.some((t) => t)) row = found
+      }
+      tileRows.set(ty, row)
+    }
+    return row
+  }
+
+  for (let r = 0; r < rows; r++) {
+    const pr0 = Math.floor((y0 + r * cell) * world)
+    const pr1 = Math.ceil((y0 + (r + 1) * cell) * world) - 1
+    const ty0 = Math.floor(pr0 / n)
+    const ty1 = Math.floor(pr1 / n)
+    for (const ty of tileRows.keys()) if (ty < ty0) tileRows.delete(ty)
+    let loaded = false
+    for (let ty = ty0; ty <= ty1; ty++) if (tileRow(ty)) loaded = true
+    if (!loaded) continue
+    for (let c = 0; c < cols; c++) {
+      const tx0 = Math.floor(pc0[c]! / n)
+      const tx1 = Math.floor(pc1[c]! / n)
+      let covered = true
+      let some = false
+      let any = false
+      let all = true
+      for (let ty = ty0; ty <= ty1; ty++) {
+        const row = tileRow(ty)
+        const lr0 = Math.max(pr0, ty * n) - ty * n
+        const lr1 = Math.min(pr1, ty * n + n - 1) - ty * n
+        for (let tx = tx0; tx <= tx1; tx++) {
+          const tile = row?.[tx - txFirst]
+          if (!tile) {
+            covered = false
+            continue
+          }
+          some = true
+          const lc0 = Math.max(pc0[c]!, tx * n) - tx * n
+          const lc1 = Math.min(pc1[c]!, tx * n + n - 1) - tx * n
+          const count = tile.landIn(lc0, lr0, lc1, lr1)
+          if (count > 0) any = true
+          if (count < (lc1 - lc0 + 1) * (lr1 - lr0 + 1)) all = false
+        }
+      }
+      if (!some) continue
+      const i = r * cols + c
+      if (covered) {
+        land[i] = any ? 1 : 0
+        solid[i] = all ? 1 : 0
+      } else {
+        land[i] = any ? 1 : land[i]!
+        solid[i] = all ? solid[i]! : 0
+      }
+    }
+  }
 }
 
 /** Mark the cells the segment (in cell units) passes through. */

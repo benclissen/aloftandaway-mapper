@@ -7,6 +7,7 @@ import {
   type Project,
   type ProjectPatch,
   type Route,
+  type Leg,
   type Scene,
 } from '../../core/index.js'
 import { EDIT_ROUTE_LAYER, type MapStage } from '../stage/MapStage.js'
@@ -78,6 +79,11 @@ export function sharpEdit(scene: Scene, target: PointTarget): Edit | undefined {
     patch: { scene: scene.id, ops: [{ op: 'update_via', leg: target.leg, index: target.index, changes: { sharp: value } }] },
     label: sharp ? 'Curve through a via point' : 'Make a via point sharp',
   }
+}
+
+/** Whether a leg takes via points. A recorded track is drawn as logged, so it takes none. */
+export function canAddVia(leg: Pick<Leg, 'mode'> | undefined): boolean {
+  return leg !== undefined && leg.mode !== 'track'
 }
 
 /** The edit that removes via `index` of leg `leg` in the scene with id `sceneId`. */
@@ -202,6 +208,8 @@ export class RouteEditor {
       this.cb.onSelectLeg(legs[0])
       return
     }
+    // A recorded track is read-only: clicking selects it, but adds no via point.
+    if (!canAddVia(this.scene?.legs[selected])) return
     const { at, insertIndex } = nearestOnLeg(route, selected, [e.lngLat.lng, e.lngLat.lat])
     void this.edit({ ops: [{ op: 'insert_via', leg: selected, index: insertIndex, point: { at: savedAt(at) } }] }, 'Add a via point')
   }
@@ -244,7 +252,7 @@ export class RouteEditor {
     const scene = this.scene
     const route = this.stage.route
     const leg = this.selectedLeg
-    const via = leg === undefined ? [] : (scene?.legs[leg]?.via ?? [])
+    const via = leg === undefined || !canAddVia(scene?.legs[leg]) ? [] : (scene?.legs[leg]?.via ?? [])
     // The route must be the one for this scene; a leg whose knots don't match is mid-reload. A selected leg belongs to
     // the scene being loaded, so the old scene shows no via handles for it.
     const ready =

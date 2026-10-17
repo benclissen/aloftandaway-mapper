@@ -13,17 +13,22 @@ something that works.
 | 4 | **Routes** (built): sea routing around land, flight arcs, follow camera, GPX import, validation warnings | A cruise route stays at sea |
 | 5 | **Look** (built): about 20 transports (motorcycle, ferry, cruise ship, campervan…), eleven map styles including the Aloft & Away theme, terrain and tilt | Videos look on-brand, with the right vehicle on each leg |
 | 6 | **Scenes** (built): several scenes per project, studio scene tabs, renders per scene or joined, a compound clip per scene in FCPXML | A two-scene project imports into Final Cut as two clips on one timeline |
+| 7 | **Fix pass** (built): every open item from stages 4–6 fixed with a test or parked with a reason. Render warnings, sign lift, turning symbols that follow the line on screen, blank scene names. The rare corrupt capture is parked (0 glitches in 3,000 loads, see [render-speed.md](render-speed.md)) | Every open item from stages 4–6 is fixed with a test or parked with a reason |
+| 8 | **Sea routes against OpenFreeMap water** (planned): vector tiles decoded in Node, land rebuilt from clipped tile polygons, the router given network access. Replaces the Baltic skerries item | A route through the Stockholm archipelago stays off every island the basemap draws |
 
 **Decision, 2026-10-14:** the default render is one flattened H.264 MP4
 (`all.mp4`). Layered ProRes plus FCPXML stays as an option (`layers`), and a
 flattened ProRes master is `codec: 'prores'`. Stage 2 is complete for the
-default path. The Final Cut import check is an outstanding acceptance item for
-the optional layered export only, and does not block later stages.
+default path. The Final Cut import check for the optional layered export
+passed on 2026-10-17 (see below).
 
-**Stage 6, built:** the Final Cut import check for a two-scene layered export
-is pending the user's import of that export. It has not been checked yet, so
-stage 6's last "Done when" line is unconfirmed. The Stage 2 import check above
-is still outstanding too.
+**Final Cut import, passed 2026-10-17:** the user imported a two-scene
+layered export (the Stage 7 check project) into Final Cut Pro 12.4. It gave two
+compound clips back to back on one timeline, each with map, route and signs on
+separate lanes. That confirms stage 6's last "Done when" line and Stage 2's
+import check. The finer checks in
+[final-cut-export.md](final-cut-export.md) (halos, colour, roles, markers,
+frame rate, relink) weren't reported one by one.
 
 Out of scope for now: connecting to trip-data APIs (the agent fetches the
 data and passes stops in), hosting, a full manual editor, editable Final Cut titles,

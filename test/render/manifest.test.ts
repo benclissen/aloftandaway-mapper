@@ -10,6 +10,7 @@ import { Encoder } from '../../src/render/encode.js'
 import { RenderError } from '../../src/render/errors.js'
 import { planExport } from '../../src/render/export-plan.js'
 import { buildManifest, writeManifest, type ExportManifest, type ManifestInput } from '../../src/render/manifest.js'
+import { creditLine, leftover } from '../../src/mcp/tools.js'
 import { renderPass, type PassDeps, type PassEncoder, type PassPage } from '../../src/render/render-pass.js'
 import { writeFileAtomic } from '../../src/server/atomic.js'
 import { greekIslands, projectWithScenes } from '../fixtures/projects.js'
@@ -162,6 +163,29 @@ describe('buildManifest', () => {
     expect(manifest.scenes).toEqual([{ id: project.scenes[1]!.id, name: 'Sail', position: 2, offsetFrame: 0, range: { fromFrame: 25, toFrame: 50 } }])
   })
 
+  test('the manifest lists warnings', () => {
+    const project = twoScenes()
+    const plan = planExport(project, { seaPaths: {} })
+    const warnings = ['Scene 2 of 2 · Sail: frames 3 and 4: the camera height over terrain hadn\'t settled.']
+    expect(buildManifest({ ...input(project, plan), warnings }).warnings).toEqual(warnings)
+    // A clean render writes no warnings key at all, so its manifest looks as it did before warnings existed.
+    expect(buildManifest({ ...input(project, plan), warnings: [] })).not.toHaveProperty('warnings')
+    expect(buildManifest(input(project, plan))).not.toHaveProperty('warnings')
+  })
+
+  test('an old manifest without warnings reads', async () => {
+    const dir = await mkdtemp(path.join(tmp, 'old-'))
+    const old = manifest('failed')
+    expect(old).not.toHaveProperty('warnings')
+    await writeManifest(path.join(dir, 'manifest.json'), old)
+    expect(await creditLine(path.join(dir, 'manifest.json'))).toBe(`Credit required: ${MAP_CREDIT} (the short credit lines are burned into the picture; the full text still goes in the video description)`)
+    expect(await leftover({ dir, outputs: [] })).toEqual([
+      'No outputs were finished.',
+      `Folder: ${dir}`,
+      expect.stringMatching(/^Credit required: /),
+    ])
+  })
+
   test('credit covers only the rendered scenes', () => {
     const project = twoScenes()
     project.scenes[0]!.look.theme = 'light'
@@ -201,6 +225,7 @@ describe('renderPass failures', () => {
         },
         renderFrame: async (n) => {
           if (n >= failFrom) throw new Error(`fake failure at frame ${n}`)
+          return { settled: true }
         },
         capturePng: async () => frame,
         contextLost: async () => false,

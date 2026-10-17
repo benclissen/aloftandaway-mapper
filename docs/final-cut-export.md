@@ -258,14 +258,15 @@ Add `--each` to the render for the unjoined layout: `01-coast-preview.mp4`
 and `02-islands-preview.mp4`, and an FCPXML with the two compound clips and
 no project.
 
-### Outstanding manual acceptance
+### Manual acceptance in Final Cut
 
-Final Cut Pro was not launched, so none of the following has been checked.
-DTD success does not stand in for it. This checklist applies only to the
-optional layered export; the default MP4 path doesn't depend on it, and it
-doesn't block Stage 2 (see [plan.md](plan.md)). Check 9, the two-scene
-import, is still pending the user's import for Stage 6. Use a disposable
-library.
+On 2026-10-17 the user imported a two-scene layered export (the Stage 7
+check project) into Final Cut Pro 12.4: two compound clips back to back on one
+timeline, each with map, route and signs on separate lanes. That passes check 9
+and the import itself (checks 1 and 2). Checks 3 to 8 and 10 weren't reported
+one by one; DTD success does not stand in for them. This checklist applies only
+to the optional layered export; the default MP4 path doesn't depend on it (see
+[plan.md](plan.md)). Use a disposable library.
 
 1. Import `$T/proj-a/renders/<timestamp>/synthetic-isles.fcpxml` (File > Import > XML). Check the
    `Mapper` event holds a compound clip and a project, and the media isn't
@@ -291,8 +292,8 @@ library.
    the project: the two compounds play back to back with a hard cut, no
    overlap and no gap, Islands starting at 7:00 (frame 168). Each compound
    reads its own scene's folder (`01-coast/`, `02-islands/`) and has its own
-   markers. The cut should land where it does in `preview.mp4`. Pending
-   the user.
+   markers. The cut should land where it does in `preview.mp4`. Passed
+   2026-10-17, with the Stage 7 check project in place of this one.
 10. Move a copy of a render folder and import its FCPXML to confirm the
     relink prompt appears.
 

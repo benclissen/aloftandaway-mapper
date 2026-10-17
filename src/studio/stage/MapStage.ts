@@ -11,9 +11,12 @@ import {
   layoutSize,
   pointAt,
   sceneCredit,
+  screenAngle,
   joinCredit,
   MAP_DATA_ERROR,
+  MAX_TERRAIN_SETTLES,
   slicePath,
+  TILE_SIZE,
   unwrapLng,
   type FrameState,
   type LngLat,
@@ -27,6 +30,7 @@ import {
   type Timeline,
 } from '../../core/index.js'
 import { CREDIT_FONT, drawOverlay, SIGN_FONT, signText } from './overlay.js'
+import { waitForStyleLoad } from './style-load.js'
 import { dropElevationTiles, redrawTerrain } from './terrain-internals.js'
 import { buildStyle } from './themes.js'
 
@@ -47,6 +51,8 @@ export interface MapStageOptions {
    * and extra idles per frame. The studio leaves it off and keeps MapLibre's own terrain behaviour.
    */
   deterministicTerrain?: boolean
+  /** Test hook: draws the overlay on the CPU (a 2D context with `willReadFrequently`) rather than the GPU. */
+  cpuOverlay?: boolean
 }
 
 const ROUTE_SOURCE = 'mapper-route'
@@ -55,8 +61,10 @@ const EDIT_SOURCE = 'mapper-edit'
 export const EDIT_ROUTE_LAYER = 'mapper-edit-route'
 const EDIT_SELECTED_LAYER = 'mapper-edit-selected'
 const IDLE_TIMEOUT_MS = 60_000
-/** At most this many extra camera placements over terrain before a frame counts as settled. */
-const MAX_TERRAIN_SETTLES = 4
+/** How long a new style may take to load before the stage gives up on it. */
+const STYLE_TIMEOUT_MS = 60_000
+/** Turning symbols take their angle from the line this many layout px ahead of the head. */
+const LOOK_AHEAD_PX = 4
 
 interface Loaded {
   project: Project
@@ -173,6 +181,7 @@ export class MapStage {
   private queue: Promise<void> = Promise.resolve()
   /** The state the overlay was last drawn with. */
   private overlayState: FrameState | undefined
+  private drawnScreenAngle: number | undefined
 
   constructor(container: HTMLElement, opts: MapStageOptions) {
     this.container = container
@@ -187,7 +196,7 @@ export class MapStage {
     this.overlay = document.createElement('canvas')
     this.overlay.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none'
     container.append(mapDiv, this.overlay)
-    const ctx = this.overlay.getContext('2d')
+    const ctx = this.overlay.getContext('2d', opts.cpuOverlay ? { willReadFrequently: true } : undefined)
     if (!ctx) throw new Error('The browser could not create a 2D canvas for the overlay.')
     this.ctx = ctx
 
@@ -251,7 +260,9 @@ export class MapStage {
       const styleKey = `${theme}/${labels}/${terrain}`
       if (styleKey !== this.styleKey) {
         this.mapError = undefined
-        const styled = new Promise<void>((resolve) => this.map.once('style.load', () => resolve()))
+        // A style that fails to load leaves the map with a half-built one, so the next load must rebuild it.
+        this.styleKey = undefined
+        const styled = waitForStyleLoad(this.map, STYLE_TIMEOUT_MS, () => this.throwMapError())
         this.map.setStyle(buildStyle(theme, { tileBase: this.opts.tileBase, labels, terrain }), { diff: false })
         await styled
         this.baseVisibility = new Map(
@@ -283,9 +294,10 @@ export class MapStage {
   /**
    * Shows frame `n`: the route drawn up to the head, the camera (unless `camera: false`) and the overlay. Resolves
    * once the map has every tile loaded and the frame is painted. Rejects if map data failed to load since the last
-   * frame, since the frame would then be missing part of the map.
+   * frame, since the frame would then be missing part of the map. `settled` is false when the camera's height over
+   * terrain was still changing after every placement `settleOnTerrain` allows, so the frame may differ between renders.
    */
-  showFrame(n: number, opts: { camera?: boolean } = {}): Promise<void> {
+  showFrame(n: number, opts: { camera?: boolean } = {}): Promise<{ settled: boolean }> {
     return this.enqueue(async () => {
       const { project, scene, route, timeline } = this.require()
       const state = timeline.stateAt(n)
@@ -302,11 +314,17 @@ export class MapStage {
       // Makes the map render, and so go idle, even when nothing above changed.
       this.map.triggerRepaint()
       await settled
-      if (shot && terrain) await this.settleOnTerrain(shot)
+      const onTerrain = shot && terrain ? await this.settleOnTerrain(shot) : true
       this.drawOverlay(state)
       // Let the compositor take the overlay before anyone captures the page.
       await nextAnimationFrame()
+      return { settled: onTerrain }
     })
+  }
+
+  /** The screen angle the overlay was last drawn with, for tests: undefined when it fell back to the heading. */
+  get lastScreenAngle(): number | undefined {
+    return this.drawnScreenAngle
   }
 
   /**
@@ -362,9 +380,9 @@ export class MapStage {
     return this.loaded
   }
 
-  private enqueue(task: () => Promise<void>): Promise<void> {
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
     const run = this.queue.then(task)
-    this.queue = run.catch(() => undefined)
+    this.queue = run.then(() => undefined, () => undefined)
     return run
   }
 
@@ -381,23 +399,23 @@ export class MapStage {
    * place the camera again on the tiles now loaded, and again after the tiles that view needs, until the centre's
    * elevation holds. Then redraw the terrain from scratch: MapLibre keeps each terrain tile's drawing until that tile
    * changes, so a tile whose edges were filled in from a neighbour that loaded after it still shows its old edges.
+   * Resolves false when the elevation was still changing after `MAX_TERRAIN_SETTLES` placements.
    */
-  private async settleOnTerrain(shot: Shot): Promise<void> {
-    for (let i = 0; i < MAX_TERRAIN_SETTLES; i++) {
+  private async settleOnTerrain(shot: Shot): Promise<boolean> {
+    let held = false
+    for (let i = 0; i < MAX_TERRAIN_SETTLES && !held; i++) {
       const elevation = this.map.getCenterElevation()
       const settled = this.settled()
       this.map.jumpTo(shot)
       this.map.triggerRepaint()
       await settled
-      if (this.map.getCenterElevation() === elevation) break
-      if (i === MAX_TERRAIN_SETTLES - 1) {
-        console.warn(`The camera's height over terrain was still changing after ${MAX_TERRAIN_SETTLES} placements; this frame may differ between renders.`)
-      }
+      held = this.map.getCenterElevation() === elevation
     }
     const redrawn = this.settled()
     redrawTerrain(this.map)
     this.map.triggerRepaint()
     await redrawn
+    return held
   }
 
   /** Resolves when the map next goes idle, or rejects on a map error or after the timeout. */
@@ -446,18 +464,34 @@ export class MapStage {
     const { project, scene, route } = this.require()
     this.overlayState = state
     const center = this.map.getCenter().lng
+    const project2px = (at: LngLat) => this.project(at, center)
     const legIndex = route.legs.length > 0 ? pointAt(route, state.distance).legIndex : 0
+    this.drawnScreenAngle = route.legs.length > 0 ? this.lineAngle(route, state, project2px) : undefined
     drawOverlay(this.ctx, {
       scene,
       credit: project.credit,
       state,
       legIndex,
       flipped: legFlipped(route, legIndex),
+      screenAngle: this.drawnScreenAngle,
       bearing: this.map.getBearing(),
-      project2px: (at) => this.project(at, center),
+      project2px,
       pixelRatio: this.opts.pixelRatio,
       layer: this.opts.layer,
     })
+  }
+
+  /**
+   * The direction of the route at the head as drawn on screen, so it takes in pitch and terrain: towards the point
+   * `LOOK_AHEAD_PX` further along, or from the point that far behind at the end of the route. The px become route
+   * distance (Mercator units) at the current zoom, as an untilted map would draw them. Undefined when the two points
+   * project within 0.01 px of each other.
+   */
+  private lineAngle(route: Route, state: FrameState, project2px: (at: LngLat) => [number, number]): number | undefined {
+    const step = LOOK_AHEAD_PX / (TILE_SIZE * 2 ** this.map.getZoom())
+    const head = project2px(state.head.at)
+    if (state.distance + step <= route.length) return screenAngle(head, project2px(pointAt(route, state.distance + step).at))
+    return screenAngle(project2px(pointAt(route, state.distance - step).at), head)
   }
 
   /** Loads exactly the Plus Jakarta Sans subsets this scene's text needs, so nothing falls back while drawing. */

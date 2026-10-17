@@ -27,6 +27,7 @@ function scene(id: string, name: string, frames: number, dir: string, extra: Par
   return {
     id,
     name,
+    position: 1,
     frames,
     sourceRange: { fromFrame: 0, toFrame: frames },
     layers: { map: `${dir}/map.mov`, route: `${dir}/route.mov`, signs: `${dir}/signs.mov` },
@@ -42,7 +43,7 @@ function twoScenes(output: Output = out25): FcpxmlInput {
     join: true,
     credit: 'burned',
     creditLines: [MAP_CREDIT],
-    scenes: [scene('a', 'Drive', 50, '/renders/trip/01-drive'), scene('b', 'Sail', 75, '/renders/trip/02-sail')],
+    scenes: [scene('a', 'Drive', 50, '/renders/trip/01-drive'), scene('b', 'Sail', 75, '/renders/trip/02-sail', { position: 2 })],
   }
 }
 
@@ -103,6 +104,13 @@ describe('frameTime', () => {
 })
 
 describe('writeFcpxml', () => {
+  test('a blank scene name shows its project position, not its place among the rendered scenes', () => {
+    const only = scene('c', '', 50, '/renders/trip/03-scene', { position: 3 })
+    const doc = parse(writeFcpxml({ ...twoScenes(), join: false, scenes: [only] }))
+    expect(resources(doc).asset.map((a: Node) => a['@_name'])).toEqual(['Scene 3 · Map', 'Scene 3 · Route', 'Scene 3 · Signs'])
+    expect(resources(doc).media.map((m: Node) => m['@_name'])).toEqual(['Trip · Scene 3'])
+  })
+
   test('writes a v1.11 document with a DOCTYPE', () => {
     const xml = writeFcpxml(twoScenes())
     expect(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n')).toBe(true)
@@ -217,6 +225,7 @@ describe('writeFcpxml', () => {
       output: out25,
       join: true,
       credit: 'burned',
+      creditLines: [],
       scenes: [scene('a', sceneName, 50, dir, { markers: [{ frame: 10, value: marker }] })],
     }
     const xml = writeFcpxml(input)
@@ -238,6 +247,7 @@ describe('writeFcpxml', () => {
       output: out25,
       join: true,
       credit: 'burned',
+      creditLines: [],
       scenes: [scene('a', 'Dr\u001Bive\uFFFE', 50, '/r/a', { markers: [{ frame: 1, value: 'A\u0001B\uD800C\tD' }] })],
     }
     const xml = writeFcpxml(input)
@@ -345,10 +355,21 @@ describe('writeFcpxml', () => {
     const input: FcpxmlInput = { ...twoScenes(), scenes: [scene('a', '', 25, '/r/a'), scene('b', 'Sail', 25, '/r/b')] }
     const doc = parse(writeFcpxml(input))
     expect((resources(doc).asset as Node[]).map((a) => a['@_name'])).toEqual([
-      'Untitled · Map', 'Untitled · Route', 'Untitled · Signs',
+      'Scene 1 · Map', 'Scene 1 · Route', 'Scene 1 · Signs',
       'Sail · Map', 'Sail · Route', 'Sail · Signs',
     ])
     expect(compoundClips(doc).map((c) => c.map['@_name'])).toEqual(['Map', 'Map'])
+  })
+
+  test('a file with a blank scene name loads and exports as Scene N', () => {
+    const input: FcpxmlInput = { ...twoScenes(), scenes: [scene('a', 'Drive', 50, '/r/a'), scene('b', '   ', 75, '/r/b', { position: 2 })] }
+    for (const join of [true, false]) {
+      const doc = parse(writeFcpxml({ ...input, join }))
+      expect(resources(doc).media.map((m: Node) => m['@_name'])).toEqual(['Trip · Drive', 'Trip · Scene 2'])
+      expect((resources(doc).asset as Node[]).slice(3).map((a) => a['@_name'])).toEqual([
+        'Scene 2 · Map', 'Scene 2 · Route', 'Scene 2 · Signs',
+      ])
+    }
   })
 
   test('same-named scenes stay distinct', () => {

@@ -178,7 +178,7 @@ describe('cancelling a pass', () => {
         await closing
         throw new Error('page.evaluate: Target page, context or browser has been closed')
       },
-      renderFrame: async () => undefined,
+      renderFrame: async () => ({ settled: true }),
       capturePng: async () => Buffer.alloc(0),
       contextLost: async () => false,
       onCrash: () => undefined,
@@ -189,7 +189,7 @@ describe('cancelling a pass', () => {
     }
     const dir = await mkdtemp(path.join(tmp, 'loading-'))
     const rendering = realRenderPass(
-      { browser: {} as Browser, project, scene: plan.scenes[0]!, pass, dir, signal: controller.signal },
+      { browser: {} as Browser, project, seaPaths: {}, scene: plan.scenes[0]!, pass, dir, signal: controller.signal },
       { openPage: async () => page, startEncoder: () => expect.fail('no frame should be encoded') },
     )
     await expect(rendering).rejects.toThrow('has been closed')

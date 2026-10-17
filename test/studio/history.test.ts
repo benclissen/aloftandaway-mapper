@@ -101,7 +101,7 @@ describe('EditQueue', () => {
     const queue = new EditQueue((patch) => {
       sent.push(patch)
       if (sent.length === 1) return new Promise<PatchResponse>((resolve) => (release = resolve))
-      return Promise.resolve({ project: { ...saved, name: 'Second' }, previousUpdatedAt: saved.updatedAt })
+      return Promise.resolve({ project: { ...saved, name: 'Second' }, seaPaths: {}, previousUpdatedAt: saved.updatedAt })
     })
 
     const seen: Project[] = []
@@ -119,7 +119,7 @@ describe('EditQueue', () => {
     expect(sent).toHaveLength(1)
     expect(seen).toEqual([initial])
 
-    release({ project: saved, previousUpdatedAt: initial.updatedAt })
+    release({ project: saved, seaPaths: {}, previousUpdatedAt: initial.updatedAt })
     expect((await first)?.project.name).toBe('First')
     expect((await second)?.project.name).toBe('Second')
     expect(sent).toHaveLength(2)
@@ -133,7 +133,7 @@ describe('EditQueue', () => {
     const queue = new EditQueue(async () => {
       calls++
       if (calls === 1) throw new Error('Simulated failure')
-      return { project: initial, previousUpdatedAt: initial.updatedAt }
+      return { project: initial, seaPaths: {}, previousUpdatedAt: initial.updatedAt }
     })
     const first = queue.run(() => ({ set: { name: 'A' } }), () => initial)
     const second = queue.run(() => ({ set: { name: 'B' } }), () => initial)
@@ -143,7 +143,7 @@ describe('EditQueue', () => {
 
   test("a handler chained on run's promise runs before the next make", async () => {
     const initial = greekIslands()
-    const queue = new EditQueue(async () => ({ project: initial, previousUpdatedAt: initial.updatedAt }))
+    const queue = new EditQueue(async () => ({ project: initial, seaPaths: {}, previousUpdatedAt: initial.updatedAt }))
     const order: string[] = []
     const first = queue.run(() => {
       order.push('make 1')
@@ -162,7 +162,7 @@ describe('EditQueue', () => {
     const bases: Array<string | undefined> = []
     const queue = new EditQueue(async (_patch, base) => {
       bases.push(base)
-      return { project: initial, previousUpdatedAt: initial.updatedAt }
+      return { project: initial, seaPaths: {}, previousUpdatedAt: initial.updatedAt }
     })
     await queue.run(() => ({ set: { name: 'A' } }), () => initial)
     await queue.run(() => ({ set: { name: 'B' } }), () => initial, { conditional: true })
@@ -174,7 +174,7 @@ describe('EditQueue', () => {
     let calls = 0
     const queue = new EditQueue(async () => {
       calls++
-      return { project: initial, previousUpdatedAt: initial.updatedAt }
+      return { project: initial, seaPaths: {}, previousUpdatedAt: initial.updatedAt }
     })
     expect(await queue.run(() => undefined, () => initial)).toBeUndefined()
     expect(calls).toBe(0)

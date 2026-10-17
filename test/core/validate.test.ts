@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import {
   NO_LAND_DATA,
   SYMBOLS,
@@ -9,7 +9,13 @@ import {
   type Project,
   type SeaPaths,
 } from '../../src/core/index.js'
+import { signBox } from '../../src/core/signs.js'
 import { emptyProject, greekIslands, pacific, projectWithScenes, sceneOf, stopsAt } from '../fixtures/projects.js'
+
+vi.mock('../../src/core/signs.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/core/signs.js')>()
+  return { ...real, signBox: vi.fn(real.signBox) }
+})
 
 const paperLook = { ...sceneOf(greekIslands()).look, theme: 'paper' as const }
 
@@ -350,6 +356,28 @@ describe('validateProject', () => {
       expect(found[0]!.path).toEqual(['scenes', 0, 'stops', 1, 'label'])
       expect(found[0]!.message).toMatch(/^The S0 and S1 signs overlap at \d\d:\d\d:\d\d$/)
       expect(found[0]!.fix).toContain("'none'")
+    })
+
+    test("sign overlap measures with the scene's lift", () => {
+      // Every sign sits the same distance above its dot, so a shared lift never changes which signs overlap. What it
+      // must do is size the boxes to the scene's vehicle, so validation measures what the overlay draws.
+      const project = stopsAt(
+        [
+          [25, 37],
+          [25.009, 37],
+        ],
+        { camera: { mode: 'fixed', easing: 'linear', start: { center: [25, 37], zoom: 5, bearing: 0, pitch: 0 } } },
+      )
+      const scene = sceneOf(project)
+      scene.look.symbol = 'car'
+      scene.look.symbolStyle = 'badge'
+      scene.stops[0] = { ...scene.stops[0]!, label: 'A very long sign label' }
+      scene.stops[1] = { ...scene.stops[1]!, label: 'Another long sign label' }
+      vi.mocked(signBox).mockClear()
+      const found = validateProject(project).warnings.filter((w) => w.code === 'sign-overlap')
+      expect(found).toHaveLength(1)
+      expect(vi.mocked(signBox).mock.calls.length).toBeGreaterThan(0)
+      for (const call of vi.mocked(signBox).mock.calls) expect(call[2]).toBe(41)
     })
 
     test('does not warn for signs far apart', () => {

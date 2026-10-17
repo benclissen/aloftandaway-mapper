@@ -5,7 +5,10 @@ import {
   buildTimeline,
   fpsValue,
   invertPatch,
+  isSceneOp,
   newSceneId,
+  sceneTitle,
+  sceneTitleOf,
   type PatchResponse,
   type SeaPaths,
   type Project,
@@ -13,7 +16,7 @@ import {
   type Scene,
 } from '../../core/index.js'
 import { CLIENT_ID, getProject, patch, RequestError, sceneParam, setSceneParam, subscribe } from './api.js'
-import { EditHistory, EditQueue, OutsideWrites, redoPatch, SCENE_OPS, scenesAround, type Entry } from './history.js'
+import { EditHistory, EditQueue, OutsideWrites, redoPatch, scenesAround, type Entry } from './history.js'
 import { LegsPanel } from './LegsPanel.js'
 import { PointMenu } from './PointMenu.js'
 import { isSharp, removeViaEdit, sharpEdit, type PointMenuTarget } from './RouteEditor.js'
@@ -116,7 +119,7 @@ export function App() {
           const next = incoming.scenes[Math.min(at, incoming.scenes.length - 1)]!
           showScene(next.id)
           if (!deleting.current.has(active!)) {
-            setNotice({ kind: 'info', text: `That scene was removed. Showing ${next.name || 'Untitled'}.`, keep: true })
+            setNotice({ kind: 'info', text: `That scene was removed. Showing ${sceneTitleOf(next.name, incoming.scenes.indexOf(next))}.`, keep: true })
           }
         }
       }
@@ -245,7 +248,7 @@ export function App() {
         ? project.scenes.map((s) => ({
             id: s.id,
             name: s.name,
-            seconds: Math.round(buildTimeline(s, project.output.fps, buildRoute(s, seaPaths)).durationSeconds),
+            seconds: buildTimeline(s, project.output.fps, buildRoute(s, seaPaths)).durationSeconds,
           }))
         : [],
     [project, seaPaths],
@@ -293,7 +296,7 @@ export function App() {
     (input: ProjectPatch, label: string, opts: { saved?: string; seen?: string } = {}): Promise<boolean> => {
       const { saved, seen = current.current?.updatedAt } = opts
       // An edit to a scene's contents names the scene it was made on, even if the tab changes before it is sent.
-      const editsStops = input.ops?.some((op) => !SCENE_OPS.has(op.op)) ?? false
+      const editsStops = input.ops?.some((op) => !isSceneOp(op)) ?? false
       const touchesScene = input.sceneSet !== undefined || editsStops
       const body: ProjectPatch =
         touchesScene && input.scene === undefined && activeRef.current !== undefined ? { ...input, scene: activeRef.current } : input
@@ -412,7 +415,11 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [step])
 
-  const sceneName = (id: string) => current.current?.scenes.find((s) => s.id === id)?.name || 'Untitled'
+  const sceneName = (id: string) => {
+    const project = current.current
+    const index = project ? project.scenes.findIndex((s) => s.id === id) : -1
+    return project && index >= 0 ? sceneTitle(project, index) : 'scene'
+  }
 
   const addScene = () => {
     const scenes = current.current?.scenes ?? []

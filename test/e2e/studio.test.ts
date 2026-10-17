@@ -716,9 +716,202 @@ describe('scene tabs', () => {
   test('tabs list the scenes in order with their lengths', async () => {
     const { page, close } = await openTwo()
     try {
-      expect(await tabNames(page)).toEqual(['Drive · 13 s', 'Sail · 14 s'])
+      expect(await tabNames(page)).toEqual(['Drive · 13.0 s', 'Sail · 14.0 s'])
       expect(await page.getByRole('tablist').count()).toBe(1)
-      expect(await activeTab(page).textContent()).toBe('Drive · 13 s')
+      expect(await activeTab(page).textContent()).toBe('Drive · 13.0 s')
+    } finally {
+      await close()
+    }
+  })
+
+  test('a short scene shows tenths of a second', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      expect(await tabNames(page)).toEqual(['Drive · 13.0 s', 'Sail · 14.0 s'])
+      // 0.1 s hold, 0.2 s travel, 0.1 s hold and no pauses: a 0.4 s clip, not "0 s".
+      await mutateProject(folder, (p) => ({
+        ...p,
+        scenes: p.scenes.map((s, i) =>
+          i === 0 ? { ...s, timing: { holdStart: 0.1, travel: 0.2, holdEnd: 0.1 }, stops: s.stops.map((stop) => ({ ...stop, pause: 0 })) } : s,
+        ),
+      }))
+      await expect.poll(() => tabNames(page)).toEqual(['Drive · 0.4 s', 'Sail · 14.0 s'])
+    } finally {
+      await close()
+    }
+  })
+
+  test('blur keeps a rename', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill('  Harbour  ')
+      await page.getByTestId('scene-add').focus()
+      await page.getByTestId('scene-rename').waitFor({ state: 'detached' })
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Harbour'])
+      // One commit, trimmed, and Enter does not commit a second time on the blur that follows.
+      expect(await page.getByTestId('undo').getAttribute('title')).toContain('Undo Rename Sail to Harbour')
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill('Quay')
+      await page.keyboard.press('Enter')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Quay'])
+      await page.getByTestId('undo').click()
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Harbour'])
+      await page.getByTestId('undo').click()
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Sail'])
+      expect(await page.getByTestId('undo').isEnabled()).toBe(false)
+      // A blank name or an unchanged one leaves the scene alone.
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill('   ')
+      await page.getByTestId('scene-add').focus()
+      await page.getByTestId('scene-rename').waitFor({ state: 'detached' })
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill(' Sail ')
+      await page.getByTestId('scene-add').focus()
+      await page.getByTestId('scene-rename').waitFor({ state: 'detached' })
+      await page.waitForTimeout(300)
+      expect(await sceneNames(folder)).toEqual(['Drive', 'Sail'])
+      expect(await page.getByTestId('undo').isEnabled()).toBe(false)
+    } finally {
+      await close()
+    }
+  })
+
+  test('escape still cancels a rename', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').fill('Nope')
+      await page.keyboard.press('Escape')
+      await page.getByTestId('scene-rename').waitFor({ state: 'detached' })
+      await page.waitForTimeout(300)
+      expect(await sceneNames(folder)).toEqual(['Drive', 'Sail'])
+      expect(await tabNames(page)).toEqual([expect.stringMatching(/^Drive · /), expect.stringMatching(/^Sail · /)])
+      expect(await page.getByTestId('undo').isEnabled()).toBe(false)
+    } finally {
+      await close()
+    }
+  })
+
+  test("undo of a delete doesn't reopen its menu or rename", async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      await choose(page, 0, 'Delete')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Sail'])
+      await page.getByTestId('undo').click()
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Sail'])
+      await expect.poll(() => page.locator('.scene-tab').count()).toBe(2)
+      expect(await page.getByTestId('scene-menu').count()).toBe(0)
+      expect(await page.getByTestId('scene-rename').count()).toBe(0)
+    } finally {
+      await close()
+    }
+  })
+
+  test('a menu or rename field left on a scene that goes away does not come back with it', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      // A menu left open on a scene that goes away does not come back with it.
+      await page.getByTestId('scene-add').click()
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Scene 2', 'Sail'])
+      await page.locator('.scene-tab').nth(1).getByRole('button', { name: 'Scene menu' }).click()
+      await page.getByTestId('scene-menu').waitFor()
+      await page.keyboard.press('Meta+z')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Sail'])
+      await page.getByTestId('scene-menu').waitFor({ state: 'detached' })
+      await page.keyboard.press('Meta+Shift+z')
+      await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Scene 2', 'Sail'])
+      await expect.poll(() => tabNames(page)).toHaveLength(3)
+      expect(await page.getByTestId('scene-menu').count()).toBe(0)
+
+      // So does a rename field. Here the agent removes the scene and puts it back.
+      const scenes = (await loadProject(folder)).scenes
+      await choose(page, 1, 'Rename')
+      await page.getByTestId('scene-rename').waitFor()
+      await mutateProject(folder, (p) => ({ ...p, scenes: p.scenes.filter((s) => s.id !== scenes[1]!.id) }))
+      // Counts every tab, including one being renamed, so this proves the removal reached the studio.
+      await expect.poll(() => page.locator('.scene-tab').count()).toBe(2)
+      expect(await page.getByTestId('scene-rename').count()).toBe(0)
+      await mutateProject(folder, (p) => ({ ...p, scenes }))
+      await expect.poll(() => tabNames(page)).toHaveLength(3)
+      expect(await page.getByTestId('scene-rename').count()).toBe(0)
+      expect(await page.getByTestId('scene-menu').count()).toBe(0)
+    } finally {
+      await close()
+    }
+  })
+
+  test('back-to-back agent writes end on the final state', async () => {
+    const { page, folder, close } = await openTwo()
+    try {
+      const scenes = (await loadProject(folder)).scenes
+      // No wait between them: the server may send only the last one, which is the state the studio must end on.
+      await mutateProject(folder, (p) => ({ ...p, scenes: p.scenes.filter((s) => s.id !== SAIL) }))
+      await mutateProject(folder, (p) => ({ ...p, scenes: [...scenes, { ...scenes[1]!, id: '00000000-0000-4000-8000-000000000003', name: 'Return' }] }))
+      const final = (await loadProject(folder)).scenes.map((s) => s.name)
+      expect(final).toEqual(['Drive', 'Sail', 'Return'])
+      await expect.poll(async () => (await tabNames(page)).map((t) => t.split(' · ')[0])).toEqual(final)
+      expect(await page.getByTestId('undo').isEnabled()).toBe(false)
+    } finally {
+      await close()
+    }
+  })
+
+  test('Home and End pick the first and last tab', async () => {
+    const { page, close } = await openTwo()
+    try {
+      await page.getByTestId('scene-add').click()
+      await expect.poll(() => tabNames(page)).toHaveLength(3)
+      await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Scene 2')).toBe(true)
+      await activeTab(page).focus()
+      await page.keyboard.press('Home')
+      await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Drive')).toBe(true)
+      await expect.poll(() => page.evaluate(() => document.activeElement?.textContent?.startsWith('Drive'))).toBe(true)
+      await page.keyboard.press('End')
+      await expect.poll(async () => (await activeTab(page).textContent())?.startsWith('Sail')).toBe(true)
+      await expect.poll(() => page.evaluate(() => document.activeElement?.textContent?.startsWith('Sail'))).toBe(true)
+      // Already at the end: nothing moves.
+      await page.keyboard.press('End')
+      expect((await activeTab(page).textContent())?.startsWith('Sail')).toBe(true)
+    } finally {
+      await close()
+    }
+  })
+
+  test('inactive tab text has at least 7:1 contrast with the bar', async () => {
+    const { page, close } = await openTwo()
+    try {
+      const colours = await page.evaluate(() => {
+        const rgba = (css: string) => css.match(/[\d.]+/g)!.map(Number)
+        const over = (top: number[], below: number[]) => {
+          const a = top[3] ?? 1
+          return [0, 1, 2].map((i) => top[i]! * a + below[i]! * (1 - a))
+        }
+        const bar = rgba(getComputedStyle(document.querySelector('.scene-bar')!).backgroundColor)
+        const out: Record<string, number[]> = {}
+        for (const [name, el] of [
+          ['tab', document.querySelector('[role="tab"][aria-selected="false"]')!],
+          ['more', document.querySelector('.scene-tab[data-active="false"] .scene-more')!],
+        ] as const) {
+          const tab = el.closest('.scene-tab')!
+          const behind = over(rgba(getComputedStyle(tab).backgroundColor), bar)
+          out[name] = [...rgba(getComputedStyle(el).color).slice(0, 3), ...behind] as number[]
+        }
+        return out
+      })
+      const luminance = (c: number[]) => {
+        const [r, g, b] = c.map((v) => {
+          const s = v / 255
+          return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+        })
+        return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!
+      }
+      for (const [name, c] of Object.entries(colours)) {
+        const hi = luminance(c.slice(0, 3))
+        const lo = luminance(c.slice(3))
+        const ratio = (Math.max(hi, lo) + 0.05) / (Math.min(hi, lo) + 0.05)
+        expect(ratio, name).toBeGreaterThanOrEqual(7)
+      }
     } finally {
       await close()
     }
@@ -733,7 +926,7 @@ describe('scene tabs', () => {
       await expect.poll(() => handles(page).count()).toBe(4)
       await expect.poll(() => page.getByTestId('leg-row-0').textContent()).toContain('1 · Piraeus → Mykonos')
       expect(await page.locator('[data-testid^="leg-row-"]').count()).toBe(3)
-      expect(await activeTab(page).textContent()).toBe('Sail · 14 s')
+      expect(await activeTab(page).textContent()).toBe('Sail · 14.0 s')
       await page.getByTestId('scene-tab').nth(0).click()
       await expect.poll(() => handles(page).count()).toBe(3)
     } finally {
@@ -807,7 +1000,7 @@ describe('scene tabs', () => {
       await page.keyboard.press('Enter')
       await expect.poll(() => sceneNames(folder)).toEqual(['Drive', 'Detour', 'Sail'])
       expect(await page.getByTestId('undo').getAttribute('title')).toContain('Undo Rename Scene 2 to Detour')
-      await expect.poll(() => tabNames(page)).toEqual(['Drive · 13 s', 'Detour · 13 s', 'Sail · 14 s'])
+      await expect.poll(() => tabNames(page)).toEqual(['Drive · 13.0 s', 'Detour · 13.0 s', 'Sail · 14.0 s'])
 
       // Duplicate Sail: the copy sits after it and is shown.
       await choose(page, 2, 'Duplicate')
@@ -873,7 +1066,7 @@ describe('scene tabs', () => {
       await page.getByTestId('scene-tab').nth(1).click()
       await expect.poll(() => handles(page).count()).toBe(4)
       await mutateProject(folder, (p) => applyPatch(p, { ops: [{ op: 'move_scene', id: SAIL, index: 0 }] }))
-      await expect.poll(() => tabNames(page)).toEqual(['Sail · 14 s', 'Drive · 13 s'])
+      await expect.poll(() => tabNames(page)).toEqual(['Sail · 14.0 s', 'Drive · 13.0 s'])
       expect((await activeTab(page).textContent())?.startsWith('Sail')).toBe(true)
       expect(await handles(page).count()).toBe(4)
       expect(await page.locator('.notice').count()).toBe(0)
@@ -889,7 +1082,7 @@ describe('scene tabs', () => {
       await expect.poll(() => handles(page).count()).toBe(4)
       await mutateProject(folder, (p) => applyPatch(p, { ops: [{ op: 'remove_scene', id: SAIL }] }))
       await page.getByRole('status').filter({ hasText: 'That scene was removed. Showing Drive.' }).waitFor()
-      expect(await tabNames(page)).toEqual(['Drive · 13 s'])
+      expect(await tabNames(page)).toEqual(['Drive · 13.0 s'])
       await expect.poll(() => handles(page).count()).toBe(3)
     } finally {
       await close()
@@ -1083,9 +1276,9 @@ describe('scene tabs', () => {
     project.scenes[0]!.look.terrain = true
     let held: Route[] | undefined = []
     const answer = (route: Route) => route.fulfill({ contentType: 'image/png', body: flatTerrainTile() })
-    const studio = await openStudioPage(project, VIEWPORT, (page) =>
-      page.context().route('**/tiles/terrain/**', (route) => (held ? void held.push(route) : answer(route))),
-    )
+    const studio = await openStudioPage(project, VIEWPORT, async (page) => {
+      await page.context().route('**/tiles/terrain/**', (route) => (held ? void held.push(route) : answer(route)))
+    })
     await expect.poll(() => handles(studio.page).count()).toBe(4)
     const release = async () => {
       const routes = held ?? []
@@ -1291,6 +1484,40 @@ describe('index edits', () => {
       })
       await expect.poll(() => page.locator('[data-testid^="leg-row-"]').count()).toBe(3)
       await expect.poll(() => selectedLeg(page)).toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
+  test('a transport change after an unseen agent write is refused', async () => {
+    // The studio's WebSocket runs through here, so the test can hold the server's messages back.
+    let holding = false
+    const held: Array<string | Buffer> = []
+    let toPage: WebSocketRoute | undefined
+    const { page, folder, file, close } = await openWithVia((ws) => {
+      const server = ws.connectToServer()
+      server.onMessage((m) => (holding ? held.push(m) : ws.send(m)))
+      toPage = ws
+    })
+    try {
+      // The agent puts a via point in front of leg 1's, and the studio doesn't hear of it.
+      holding = true
+      await agentInsertsVia(folder, AGENT_VIA)
+      const saved = await readFile(file, 'utf8')
+      expect(sceneOf(await loadProject(folder)).legs[1]!.symbol).toBeUndefined()
+
+      await page.getByTestId('leg-symbol-1').selectOption('ferry')
+      await page.getByRole('alert').filter({ hasText: ROUTE_CHANGED }).waitFor({ timeout: 5000 })
+      await page.waitForTimeout(300)
+      expect(await readFile(file, 'utf8')).toBe(saved)
+      expect(sceneOf(await loadProject(folder)).legs[1]!.via.map((v) => v.at)).toEqual([AGENT_VIA, VIA])
+
+      // Once the messages arrive, the studio shows the agent's version and the picker is back on the default.
+      holding = false
+      for (const m of held.splice(0)) toPage!.send(m)
+      await page.getByTestId('via-marker-1-1').waitFor()
+      await expect.poll(() => page.getByTestId('leg-symbol-1').inputValue()).toBe('')
+      expect(await readFile(file, 'utf8')).toBe(saved)
     } finally {
       await close()
     }

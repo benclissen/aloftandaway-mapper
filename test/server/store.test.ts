@@ -194,7 +194,7 @@ describe('saveProject', () => {
   test('refuses to write a project that fails the schema', async () => {
     const folder = path.join(tmp, 'invalid')
     const created = await createProject(folder, 'Invalid')
-    const error = await failure(saveProject(folder, { ...created, output: { ...created.output, height: 1000 } } as Project))
+    const error = await failure(saveProject(folder, { ...created, output: { ...created.output, height: 1000 } } as unknown as Project))
     expect(error).toBeInstanceOf(ProjectError)
     expect((await loadProject(folder)).output.height).toBe(2160)
   })

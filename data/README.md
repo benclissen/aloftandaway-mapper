@@ -70,8 +70,9 @@ like the basemap, with the same throttling and retries. Neither is stored in thi
   data 2016)", from the layer's own abstract, which asks for
   "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel
   data 2016)". CC BY 4.0 needs the creator named, a licence link and a note of changes
-  ([legal code](https://creativecommons.org/licenses/by/4.0/legalcode.en)); the burned-in line names
-  the creator and the data, and the licence is named here.
+  ([legal code](https://creativecommons.org/licenses/by/4.0/legalcode.en)). The burned-in line is
+  "Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016), CC BY 4.0",
+  so it names the creator, the data and the licence.
 
 ### Elevation: AWS Terrain Tiles (Terrarium)
 

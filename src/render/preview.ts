@@ -19,7 +19,8 @@ import {
 import { resolveSeaPaths } from '../server/paths.js'
 import { loadProject } from '../server/store.js'
 import { launchBrowser } from './chrome.js'
-import { RenderPage } from './page.js'
+import { LOAD_TIMEOUT_MS, RenderPage } from './page.js'
+import { describeWarnings } from './warnings.js'
 
 const DEFAULT_PREVIEW_WIDTH = 960
 const DEFAULT_SHEET_WIDTH = 1920
@@ -50,6 +51,8 @@ interface ScenePreview {
   scene: PreviewScene
   /** `Scene 2 of 2 · Sail`, when the project has more than one scene. */
   sceneLabel?: string
+  /** A line naming the previewed frames whose camera height over terrain never held still. Absent when none. */
+  warnings?: string[]
 }
 
 export interface PreviewResult extends ScenePreview {
@@ -64,6 +67,11 @@ export interface ContactSheetResult extends ScenePreview {
   png: Buffer
   path: string
   frames: { frame: number; seconds: number }[]
+}
+
+/** `warnings` for the previewed frames in `unsettled`, or nothing when there are none. */
+function previewWarnings(unsettled: number[]): Pick<ScenePreview, 'warnings'> {
+  return unsettled.length > 0 ? { warnings: describeWarnings({ unsettled, other: [] }) } : {}
 }
 
 function scenePreview(project: Project, index: number): ScenePreview {
@@ -186,12 +194,22 @@ async function withProject<T>(folder: string, ref: SceneRef | undefined, frameWi
   const { aspect } = project.output
   const { page, entry } = await pageFor(aspect)
   try {
-    await page.load(project, frameWidth(aspect) / layoutSize(aspect).width, { scene: scene.id, seaPaths })
+    await withTimeout(page.load(project, frameWidth(aspect) / layoutSize(aspect).width, { scene: scene.id, seaPaths }), LOAD_TIMEOUT_MS, 'load the scene')
     return await use({ project, scene, index, timeline, page })
   } catch (e) {
     evict(aspect, entry, page)
     throw e
   }
+}
+
+/** Rejects if `work` takes over `ms`. A late result or rejection from `work` is ignored. */
+function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Could not ${what} within ${ms / 1000} s.`)), ms)
+  })
+  work.catch(() => undefined)
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer))
 }
 
 function assertWholeNumber(name: string, value: number): void {
@@ -231,9 +249,10 @@ export async function previewFrame(args: { folder: string; at: PreviewAt; width?
   return exclusive(async () => {
     const { frame, png, fps, name, shown } = await withProject(args.folder, args.scene, () => width, async ({ project, index, timeline, page }) => {
       const frame = resolveFrame(at, timeline)
-      await page.renderFrame(frame)
+      const { settled } = await page.renderFrame(frame)
       const png = await page.capturePng()
-      return { frame, png, fps: fpsValue(timeline.fps), name: frameFile(project, index, frame), shown: scenePreview(project, index) }
+      const shown = { ...scenePreview(project, index), ...previewWarnings(settled ? [] : [frame]) }
+      return { frame, png, fps: fpsValue(timeline.fps), name: frameFile(project, index, frame), shown }
     })
     const file = path.join(await previewsDir(args.folder), name)
     await writeFile(file, png)
@@ -299,13 +318,16 @@ export async function contactSheet(args: { folder: string; count?: number; width
       const last = timeline.totalFrames - 1
       const frames = Array.from({ length: count }, (_, i) => (count === 1 ? 0 : Math.round((i * last) / (count - 1))))
       const cells: { dataUrl: string; caption: string }[] = []
+      const unsettled = new Set<number>()
       for (const frame of frames) {
-        await page.renderFrame(frame)
+        const { settled } = await page.renderFrame(frame)
+        if (!settled) unsettled.add(frame)
         const png = await page.capturePng()
         cells.push({ dataUrl: `data:image/png;base64,${png.toString('base64')}`, caption: frameCaption(project, scene, timeline, frame) })
       }
       const prefix = project.scenes.length > 1 ? `scene${index + 1}-` : ''
-      return { frames, cells, fps: fpsValue(timeline.fps), prefix, shown: scenePreview(project, index) }
+      const shown = { ...scenePreview(project, index), ...previewWarnings([...unsettled]) }
+      return { frames, cells, fps: fpsValue(timeline.fps), prefix, shown }
     })
 
     const browser = await warmBrowser()

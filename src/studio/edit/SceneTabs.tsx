@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { swallowNextClick } from './PointMenu.js'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { sceneTitleOf } from '../../core/index.js'
+import { Menu, useMenuChoice } from './Menu.js'
 
 /** What a tab shows about one scene. */
 export interface SceneSummary {
   id: string
   name: string
-  /** Length of the scene's clip, in whole seconds. */
+  /** Length of the scene's clip, in seconds. */
   seconds: number
 }
 
@@ -21,12 +22,7 @@ interface SceneTabsProps {
   onDelete(id: string): void
 }
 
-/** Gap kept between the menu and the window's edges, in CSS px. */
-const EDGE = 8
-
 interface MenuProps {
-  /** The scene the menu is for. A press on its own ⋯ is left to that button, which closes the menu. */
-  sceneId: string
   at: { x: number; y: number }
   canMoveLeft: boolean
   canMoveRight: boolean
@@ -39,57 +35,13 @@ interface MenuProps {
   onClose(): void
 }
 
-/** The menu for one scene tab. Closes on Escape, a click outside it, its own ⋯ again, or a choice. */
-function SceneMenu({ sceneId, at, canMoveLeft, canMoveRight, canDelete, onRename, onDuplicate, onMoveLeft, onMoveRight, onDelete, onClose }: MenuProps) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState(at)
-
-  // Kept inside the window.
-  useLayoutEffect(() => {
-    const { width, height } = ref.current!.getBoundingClientRect()
-    setPos({
-      x: Math.max(EDGE, Math.min(at.x, window.innerWidth - width - EDGE)),
-      y: Math.max(EDGE, Math.min(at.y, window.innerHeight - height - EDGE)),
-    })
-  }, [at])
-
-  useEffect(() => {
-    ref.current?.querySelector('button')?.focus()
-    // Captured first, so Escape closes the menu and goes no further.
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      e.stopPropagation()
-      onClose()
-    }
-    const onDown = (e: MouseEvent) => {
-      if (ref.current?.contains(e.target as Node)) return
-      if (e.target instanceof Element && e.target.closest('.scene-more')?.getAttribute('data-scene') === sceneId) return
-      onClose()
-      // A press on the map must not also edit the route. Anywhere else (another tab, its menu button) it does its job.
-      if (e.target instanceof Element && e.target.closest('.stage')) swallowNextClick()
-    }
-    window.addEventListener('keydown', onKey, true)
-    window.addEventListener('mousedown', onDown, true)
-    return () => {
-      window.removeEventListener('keydown', onKey, true)
-      window.removeEventListener('mousedown', onDown, true)
-    }
-  }, [onClose, sceneId])
-
-  const choose = (action: () => void) => () => {
-    onClose()
-    action()
-  }
+/** The menu for one scene tab. Closes on Escape, a click outside it, a ⋯ button, or a choice. */
+function SceneMenu({ at, canMoveLeft, canMoveRight, canDelete, onRename, onDuplicate, onMoveLeft, onMoveRight, onDelete, onClose }: MenuProps) {
+  const choose = useMenuChoice(onClose)
 
   return (
-    <div
-      ref={ref}
-      className="point-menu scene-menu"
-      role="menu"
-      data-testid="scene-menu"
-      style={{ left: pos.x, top: pos.y }}
-      onContextMenu={(e) => e.preventDefault()}
-    >
+    // A press on a ⋯ is left to that button, which opens, moves or closes the menu.
+    <Menu at={at} onClose={onClose} keepOpenFor=".scene-more" className="scene-menu" data-testid="scene-menu">
       <button type="button" role="menuitem" data-testid="scene-menu-rename" onClick={choose(onRename)}>
         Rename
       </button>
@@ -105,11 +57,11 @@ function SceneMenu({ sceneId, at, canMoveLeft, canMoveRight, canDelete, onRename
       <button type="button" role="menuitem" data-testid="scene-menu-delete" disabled={!canDelete} onClick={choose(onDelete)}>
         Delete
       </button>
-    </div>
+    </Menu>
   )
 }
 
-/** The name field that replaces a tab's label. Enter saves; Escape, an empty name or leaving the field cancels. */
+/** The name field that replaces a tab's label. Enter or leaving the field saves a changed, non-blank name; Escape cancels. */
 function RenameField({ initial, onDone }: { initial: string; onDone(name: string | undefined): void }) {
   const [value, setValue] = useState(initial)
   // Enter and Escape finish the edit, and removing the field then blurs it; that blur is not a second answer.
@@ -118,6 +70,10 @@ function RenameField({ initial, onDone }: { initial: string; onDone(name: string
     if (done.current) return
     done.current = true
     onDone(name)
+  }
+  const save = () => {
+    const name = value.trim()
+    finish(name === '' ? undefined : name)
   }
   return (
     <input
@@ -131,8 +87,7 @@ function RenameField({ initial, onDone }: { initial: string; onDone(name: string
       onKeyDown={(e) => {
         if (e.key === 'Enter') {
           e.preventDefault()
-          const name = value.trim()
-          finish(name === '' ? undefined : name)
+          save()
         } else if (e.key === 'Escape') {
           e.preventDefault()
           // Escape in the field is its own; it must not also deselect the leg.
@@ -140,7 +95,7 @@ function RenameField({ initial, onDone }: { initial: string; onDone(name: string
           finish(undefined)
         }
       }}
-      onBlur={() => finish(undefined)}
+      onBlur={save}
     />
   )
 }
@@ -157,17 +112,24 @@ export function SceneTabs({ scenes, activeId, onSelect, onAdd, onRename, onDupli
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
   }, [activeId, scenes.length])
 
+  // A scene that goes away (an undo, the agent) takes its menu and rename field with it, for good.
+  useEffect(() => {
+    if (menu && !scenes.some((s) => s.id === menu.id)) setMenu(undefined)
+    if (renaming && !scenes.some((s) => s.id === renaming)) setRenaming(undefined)
+  }, [scenes, menu, renaming])
+
   const menuIndex = menu ? scenes.findIndex((s) => s.id === menu.id) : -1
   const menuScene = scenes[menuIndex]
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return
     if (!(e.target instanceof HTMLElement) || e.target.getAttribute('role') !== 'tab') return
     const at = scenes.findIndex((s) => s.id === activeId)
-    const next = scenes[at + (e.key === 'ArrowRight' ? 1 : -1)]
+    const next =
+      e.key === 'Home' ? scenes[0] : e.key === 'End' ? scenes[scenes.length - 1] : scenes[at + (e.key === 'ArrowRight' ? 1 : -1)]
     if (!next) return
     e.preventDefault()
-    onSelect(next.id)
+    if (next.id !== activeId) onSelect(next.id)
     // The newly active tab is the one that takes focus.
     requestAnimationFrame(() => list.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus())
   }
@@ -175,8 +137,8 @@ export function SceneTabs({ scenes, activeId, onSelect, onAdd, onRename, onDupli
   return (
     <div className="scene-bar">
       <div className="scene-tabs" role="tablist" aria-label="Scenes" ref={list} onKeyDown={onKeyDown}>
-        {scenes.map((scene) => {
-          const label = scene.name || 'Untitled'
+        {scenes.map((scene, position) => {
+          const label = sceneTitleOf(scene.name, position)
           const active = scene.id === activeId
           return (
             <div key={scene.id} className="scene-tab" data-active={active} role="presentation">
@@ -201,7 +163,7 @@ export function SceneTabs({ scenes, activeId, onSelect, onAdd, onRename, onDupli
                     setMenu({ id: scene.id, at: { x: e.clientX, y: e.clientY } })
                   }}
                 >
-                  {label} · {scene.seconds} s
+                  {label} · {scene.seconds.toFixed(1)} s
                 </button>
               )}
               <button
@@ -210,7 +172,6 @@ export function SceneTabs({ scenes, activeId, onSelect, onAdd, onRename, onDupli
                 aria-label="Scene menu"
                 aria-haspopup="menu"
                 aria-expanded={menu?.id === scene.id}
-                data-scene={scene.id}
                 onClick={(e) => {
                   const box = e.currentTarget.getBoundingClientRect()
                   setMenu((open) => (open?.id === scene.id ? undefined : { id: scene.id, at: { x: box.left, y: box.bottom + 4 } }))
@@ -227,7 +188,7 @@ export function SceneTabs({ scenes, activeId, onSelect, onAdd, onRename, onDupli
       </button>
       {menu && menuScene && (
         <SceneMenu
-          sceneId={menuScene.id}
+          key={menuScene.id}
           at={menu.at}
           canMoveLeft={menuIndex > 0}
           canMoveRight={menuIndex < scenes.length - 1}

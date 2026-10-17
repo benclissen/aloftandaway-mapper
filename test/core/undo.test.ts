@@ -196,3 +196,25 @@ describe('invertPatch', () => {
     expect(() => invertPatch(p, { set: { name: 'x' } })).toThrow('invertPatch does not support set')
   })
 })
+
+describe('invertPatch on an old file with a blank scene name', () => {
+  const blank = (): Project => projectWithScenes(2, ['Drive', ''])
+
+  test('undo of a rename on a blank-named scene restores Scene N', () => {
+    const p = blank()
+    const patch: ProjectPatch = { scene: p.scenes[1]!.id, sceneSet: { name: 'Boat' } }
+    const renamed = applyPatch(p, patch)
+    expect(renamed.scenes[1]!.name).toBe('Boat')
+    const undone = applyPatch(renamed, invertPatch(p, patch))
+    expect(undone.scenes[1]!.name).toBe('Scene 2')
+  })
+
+  test('redo after that undo renames it again', () => {
+    const p = blank()
+    const patch: ProjectPatch = { scene: p.scenes[1]!.id, sceneSet: { name: 'Boat' } }
+    const inverse = invertPatch(p, patch)
+    const undone = applyPatch(applyPatch(p, patch), inverse)
+    const redone = applyPatch(undone, invertPatch(applyPatch(p, patch), inverse))
+    expect(redone.scenes[1]!.name).toBe('Boat')
+  })
+})

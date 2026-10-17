@@ -22,7 +22,7 @@ import {
   type ViaPoint,
   type StopInput,
 } from './schema.js'
-import { SceneRefSchema, applySceneOp, resolveScene, type SceneRef } from './scenes.js'
+import { BLANK_SCENE_NAME, SceneRefSchema, applySceneOp, resolveScene, type SceneRef } from './scenes.js'
 
 // Ops and patches
 
@@ -70,7 +70,7 @@ const StopOpSchema = z.discriminatedUnion('op', [
 /** The ops on the chosen scene's stops, legs and via points. */
 export type StopOp = z.infer<typeof StopOpSchema>
 
-const SceneOpSchema = z.discriminatedUnion('op', [
+export const SceneOpSchema = z.discriminatedUnion('op', [
   z.strictObject({
     op: z.literal('add_scene'),
     index: index.optional(),
@@ -89,10 +89,14 @@ export type SceneOp = z.infer<typeof SceneOpSchema>
 const PatchOpSchema = z.discriminatedUnion('op', [StopOpSchema, SceneOpSchema])
 export type PatchOp = z.infer<typeof PatchOpSchema>
 
-const SCENE_OPS = new Set<string>(['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene', 'restore_scene'])
+/** The names of the ops that add, duplicate, remove, move and restore scenes. The tests check it against `SceneOpSchema`. */
+export const SCENE_OP_NAMES = ['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene', 'restore_scene'] as const
 
-function isSceneOp(op: PatchOp): op is SceneOp {
-  return SCENE_OPS.has(op.op)
+const SCENE_OP_SET: ReadonlySet<string> = new Set(SCENE_OP_NAMES)
+
+/** True for the ops that change the list of scenes, as opposed to editing the chosen scene's stops and legs. */
+export function isSceneOp(op: { op: string }): op is SceneOp {
+  return SCENE_OP_SET.has(op.op)
 }
 
 export const ProjectPatchSchema = z.strictObject({
@@ -350,7 +354,11 @@ export function applyPatch(project: Project, patch: ProjectPatch): Project {
   }
   if (sceneSet) {
     checkKeys(sceneSet, SCENE_SET_FORBIDDEN, 'sceneSet')
-    edit((scene) => mergePatch(scene, sceneSet) as Scene)
+    // A name is stored trimmed, and a blank one is refused. (Other types fall through to the schema.)
+    const name = sceneSet.name
+    if (typeof name === 'string' && !name.trim()) fail(['sceneSet', 'name'], BLANK_SCENE_NAME)
+    const merged = typeof name === 'string' ? { ...sceneSet, name: name.trim() } : sceneSet
+    edit((scene) => mergePatch(scene, merged) as Scene)
   }
   ops?.forEach((op, i) => {
     if (isSceneOp(op)) work = applySceneOp(work, op, i, newStopId)

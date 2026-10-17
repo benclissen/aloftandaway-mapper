@@ -15,6 +15,7 @@ function scene(id: string, name: string, frames: number, d: string): SceneExport
   return {
     id,
     name,
+    position: 1,
     frames,
     sourceRange: { fromFrame: 0, toFrame: frames },
     layers: { map: `${d}/map.mov`, route: `${d}/route.mov`, signs: `${d}/signs.mov` },
@@ -27,6 +28,7 @@ const input: FcpxmlInput = {
   output: { aspect: '16:9', height: 1080, fps: { num: 25, den: 1 } },
   join: true,
   credit: 'burned',
+  creditLines: [],
   scenes: [scene('a', 'Drive', 50, '/renders/trip/01-drive'), scene('b', 'Sail', 75, '/renders/trip/02-sail')],
 }
 

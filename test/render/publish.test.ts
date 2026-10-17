@@ -14,10 +14,10 @@ beforeEach(async () => { dir = await mkdtemp(path.join(os.tmpdir(), 'mapper-publ
 afterEach(() => rm(dir, { recursive: true, force: true }))
 
 const scene: SceneExport = {
-  id: 'a', name: 'A', frames: 25, sourceRange: { fromFrame: 0, toFrame: 25 },
+  id: 'a', name: 'A', position: 1, frames: 25, sourceRange: { fromFrame: 0, toFrame: 25 },
   layers: { map: '/r/map.mov', route: '/r/route.mov', signs: '/r/signs.mov' }, markers: [],
 }
-const project = { name: 'Trip', output: { aspect: '16:9', height: 1080, fps: { num: 25, den: 1 } }, credit: 'burned', scenes: [] } as const
+const project = { name: 'Trip', output: { aspect: '16:9', height: 1080, fps: { num: 25, den: 1 } }, credit: 'burned', scenes: [] } as const satisfies Parameters<typeof publishFcpxml>[0]['project']
 
 test('a cancel before the rename leaves no final or temporary XML', async () => {
   const controller = new AbortController()

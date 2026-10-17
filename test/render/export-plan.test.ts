@@ -257,6 +257,21 @@ describe('scenes', () => {
     expect(layered.passes.map(p => [p.path, p.fromFrame, p.toFrame])).toEqual([['01-drive/map.mov', 0, 25]])
   })
 
+  test('a range ending exactly at the cut renders only the first scene', () => {
+    const project = driveAndSail()
+    const plan = planExport(project, { seaPaths: {}, range: { from: 0, to: 2 } })
+    expect(plan.scenes.map(s => [s.name, s.offsetFrame])).toEqual([['Drive', 0]])
+    expect(plan.passes.map(p => [p.sceneId, p.path, p.fromFrame, p.toFrame])).toEqual([[project.scenes[0]!.id, 'all.mp4', 0, 50]])
+    expect(plan.joins).toEqual([])
+  })
+
+  test('a range starting exactly at the cut renders only the second scene', () => {
+    const plan = planExport(driveAndSail(), { seaPaths: {}, range: { from: 2, to: 5 } })
+    expect(plan.scenes.map(s => [s.name, s.offsetFrame])).toEqual([['Sail', 0]])
+    expect(plan.passes.map(p => [p.sceneId, p.path, p.fromFrame, p.toFrame])).toEqual([[SAIL_ID, 'all.mp4', 0, 75]])
+    expect(plan.joins).toEqual([])
+  })
+
   test('a range with join false and two scenes is refused', () => {
     let error: unknown
     try { planExport(driveAndSail(), { seaPaths: {}, join: false, range: { from: 0, to: 1 } }) } catch (e) { error = e }

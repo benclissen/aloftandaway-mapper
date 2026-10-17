@@ -1,4 +1,4 @@
-import { applyPatch, type PatchResponse, type Project, type ProjectPatch } from '../../core/index.js'
+import { applyPatch, isSceneOp, type PatchResponse, type Project, type ProjectPatch } from '../../core/index.js'
 
 /** One studio edit: the patch that made it, the patch that undoes it, and the scene to show after each. */
 export interface Entry {
@@ -10,9 +10,6 @@ export interface Entry {
   /** The scene shown after the edit: the new one for add and duplicate, the neighbour for delete. Shown after a redo. */
   sceneAfter: string
 }
-
-/** The ops that change the list of scenes; a patch with only these names no scene. */
-export const SCENE_OPS = new Set(['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene', 'restore_scene'])
 
 /**
  * The scenes to show around `patch`, made on `before` while scene `shown` was on screen. A scene that is added or
@@ -31,7 +28,7 @@ export function scenesAround(before: Project, patch: ProjectPatch, shown: string
       const left = state.scenes.toSpliced(at, 1)
       after = left[Math.min(at, left.length - 1)]?.id ?? after
     }
-    if (SCENE_OPS.has(op.op)) state = applyPatch(state, { ops: [op] })
+    if (isSceneOp(op)) state = applyPatch(state, { ops: [op] })
   }
   return { sceneBefore: shown, sceneAfter: after }
 }

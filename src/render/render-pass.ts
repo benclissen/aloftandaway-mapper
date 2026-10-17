@@ -3,19 +3,27 @@ import path from 'node:path'
 import type { Browser } from 'playwright'
 import {
   frameSize,
+  MAX_TERRAIN_SETTLES,
   outputScale,
   type Aspect,
   type Project,
   type RenderPageOptions,
   type SeaPaths,
+  usesElevation,
 } from '../core/index.js'
 import { Encoder, ffmpegArgs, joinSegments, pickH264Encoder, type Codec, type H264Encoder, type ProresProfile } from './encode.js'
 import { RenderCancelled, RenderError } from './errors.js'
 import type { CompletedPass, MediaKind, PlannedScene, RenderPass } from './export-types.js'
-import { RenderPage } from './page.js'
+import { LOAD_TIMEOUT_MS, RenderPage } from './page.js'
 
 /** How long one `renderFrame` or `capturePng` may take before the pass fails. */
-const STEP_TIMEOUT_MS = 60_000
+export const STEP_TIMEOUT_MS = 60_000
+/**
+ * How long one terrain frame may take. The page waits for the map to go idle once to show the frame and up to
+ * `MAX_TERRAIN_SETTLES` more times to place the camera, and each wait has its own 60 s limit. This budget outlasts them
+ * all, so the page's own timeout fires first, with the clearer message.
+ */
+export const TERRAIN_FRAME_TIMEOUT_MS = (MAX_TERRAIN_SETTLES + 2) * 60_000 + 10_000
 /** How many times one pass may reopen the page and carry on. The next failure fails the render. */
 const MAX_RECOVERIES = 3
 
@@ -29,7 +37,7 @@ export const MEDIA: Record<MediaKind, { codec: Codec; proresProfile?: ProresProf
 /** The parts of `RenderPage` a pass uses. */
 export interface PassPage {
   load(project: Project, pixelRatio: number, opts?: RenderPageOptions): Promise<number>
-  renderFrame(n: number): Promise<void>
+  renderFrame(n: number): Promise<{ settled: boolean }>
   capturePng(): Promise<Buffer>
   contextLost(): Promise<boolean>
   onCrash(cb: () => void): void
@@ -68,12 +76,23 @@ export interface RenderPassArgs {
   signal?: AbortSignal
   /** Called with the frames of this pass handed to the encoder so far, and with the pass's frame count at the end. */
   onFrame?: (completed: number) => void
+  /**
+   * Called with each frame handed to the encoder whose camera height over terrain never held still, so it may differ
+   * slightly between renders and between layers.
+   */
+  onUnsettled?: (frame: number) => void
   /** Test hook: loses the page's WebGL context the first time this frame is rendered. First page of the pass only. */
   faultAtFrame?: number
   /** Test hook: loses the context just after this frame is painted, before it is captured. First page only. */
   faultAfterRenderFrame?: number
+  /** Test hook: every page of the pass reports this frame as unsettled. */
+  forceUnsettledAt?: number
   /** The H.264 encoder for an `h264` pass. Picked here when left out. */
   h264Encoder?: H264Encoder
+  /** Test hook: deletes a file, instead of `rm(path, { force: true })`. */
+  removeFile?: (path: string) => Promise<void>
+  /** Called with a line for something that went wrong without failing the pass, such as a segment left on disk. */
+  onWarning?: (line: string) => void
 }
 
 /**
@@ -82,8 +101,9 @@ export interface RenderPassArgs {
  *
  * Frames are deterministic, so a pass survives a crashed page, a lost WebGL context or a stuck frame: it opens a
  * fresh page with the same scene and layer and carries on from the failed frame into a new segment
- * (`<layer>.part<k>.<ext>` beside the output), up to 3 times. The segments are joined without re-encoding at the end.
- * An ffmpeg failure is not a page fault and fails the pass at once. A failed pass leaves its segments behind.
+ * (`<layer>.part<k>.<ext>` beside the output), up to 3 times. The segments are joined without re-encoding at the end,
+ * then deleted; a segment that can't be deleted is a warning (`onWarning`), not a failure. An ffmpeg failure is not a
+ * page fault and fails the pass at once. A failed pass leaves its segments behind.
  */
 export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_DEPS): Promise<CompletedPass> {
   const { browser, project, seaPaths, scene, pass, dir, signal } = args
@@ -123,9 +143,20 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
   const openPage = async (faults: { faultAtFrame?: number; faultAfterRenderFrame?: number } = {}) => {
     const opened = await deps.openPage({ browser, aspect: output.aspect })
     loading = opened
+    const failed = new Promise<never>((_, reject) => {
+      opened.onCrash(() => reject(new Error('the render page crashed or lost its WebGL context')))
+    })
+    failed.catch(() => undefined)
     try {
       throwIfAborted(signal)
-      const frameCount = await opened.load(project, outputScale(output), { layer: pass.layer, scene: scene.id, seaPaths, ...faults })
+      const unsettled = args.forceUnsettledAt === undefined ? {} : { forceUnsettledAt: args.forceUnsettledAt }
+      // The page's own errors (a map-data failure with its fix) pass through as they are.
+      const frameCount = await step(
+        opened.load(project, outputScale(output), { layer: pass.layer, scene: scene.id, seaPaths, ...faults, ...unsettled }),
+        'load the scene',
+        failed,
+        { budgetMs: LOAD_TIMEOUT_MS, keepErrors: true },
+      )
       if (frameCount !== scene.totalFrames) {
         throw new Error(`The render page counted ${frameCount} frames, but the timeline has ${scene.totalFrames}.`)
       }
@@ -135,10 +166,6 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
     } finally {
       loading = undefined
     }
-    const failed = new Promise<never>((_, reject) => {
-      opened.onCrash(() => reject(new Error('the render page crashed or lost its WebGL context')))
-    })
-    failed.catch(() => undefined)
     page = opened
     pageFailed = failed
   }
@@ -179,11 +206,13 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
       }
     }
 
+    const frameBudget = usesElevation(scene.scene.look) ? TERRAIN_FRAME_TIMEOUT_MS : STEP_TIMEOUT_MS
     let n = fromFrame
     while (n < toFrame) {
       let png: Buffer
+      let settled: boolean
       try {
-        await step(page!.renderFrame(n), `render frame ${n}`, pageFailed)
+        settled = (await step(page!.renderFrame(n), `render frame ${n}`, pageFailed, { budgetMs: frameBudget })).settled
         png = await step(page!.capturePng(), `capture frame ${n}`, pageFailed)
         // The context can go after the frame was painted. The capture may then be a correctly sized blank map, and the
         // loss event may not have reached Node yet, so ask the page before trusting the PNG.
@@ -204,6 +233,8 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
         encoder = deps.startEncoder(ffmpegArgs({ ...media, ...size, fps: output.fps, out: part, h264Encoder }))
       }
       if (n > fromFrame) args.onFrame?.(n - fromFrame)
+      // Reported only for the render of the frame that is written, not for one a recovery threw away.
+      if (!settled) args.onUnsettled?.(n)
       writing = encoder.write(png)
       // Rejections are awaited on the next frame; this stops them counting as unhandled until then.
       writing.catch(() => undefined)
@@ -217,6 +248,9 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
       await rename(parts[0]!, out)
     } else {
       await joinParts({ parts, out, codec: media.codec, signal })
+      // The segments are never in the manifest, so nothing has to forget them first.
+      const warning = await removeParts(parts, { dir, what: 'segment', removeFile: args.removeFile })
+      if (warning) args.onWarning?.(warning)
     }
     return { ...pass, frames, segments: parts.length, recoveries }
   } finally {
@@ -231,9 +265,10 @@ export async function renderPass(args: RenderPassArgs, deps: PassDeps = DEFAULT_
 }
 
 /**
- * Joins the parts into `out` and deletes them. The concat list sits beside `out`, named after it, so joins in the
- * same folder never share one. If the join fails, the parts are kept and named in the fix, as `kept` (default
- * "segments rendered so far"). Aborting `signal` stops the join, keeps the parts and rejects with `RenderCancelled`.
+ * Joins the parts into `out`. The parts are left for the caller to delete with `removeParts`, once nothing lists them.
+ * The concat list sits beside `out`, named after it, so joins in the same folder never share one. If the join fails,
+ * the parts are named in the fix, as `kept` (default "segments rendered so far"). Aborting `signal` stops the join
+ * and rejects with `RenderCancelled`.
  */
 export async function joinParts(args: { parts: string[]; out: string; codec: Codec; kept?: string; signal?: AbortSignal }): Promise<void> {
   const ext = path.extname(args.out)
@@ -247,8 +282,32 @@ export async function joinParts(args: { parts: string[]; out: string; codec: Cod
       `Render again. The ${args.parts.length} ${args.kept ?? 'segments rendered so far'} are kept: ${args.parts.join(', ')}`,
     )
   }
-  await Promise.all(args.parts.map((part) => rm(part, { force: true })))
 }
+
+/**
+ * Deletes the joined parts at `paths`, each through `removeFile` (default `rm` with `force`). Never throws: if any
+ * can't be deleted, returns a warning naming them relative to `dir`, as `what`s (e.g. "scene part"), and the error
+ * codes. Returns undefined when every part is gone.
+ */
+export async function removeParts(
+  paths: string[],
+  opts: { dir: string; what: string; removeFile?: (path: string) => Promise<void> },
+): Promise<string | undefined> {
+  const removeFile = opts.removeFile ?? ((file: string) => rm(file, { force: true }))
+  const results = await Promise.allSettled(paths.map((file) => removeFile(file)))
+  const failed = paths.flatMap((file, i) => {
+    const result = results[i]!
+    return result.status === 'rejected' ? [{ file, reason: errorCode(result.reason) }] : []
+  })
+  if (failed.length === 0) return undefined
+  const names = failed.map(({ file }) => path.relative(opts.dir, file)).join(', ')
+  const reasons = [...new Set(failed.map(({ reason }) => reason))].join(', ')
+  const what = failed.length === 1 ? opts.what : `${opts.what}s`
+  return `Couldn't delete ${failed.length} ${what} after joining them: ${names} (${reasons}). They're not needed; delete them yourself.`
+}
+
+/** A filesystem error's code (e.g. `EACCES`), or the message of any other error. */
+const errorCode = (e: unknown) => (e as NodeJS.ErrnoException | undefined)?.code ?? errorMessage(e)
 
 export function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new RenderCancelled()
@@ -256,15 +315,22 @@ export function throwIfAborted(signal: AbortSignal | undefined): void {
 
 /**
  * Waits for `work`, which does `what` (e.g. "render frame 12"), and fails with an error naming it if `work` rejects,
- * `pageFailed` rejects or it takes over 60 s. A late rejection from `work` is ignored, since the step has already
- * failed by then.
+ * `pageFailed` rejects or it takes over `budgetMs` (default 60 s). With `keepErrors`, a rejection of `work` or
+ * `pageFailed` passes through as it is, for errors that already say what they are. A late rejection from `work` is
+ * ignored, since the step has already failed by then.
  */
-function step<T>(work: Promise<T>, what: string, pageFailed: Promise<never>): Promise<T> {
+function step<T>(
+  work: Promise<T>,
+  what: string,
+  pageFailed: Promise<never>,
+  { budgetMs = STEP_TIMEOUT_MS, keepErrors = false }: { budgetMs?: number; keepErrors?: boolean } = {},
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Could not ${what} within ${STEP_TIMEOUT_MS / 1000} s.`)), STEP_TIMEOUT_MS)
+    timer = setTimeout(() => reject(new Error(`Could not ${what} within ${budgetMs / 1000} s.`)), budgetMs)
   })
   const named = Promise.race([work, pageFailed]).catch((e: unknown) => {
+    if (keepErrors) throw e
     throw new Error(`Could not ${what}: ${errorMessage(e)}`, { cause: e })
   })
   named.catch(() => undefined)

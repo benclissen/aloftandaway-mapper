@@ -1,5 +1,5 @@
-import { applyPatch, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
-import { resolveScene } from './scenes.js'
+import { applyPatch, isSceneOp, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
+import { resolveScene, sceneTitleOf } from './scenes.js'
 import { defaultModeFor, type Project } from './schema.js'
 
 type Obj = Record<string, unknown>
@@ -85,8 +85,6 @@ function invertOp(project: Project, op: PatchOp, sceneId: string): PatchOp {
   }
 }
 
-const SCENE_OPS = new Set(['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene', 'restore_scene'])
-
 /**
  * The patch that undoes `patch` on `before`: applied to `applyPatch(before, patch)` it gives back `before`.
  * Supports `scene`, `sceneSet`, the stop, leg and via ops, and the scene ops. The inverse names the scene by id.
@@ -102,21 +100,27 @@ export function invertPatch(before: Project, patch: ProjectPatch): ProjectPatch 
     if (!SUPPORTED.has(op.op)) throw new Error(`invertPatch does not support ${op.op}`)
   }
   const sceneId = resolveScene(before, parsed.scene).scene.id
-  const editsStops = ops.some((op) => !SCENE_OPS.has(op.op))
+  const editsStops = ops.some((op) => !isSceneOp(op))
   const removesScene = ops.some((op) => op.op === 'remove_scene' && op.id === sceneId)
   if (removesScene && patch.sceneSet) throw new Error('invertPatch does not support sceneSet together with removing that scene')
   if (removesScene && editsStops) throw new Error('invertPatch does not support editing stops together with removing that scene')
 
   const inverse: ProjectPatch = {}
   if (patch.sceneSet || editsStops) inverse.scene = sceneId
-  if (patch.sceneSet) inverse.sceneSet = invertMerge(resolveScene(before, sceneId).scene, patch.sceneSet)
+  if (patch.sceneSet) {
+    const { scene, index } = resolveScene(before, sceneId)
+    inverse.sceneSet = invertMerge(scene, patch.sceneSet)
+    // An old file can hold a blank scene name, and a patch refuses one. Undo restores the title it showed, `Scene N`.
+    const name = inverse.sceneSet.name
+    if (typeof name === 'string' && !name.trim()) inverse.sceneSet.name = sceneTitleOf(name, index)
+  }
   // Invert each op against the state it ran on, then undo them last to first.
   let state = before
   const inverted: PatchOp[] = []
   for (const op of ops) {
     inverted.push(invertOp(state, op, sceneId))
     // A scene op doesn't need the chosen scene, which it may have removed.
-    state = applyPatch(state, SCENE_OPS.has(op.op) ? { ops: [op] } : { scene: sceneId, ops: [op] })
+    state = applyPatch(state, isSceneOp(op) ? { ops: [op] } : { scene: sceneId, ops: [op] })
   }
   if (inverted.length) inverse.ops = inverted.reverse()
   return inverse

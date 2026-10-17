@@ -21,6 +21,8 @@ export interface RenderStatus {
    * replaces the scene parts it was made from.
    */
   outputs?: CompletedOutput[]
+  /** The render's warnings so far, as `RenderResult.warnings` words them. Absent while there are none. */
+  warnings?: string[]
 }
 
 interface Job {
@@ -38,7 +40,7 @@ const jobs = new Map<string, Job>()
 let queue: Promise<void> = Promise.resolve()
 
 /** Queues a render of the project and returns its job id at once. Poll it with `renderStatus`. */
-export function startRenderJob(args: Omit<RenderArgs, 'onProgress' | 'onStart' | 'onOutput' | 'signal'>): string {
+export function startRenderJob(args: Omit<RenderArgs, 'onProgress' | 'onStart' | 'onOutput' | 'onWarnings' | 'signal'>): string {
   const jobId = randomUUID()
   let settle!: () => void
   const settled = new Promise<void>((resolve) => (settle = resolve))
@@ -48,7 +50,7 @@ export function startRenderJob(args: Omit<RenderArgs, 'onProgress' | 'onStart' |
   return jobId
 }
 
-async function runJob(job: Job, args: Omit<RenderArgs, 'onProgress' | 'onStart' | 'onOutput' | 'signal'>): Promise<void> {
+async function runJob(job: Job, args: Omit<RenderArgs, 'onProgress' | 'onStart' | 'onOutput' | 'onWarnings' | 'signal'>): Promise<void> {
   // Cancelled while queued: already settled.
   if (job.controller.signal.aborted) return
   job.started = true
@@ -60,6 +62,7 @@ async function runJob(job: Job, args: Omit<RenderArgs, 'onProgress' | 'onStart' 
       onStart: ({ dir }) => (status.dir = dir),
       onProgress: (progress) => (status.progress = progress),
       onOutput: (output) => addOutput((status.outputs ??= []), { ...output }),
+      onWarnings: (warnings) => (status.warnings = warnings),
     })
     status.state = 'done'
   } catch (e) {

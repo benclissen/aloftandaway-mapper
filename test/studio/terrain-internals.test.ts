@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, test, vi } from 'vitest'
 import { dropElevationTiles, redrawTerrain } from '../../src/studio/stage/terrain-internals.js'
 
@@ -24,5 +25,13 @@ describe('terrain internals', () => {
     expect(() => redrawTerrain({})).toThrow(message)
     expect(() => redrawTerrain({ terrain: null })).toThrow(message)
     expect(() => redrawTerrain({ terrain: { tileManager: {} } })).toThrow(message)
+  })
+})
+
+describe('MapLibre version', () => {
+  // The terrain code reaches into MapLibre's internals, so a new minor version could break it without warning.
+  test('maplibre-gl is pinned exactly', () => {
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { dependencies: Record<string, string> }
+    expect(pkg.dependencies['maplibre-gl']).toMatch(/^\d+\.\d+\.\d+$/)
   })
 })

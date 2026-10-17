@@ -89,14 +89,19 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Inactive tabs: light enough for 7:1 against the bar (--muted is only about 5.6:1 there). */
+.scene-tab[data-active='false'] {
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .studio .scene-tab [role='tab'][aria-selected='false'] {
-  color: var(--muted);
+  color: #c4c6cb;
 }
 
 .studio .scene-more {
   width: 24px;
   padding: 0;
-  color: var(--muted);
+  color: #c4c6cb;
 }
 
 .studio .scene-add {

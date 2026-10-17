@@ -7,9 +7,22 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { PNG } from 'pngjs'
 import { afterAll, describe, expect, test } from 'vitest'
-import { buildRoute, buildTimeline, cameraAt, layoutSize, TILE_SIZE, toXY, type LngLat, type Project } from '../../src/core/index.js'
-import { CREDIT } from '../../src/studio/stage/overlay.js'
-import { alpine, greekIslands, sceneOf } from '../fixtures/projects.js'
+import {
+  buildRoute,
+  buildTimeline,
+  cameraAt,
+  layoutSize,
+  pointAt,
+  sceneCredit,
+  screenAngle,
+  TILE_SIZE,
+  toXY,
+  type LngLat,
+  type Project,
+} from '../../src/core/index.js'
+import type { MapperPage } from '../../src/studio/render-mode.js'
+import { CREDIT, CREDIT_FONT } from '../../src/studio/stage/overlay.js'
+import { alpine, greekIslands, sceneOf, stopsAt } from '../fixtures/projects.js'
 import { closeAll, openRenderPage, snapshot } from './helpers.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -36,57 +49,147 @@ const rgb = (png: PNG, x: number, y: number): [number, number, number] => {
 
 const near = (a: number[], b: number[], tolerance: number) => a.every((v, i) => Math.abs(v - b[i]!) <= tolerance)
 
-describe.skipIf(process.env.MAPPER_NET !== '1')('look (MAPPER_NET only)', () => {
-  test('burned credit fits at 1080p', async () => {
-    // Satellite with terrain is the three-line credit. The same frame without the burned credit shows where its ink is.
-    const withCredit = alpine()
-    const scene = sceneOf(withCredit)
-    scene.look = { ...scene.look, theme: 'satellite' }
-    withCredit.credit = 'burned'
-    const without: Project = { ...withCredit, credit: 'description' }
+/**
+ * Renders satellite with terrain twice on stubbed tiles, with the credit burned in and left to the description, so the
+ * two frames differ only by the credit's ink. Checks that ink sits in the credit box at the frame's right and bottom.
+ */
+async function expectBurnedCreditFits(aspect: '16:9' | '9:16'): Promise<void> {
+  // Satellite with terrain is the three-line credit.
+  const withCredit = alpine()
+  withCredit.output = { ...withCredit.output, aspect }
+  const scene = sceneOf(withCredit)
+  scene.look = { ...scene.look, theme: 'satellite' }
+  withCredit.credit = 'burned'
+  const without: Project = { ...withCredit, credit: 'description' }
+  const lines = sceneCredit(scene, 'burned')
+  expect(lines).toHaveLength(3)
 
-    const burned = await openRenderPage(withCredit, 1)
-    const plain = await openRenderPage(without, 1)
+  const burned = await openRenderPage(withCredit, 1, { stubTiles: true })
+  const plain = await openRenderPage(without, 1, { stubTiles: true })
+  try {
+    const a = PNG.sync.read(await snapshot(burned.page, 0))
+    const b = PNG.sync.read(await snapshot(plain.page, 0))
+    expect([a.width, a.height]).toEqual(aspect === '16:9' ? [1920, 1080] : [1080, 1920])
+
+    // The widest line, measured in the page with the credit font, bounds the box from the left. The halo and rounding
+    // get 4 px.
+    const widest = await burned.page.evaluate(
+      async ([font, texts]) => {
+        await document.fonts.load(font)
+        const ctx = document.createElement('canvas').getContext('2d')!
+        ctx.font = font
+        return Math.max(...texts.map((text) => ctx.measureText(text).width))
+      },
+      [CREDIT_FONT, lines] as const,
+    )
+    const boxLeft = a.width - CREDIT.margin - widest - 4
+    const boxTop = a.height - CREDIT.margin - 2 * CREDIT.lineHeight - 20
+
+    // Every pixel the credit changed, as the rows and columns it covers. Any change outside the box is not the credit.
+    const rows = new Set<number>()
+    let minX = a.width
+    let maxX = -1
+    for (let y = 0; y < a.height; y++) {
+      for (let x = 0; x < a.width; x++) {
+        const i = (y * a.width + x) * 4
+        if (a.data[i] === b.data[i] && a.data[i + 1] === b.data[i + 1] && a.data[i + 2] === b.data[i + 2]) continue
+        expect(
+          x >= boxLeft && y >= boxTop,
+          `pixel (${x}, ${y}) changed outside the credit box (x >= ${boxLeft.toFixed(1)}, y >= ${boxTop})`,
+        ).toBe(true)
+        rows.add(y)
+        minX = Math.min(minX, x)
+        maxX = Math.max(maxX, x)
+      }
+    }
+    expect(rows.size, 'the credit is not on the picture').toBeGreaterThan(0)
+    const top = Math.min(...rows)
+    const bottom = Math.max(...rows)
+    // Right-aligned: the ink ends at the margin (the halo adds about a pixel and a half), and the longest line still
+    // starts inside the frame. The last baseline is a margin above the bottom edge; descenders drop a few px below.
+    expect(maxX).toBeLessThanOrEqual(a.width - CREDIT.margin + 2)
+    expect(minX).toBeGreaterThanOrEqual(CREDIT.margin)
+    expect(bottom).toBeLessThan(a.height - CREDIT.margin + 8)
+    expect(bottom).toBeGreaterThan(a.height - CREDIT.margin - 8)
+    // Three lines, one per baseline: each has ink in the band that holds its letters.
+    for (const line of [0, 1, 2]) {
+      const baseline = a.height - CREDIT.margin - (2 - line) * CREDIT.lineHeight
+      const band = [...rows].filter((y) => y >= baseline - 12 && y <= baseline + 2)
+      expect(band.length, `credit line ${line + 1} has no ink`).toBeGreaterThan(4)
+    }
+    expect(top).toBeGreaterThanOrEqual(boxTop)
+    // Nothing went past the stubs, so no network was needed.
+    expect(burned.leaks, 'the burned page made requests the stubs do not answer').toEqual([])
+    expect(plain.leaks, 'the plain page made requests the stubs do not answer').toEqual([])
+  } finally {
+    await burned.close()
+    await plain.close()
+  }
+}
+
+describe('look', () => {
+  test('burned credit fits a 16:9 frame', () => expectBurnedCreditFits('16:9'))
+
+  // The narrowest frame (1080 wide): the longest line still fits.
+  test('burned credit fits a 9:16 frame', () => expectBurnedCreditFits('9:16'))
+
+  test('a plane on a tilted shot points along its line', async () => {
+    // A flight bowed across the Alps, seen from its middle at pitch 60 and bearing 30. The line runs about 45 degrees
+    // off the bearing, where tilt bends its on-screen angle most.
+    const project = stopsAt([[7.0, 45.0], [7.6, 45.114]])
+    const scene = sceneOf(project)
+    scene.legs = [{ mode: 'air', via: [], symbol: 'plane' }]
+    const route = buildRoute(scene)
+    const timeline = buildTimeline(scene, project.output.fps, route)
+    const leg = timeline.legFrames[0]!
+    const frame = Math.round((leg.start + leg.end) / 2)
+    const { head, distance } = timeline.stateAt(frame)
+    scene.camera = { mode: 'fixed', easing: 'smooth', start: { center: head.at, zoom: 10, bearing: 30, pitch: 60 } }
+
+    // Two route points 1 km either side of the head. Route distance is in Mercator world units.
+    const km = 1 / (2 * Math.PI * 6371 * Math.cos((head.at[1] * Math.PI) / 180))
+    const behind = pointAt(route, distance - km).at
+    const ahead = pointAt(route, distance + km).at
+
+    const { page, leaks, close } = await openRenderPage(project, 0.5, { stubTiles: true })
     try {
-      const a = PNG.sync.read(await snapshot(burned.page, 0))
-      const b = PNG.sync.read(await snapshot(plain.page, 0))
-      expect([a.width, a.height]).toEqual([1920, 1080])
+      await snapshot(page, frame)
+      const { used, from, to } = await page.evaluate(
+        ([a, b]) => {
+          const mapper = (window as unknown as { mapper: MapperPage }).mapper
+          return { used: mapper.lastScreenAngle(), from: mapper.project(a), to: mapper.project(b) }
+        },
+        [behind, ahead] as const,
+      )
+      const line = screenAngle(from, to)!
+      const off = (a: number, b: number) => Math.abs(((a - b + 540) % 360) - 180)
+      // The old rule, heading minus bearing, is well off here, so this shot tells the two apart.
+      expect(off(head.heading - 30, line)).toBeGreaterThan(10)
+      expect(used, 'the overlay drew without a screen angle').toBeDefined()
+      expect(off(used!, line), `drawn at ${used}, line at ${line}`).toBeLessThanOrEqual(2)
+      expect(leaks, 'the page made requests the stubs do not answer').toEqual([])
 
-      // Every pixel the credit changed, as the rows and columns it covers.
-      const rows = new Set<number>()
-      let minX = a.width
-      let maxX = -1
-      for (let y = 0; y < a.height; y++) {
-        for (let x = 0; x < a.width; x++) {
-          const i = (y * a.width + x) * 4
-          if (a.data[i] === b.data[i] && a.data[i + 1] === b.data[i + 1] && a.data[i + 2] === b.data[i + 2]) continue
-          rows.add(y)
-          minX = Math.min(minX, x)
-          maxX = Math.max(maxX, x)
-        }
-      }
-      expect(rows.size, 'the credit is not on the picture').toBeGreaterThan(0)
-      const top = Math.min(...rows)
-      const bottom = Math.max(...rows)
-      // Right-aligned: the ink ends at the margin (the halo adds about a pixel and a half), and the longest line still
-      // starts inside the frame. The last baseline is a margin above the bottom edge; descenders drop a few px below.
-      expect(maxX).toBeLessThanOrEqual(a.width - CREDIT.margin + 2)
-      expect(minX).toBeGreaterThanOrEqual(CREDIT.margin)
-      expect(bottom).toBeLessThan(a.height - CREDIT.margin + 8)
-      expect(bottom).toBeGreaterThan(a.height - CREDIT.margin - 8)
-      // Three lines, one per baseline: each has ink in the band that holds its letters.
-      for (const line of [0, 1, 2]) {
-        const baseline = a.height - CREDIT.margin - (2 - line) * CREDIT.lineHeight
-        const band = [...rows].filter((y) => y >= baseline - 12 && y <= baseline + 2)
-        expect(band.length, `credit line ${line + 1} has no ink`).toBeGreaterThan(4)
-      }
-      expect(top).toBeGreaterThanOrEqual(a.height - CREDIT.margin - 2 * CREDIT.lineHeight - 20)
+      // On the last frame the head sits at the end of the route, so the direction comes from the point behind it.
+      const lastFrame = timeline.totalFrames - 1
+      expect(timeline.stateAt(lastFrame).distance).toBeCloseTo(route.length, 9)
+      await snapshot(page, lastFrame)
+      const end = await page.evaluate(
+        ([a, b]) => {
+          const mapper = (window as unknown as { mapper: MapperPage }).mapper
+          return { used: mapper.lastScreenAngle(), from: mapper.project(a), to: mapper.project(b) }
+        },
+        [pointAt(route, route.length - km).at, pointAt(route, route.length).at] as const,
+      )
+      const endLine = screenAngle(end.from, end.to)!
+      expect(end.used, 'the overlay drew the last frame without a screen angle').toBeDefined()
+      expect(off(end.used!, endLine), `at the end drawn at ${end.used}, line at ${endLine}`).toBeLessThanOrEqual(2)
     } finally {
-      await burned.close()
-      await plain.close()
+      await close()
     }
   })
+})
 
+describe.skipIf(process.env.MAPPER_NET !== '1')('look (MAPPER_NET only)', () => {
   test('aloftandaway preview renders', async () => {
     // Framed on the whole route and still, so the Cretan Sea and the Greek mainland are both in view.
     const project = greekIslands({
@@ -96,8 +199,8 @@ describe.skipIf(process.env.MAPPER_NET !== '1')('look (MAPPER_NET only)', () => 
     const { page, close } = await openRenderPage(project, 0.5)
     try {
       const png = PNG.sync.read(await snapshot(page, 0))
-      const WATER = [0xee, 0xf2, 0xf4]
-      const LAND = [0xd4, 0xda, 0xdf]
+      const WATER = [0xb7, 0xc8, 0xd3]
+      const LAND = [0xe9, 0xec, 0xee]
       // Open sea south of the Cyclades paints the style's water, not the land colour behind it.
       const [wx, wy] = layoutPx(project, 0, [25.0, 36.0]).map((v) => v * 0.5)
       expect(near(rgb(png, wx!, wy!), WATER, 6), `sea pixel ${rgb(png, wx!, wy!)}`).toBe(true)

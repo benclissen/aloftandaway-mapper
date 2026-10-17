@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { frameSize, joinCredit, type Fps } from '../core/index.js'
+import { frameSize, joinCredit, sceneTitleOf, type Fps } from '../core/index.js'
 import type { FcpxmlInput, SceneExport } from './export-types.js'
 
 /** Exact FCPXML rational time for a whole number of frames, e.g. `1001/24000s`. */
@@ -112,7 +112,8 @@ export function writeFcpxml(input: FcpxmlInput): string {
     const assets = { map: id(), route: id(), signs: id() }
     return { assets, media: id() }
   })
-  const compoundName = (scene: SceneExport) => `${input.projectName} · ${scene.name}`
+  const sceneTitle = (scene: SceneExport) => sceneTitleOf(scene.name, scene.position - 1)
+  const compoundName = (scene: SceneExport) => `${input.projectName} · ${sceneTitle(scene)}`
 
   const lines: string[] = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -127,7 +128,7 @@ export function writeFcpxml(input: FcpxmlInput): string {
     const duration = t(scene.frames)
     for (const layer of LAYERS) {
       lines.push(
-        `    <asset${attrs({ id: ids.assets[layer.key], name: `${scene.name || 'Untitled'} · ${layer.name}`, start: '0s', duration, hasVideo: 1, hasAudio: 0, format: formatId })}>`,
+        `    <asset${attrs({ id: ids.assets[layer.key], name: `${sceneTitle(scene)} · ${layer.name}`, start: '0s', duration, hasVideo: 1, hasAudio: 0, format: formatId })}>`,
         `      <media-rep${attrs({ kind: 'original-media', src: pathToFileURL(scene.layers[layer.key]).href })}/>`,
         '    </asset>',
       )

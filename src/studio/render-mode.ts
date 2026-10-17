@@ -18,8 +18,12 @@ export interface MapperPage {
   ): Promise<{ frameCount: number }>
   /** 0 until a project is loaded. */
   readonly frameCount: number
-  /** Shows frame `n` and resolves once it is fully painted. */
-  renderFrame(n: number): Promise<void>
+  /**
+   * Shows frame `n` and resolves once it is fully painted. `settled` is false when the camera's height over terrain
+   * never held still, so the frame may differ slightly between renders and between layers. `forceUnsettledAt`, a test
+   * hook given to `load`, makes that frame report false every time it is shown.
+   */
+  renderFrame(n: number): Promise<{ settled: boolean }>
   /** True when the map's WebGL context has been lost, so a frame captured now may be blank. */
   contextLost(): boolean
   /**
@@ -27,6 +31,11 @@ export interface MapperPage {
    * draws stop dots, signs and the vehicle. For checking placement.
    */
   project(at: LngLat): [number, number]
+  /**
+   * The on-screen angle of the line the last overlay draw turned symbols to, in degrees clockwise from screen-up, or
+   * undefined when it fell back to the heading. A test aid.
+   */
+  lastScreenAngle(): number | undefined
 }
 
 declare global {
@@ -64,17 +73,19 @@ export function startRenderMode(root: HTMLElement): void {
   let stage: MapStage | undefined
   let stageRatio = 0
   let stageLayer: RenderLayer = 'all'
+  let stageCpuOverlay = false
   // Destroying a stage loses its WebGL context on purpose; only an unexpected loss is a crash.
   let stopWatchingContext: (() => void) | undefined
   let faultAtFrame: number | undefined
   let faultAfterRenderFrame: number | undefined
+  let forceUnsettledAt: number | undefined
 
   window.mapper = {
     ready,
     get frameCount() {
       return stage ? stage.frameCount : 0
     },
-    async load(input, { pixelRatio, layer = 'all', scene: sceneId, seaPaths, faultAtFrame: fault, faultAfterRenderFrame: faultAfter }) {
+    async load(input, { pixelRatio, layer = 'all', scene: sceneId, seaPaths, faultAtFrame: fault, faultAfterRenderFrame: faultAfter, forceUnsettledAt: unsettled, cpuOverlay = false }) {
       if (!(pixelRatio > 0)) throw new RangeError(`pixelRatio must be positive, got ${pixelRatio}`)
       const project = parseProject(input)
       // Checked before the stage is touched, so a bad id leaves the loaded scene as it was.
@@ -82,12 +93,13 @@ export function startRenderMode(root: HTMLElement): void {
         throw new Error(`No scene ${sceneId} in this project.`)
       }
       await ready
-      if (!stage || stageRatio !== pixelRatio || stageLayer !== layer) {
+      if (!stage || stageRatio !== pixelRatio || stageLayer !== layer || stageCpuOverlay !== cpuOverlay) {
         stopWatchingContext?.()
         stage?.destroy()
-        stage = new MapStage(root, { pixelRatio, interactive: false, tileBase, layer, deterministicTerrain: true })
+        stage = new MapStage(root, { pixelRatio, interactive: false, tileBase, layer, deterministicTerrain: true, cpuOverlay })
         stageRatio = pixelRatio
         stageLayer = layer
+        stageCpuOverlay = cpuOverlay
         const canvas = stage.map.getCanvas()
         const onLost = () => window.__mapperContextLost?.()
         canvas.addEventListener('webglcontextlost', onLost)
@@ -95,6 +107,7 @@ export function startRenderMode(root: HTMLElement): void {
       }
       faultAtFrame = fault
       faultAfterRenderFrame = faultAfter
+      forceUnsettledAt = unsettled
       await stage.load(project, sceneId, seaPaths)
       return { frameCount: stage.frameCount }
     },
@@ -107,17 +120,22 @@ export function startRenderMode(root: HTMLElement): void {
         faultAtFrame = undefined
         loseGlContext(stage.map.getCanvas())
       }
-      await stage.showFrame(n)
+      const { settled } = await stage.showFrame(n)
       if (n === faultAfterRenderFrame) {
         faultAfterRenderFrame = undefined
         // Unreported, as if the loss event were still on its way to Node: only contextLost() can show it.
         stopWatchingContext?.()
         loseGlContext(stage.map.getCanvas())
       }
+      return { settled: settled && n !== forceUnsettledAt }
     },
     project(at) {
       if (!stage) throw new Error('Call mapper.load(project) before project.')
       return stage.project(at)
+    },
+    lastScreenAngle() {
+      if (!stage) throw new Error('Call mapper.load(project) before lastScreenAngle.')
+      return stage.lastScreenAngle
     },
     contextLost() {
       if (!stage) throw new Error('Call mapper.load(project) before contextLost.')

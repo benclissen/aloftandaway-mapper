@@ -11,6 +11,7 @@ import {
   GpxError,
   gpxToStops,
   importGpx,
+  isSceneOp,
   LegModeSchema,
   MAP_CREDIT,
   OutputSchema,
@@ -22,6 +23,8 @@ import {
   resolveShots,
   sceneLabel,
   SceneRefSchema,
+  sceneTitle,
+  sceneTitleOf,
   setStops,
   StopInputSchema,
   SymbolKindSchema,
@@ -135,7 +138,7 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
     }))
     blocks.push([
       ...(many ? [`${sceneLabel(project, index)} (id ${scene.id})`] : []),
-      `${project.name}: ${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
+      `${many ? '' : `${project.name}: `}${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
       `Style: ${scene.look.theme}, terrain ${scene.look.terrain ? 'on' : 'off'}.`,
       ...(scene.stops.length
         ? scene.stops.map((s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}${s.sharp ? ' · sharp' : ''}`)
@@ -196,11 +199,8 @@ function sceneSentence(label: string | undefined, sentence: string): string {
 
 /** `Scenes: 1 Drive, 2 Sail.` */
 function scenesLine(project: Project): string {
-  return `Scenes: ${project.scenes.map((s, i) => `${i + 1} ${s.name || 'Untitled'}`).join(', ')}.`
+  return `Scenes: ${project.scenes.map((s, i) => `${i + 1} ${sceneTitle(project, i)}`).join(', ')}.`
 }
-
-/** True for the ops that add, duplicate, remove, move or restore scenes, as opposed to editing a scene's stops. */
-const isSceneOp = (op: { op: string }) => op.op.endsWith('_scene')
 
 // GPX
 
@@ -366,9 +366,14 @@ export async function creditLine(manifestPath: string): Promise<string> {
 }
 
 
+/** `Warnings:` and one line per warning, or nothing when there are none. */
+function warningLines(warnings: string[] | undefined): string[] {
+  return warnings && warnings.length > 0 ? ['Warnings:', ...warnings] : []
+}
+
 /**
  * The finished render: every file it wrote, where each scene starts in a joined clip, the folder and the required
- * map credit.
+ * map credit, then any warnings.
  */
 export async function doneSummary(r: RenderResult): Promise<string> {
   const layers = r.outputs.filter((o) => o.request !== 'all' && o.request !== 'preview')
@@ -390,23 +395,24 @@ export async function doneSummary(r: RenderResult): Promise<string> {
     ...(r.sceneStarts.length > 1
       ? r.sceneStarts.map((s) => {
           const frame = Math.round((s.seconds * r.fps.num) / r.fps.den)
-          return `Scene ${s.position} · ${s.name || 'Untitled'} starts at ${formatTimecode(frame, r.fps)}`
+          return `Scene ${s.position} · ${sceneTitleOf(s.name, s.position - 1)} starts at ${formatTimecode(frame, r.fps)}`
         })
       : []),
     `Manifest: ${r.manifest}`,
     `Folder: ${r.dir}`,
     await creditLine(r.manifest),
+    ...warningLines(r.warnings),
   ].join('\n')
 }
 
 /**
- * What a failed or cancelled render left behind. The CLI prints the same text. When the render had more than one
- * scene, each output names its scene, as in `clip of Drive` for a part that was never joined.
+ * What a failed or cancelled render left behind, then its warnings. The CLI prints the same text. When the render had
+ * more than one scene, each output names its scene, as in `clip of Drive` for a part that was never joined.
  */
-export async function leftover(status: Pick<RenderStatus, 'outputs' | 'dir'>): Promise<string[]> {
+export async function leftover(status: Pick<RenderStatus, 'outputs' | 'dir' | 'warnings'>): Promise<string[]> {
   const { scenes } = status.dir && status.outputs?.length ? await readManifest(path.join(status.dir, 'manifest.json')) : {}
   const names = new Map(
-    Array.isArray(scenes) && scenes.length > 1 ? (scenes as { id: string; name: string }[]).map((s) => [s.id, s.name || 'Untitled']) : [],
+    Array.isArray(scenes) && scenes.length > 1 ? (scenes as { id: string; name: string; position?: number }[]).map((s, i) => [s.id, sceneTitleOf(s.name, (s.position ?? i + 1) - 1)]) : [],
   )
   const label = (o: NonNullable<RenderStatus['outputs']>[number]) => {
     const what = o.request === 'preview' ? 'preview' : o.request === 'all' ? 'clip' : o.layer
@@ -416,20 +422,15 @@ export async function leftover(status: Pick<RenderStatus, 'outputs' | 'dir'>): P
   return [
     ...(status.outputs?.length ? ['Finished outputs kept:', ...status.outputs.map((o) => `- ${label(o)}: ${o.path}`)] : ['No outputs were finished.']),
     ...(status.dir ? [`Folder: ${status.dir}`, await creditLine(path.join(status.dir, 'manifest.json'))] : []),
+    ...warningLines(status.warnings),
   ]
 }
 
-/** The one-line summary of a render job. */
+/** The summary of a render job: one line while it runs, followed by any warnings so far. */
 export async function statusSummary(status: RenderStatus): Promise<string> {
   switch (status.state) {
-    case 'running': {
-      const p = status.progress
-      if (p) {
-        const all = p.layers && p.layers > 1 ? ' (all layers)' : ''
-        return `Frame ${p.frame} of ${p.totalFrames}${all} · ${p.fps.toFixed(1)} fps · ${etaText(p.etaSeconds)}${p.layer ? ` · ${p.layer}` : ''}`
-      }
-      return status.dir ? 'Starting. The render folder exists; no frames yet.' : 'Queued behind another render. No frames yet.'
-    }
+    case 'running':
+      return [runningLine(status), ...warningLines(status.warnings)].join('\n')
     case 'done':
       return doneSummary(status.result!)
     case 'failed':
@@ -437,6 +438,15 @@ export async function statusSummary(status: RenderStatus): Promise<string> {
     case 'cancelled':
       return ['Cancelled.', ...(await leftover(status))].join('\n')
   }
+}
+
+function runningLine(status: RenderStatus): string {
+  const p = status.progress
+  if (p) {
+    const all = p.layers && p.layers > 1 ? ' (all layers)' : ''
+    return `Frame ${p.frame} of ${p.totalFrames}${all} · ${p.fps.toFixed(1)} fps · ${etaText(p.etaSeconds)}${p.layer ? ` · ${p.layer}` : ''}`
+  }
+  return status.dir ? 'Starting. The render folder exists; no frames yet.' : 'Queued behind another render. No frames yet.'
 }
 
 async function statusResult(status: RenderStatus): Promise<ToolResult> {
@@ -563,8 +573,8 @@ export const TOOLS: ToolDef<any>[] = [
     async run({ folder, scene: ref, at, width }) {
       const r = await previewFrame({ folder, at, width, scene: ref })
       return {
-        summary: sceneSentence(r.sceneLabel, `Frame ${r.frame} at ${r.seconds.toFixed(2)} s, ${width} px wide. Saved to ${r.path}`),
-        data: { path: r.path, frame: r.frame, seconds: r.seconds, scene: r.scene },
+        summary: [sceneSentence(r.sceneLabel, `Frame ${r.frame} at ${r.seconds.toFixed(2)} s, ${width} px wide. Saved to ${r.path}`), ...(r.warnings ?? [])].join('\n'),
+        data: { path: r.path, frame: r.frame, seconds: r.seconds, scene: r.scene, ...(r.warnings && { warnings: r.warnings }) },
         image: r.png,
       }
     },
@@ -583,8 +593,8 @@ export const TOOLS: ToolDef<any>[] = [
     async run({ folder, scene: ref, count, width }) {
       const r = await contactSheet({ folder, count, width, scene: ref })
       return {
-        summary: sceneSentence(r.sceneLabel, `Contact sheet of ${r.frames.length} frames, ${width} px wide. Saved to ${r.path}`),
-        data: { path: r.path, frames: r.frames, scene: r.scene },
+        summary: [sceneSentence(r.sceneLabel, `Contact sheet of ${r.frames.length} frames, ${width} px wide. Saved to ${r.path}`), ...(r.warnings ?? [])].join('\n'),
+        data: { path: r.path, frames: r.frames, scene: r.scene, ...(r.warnings && { warnings: r.warnings }) },
         image: r.png,
       }
     },

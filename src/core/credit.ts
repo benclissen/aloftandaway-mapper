@@ -1,7 +1,7 @@
 import { MAP_CREDIT, type Project, type Scene } from './schema.js'
 
 /** Required for the `satellite` style. Only the 2016 EOX Cloudless layer may be used (CC BY 4.0). */
-export const SATELLITE_CREDIT = 'Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016)'
+export const SATELLITE_CREDIT = 'Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016), CC BY 4.0'
 
 /**
  * Required when the style uses elevation data (`look.terrain`, or `outdoor`; AWS Terrain Tiles). The Terrain Tiles documentation lists one line per source

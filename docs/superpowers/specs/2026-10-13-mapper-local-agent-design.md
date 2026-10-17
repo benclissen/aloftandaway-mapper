@@ -40,7 +40,7 @@ describe the layered export unless they say otherwise.
 **Revision, 2026-10-15 (stage 4 decisions):**
 
 - **Land data** ships in the repo as `data/land-10m.bin` (about 1.6 MB). It's built by `scripts/build-land.ts` from Natural Earth v5.1.2 `ne_10m_land` plus `ne_10m_minor_islands`, at 1e-4° precision. The water grid is never shipped; it's rasterised at runtime for each pair of points.
-- **Air legs** are great-circle arcs with a bow toward the nearer pole (north at the equator). The bow is sized so each arc's visible curve is at least 15% of its chord. Via points split the leg into arcs that meet at corners.
+- **Air legs** follow the great circle, bowed toward the nearer pole (north at the equator) so even short flights curve (at least 15% of their length). Via points split the leg into arcs that meet at corners.
 - **`camera.follow.lookAhead` is in seconds**: the camera aims where the symbol will be that many seconds later. Defaults: `{ zoom: fitted zoom + 3, capped at the theme's maximum; orient: 'north'; lookAhead: 1; smoothing: 0.5 }`.
 - **`import_gpx`** also takes `legMode?` (default `'line'`) and `symbol?`, as `set_stops` does.
 - **`validateProject(project, { seaPaths? })`.** Sea checks run only when `seaPaths` is given.
@@ -71,9 +71,9 @@ describe the layered export unless they say otherwise.
 - **Tilt:** shot `pitch` (0 to 60, unchanged) and a new optional `camera.follow.pitch`.
 - **Follow fields:** every `camera.follow` field becomes optional and is filled from defaults: `zoom` (as before), `orient: 'north'`, `lookAhead: 0.25`, `smoothing: 0.2`, `pitch: follow.pitch ?? camera.start.pitch ?? 0`. The aim point is capped at a quarter of the frame. With `orient: 'heading'` the bearing is smoothed three times more slowly than the position, so the turn at a stop happens mostly during its pause. This replaces the stage 4 defaults (lookAhead 1, smoothing 0.5).
 - **Default glide** (no `camera.start`): opens on the first leg's fitted shot, capped at the style's maximum zoom. On a one-leg route, or when that fit is within 0.5 zoom of the whole route, it opens closer in on the first stop. It pulls out to the whole route over the first leg's travel, then holds. With an explicit `start`, the glide runs over the whole clip as before. A `fixed` camera with no start shows the whole route. This fixes the static default glide found in the stage 4 test.
-- **Credit depends on the style.** `sceneCredit(scene, 'burned' | 'written')` lists the lines a scene needs. Burned in, the map credit always comes first, also for satellite. Satellite adds "Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016)". Terrain adds "Terrain: USGS, Copernicus EU-DEM, NOAA ETOPO1 and others". The written form (FCPXML notes, render manifest, MCP tool text) carries the full EOxCloudless wording, with https://cloudless.eox.at and CC BY 4.0, and the full terrain attribution list. The strings are in `src/core/credit.ts`. `blank` without terrain has no credit.
+- **Credit depends on the style.** `sceneCredit(scene, 'burned' | 'written')` lists the lines a scene needs. Burned in, the map credit always comes first, also for satellite. Satellite adds "Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016), CC BY 4.0". Terrain adds "Terrain: USGS, Copernicus EU-DEM, NOAA ETOPO1 and others". The written form (FCPXML notes, render manifest, MCP tool text) carries the full EOxCloudless wording, with https://cloudless.eox.at and CC BY 4.0, and the full terrain attribution list. The strings are in `src/core/credit.ts`. `blank` without terrain has no credit.
 - **Changes for existing projects:** a glide with no `start` opens on the first leg; follow has the look-ahead cap and slower heading turns; `terrain: true` projects render 3D (they were flat); non-dot symbols draw icons in place of the dot; sign text uses Plus Jakarta Sans.
-- **Still parked:** the flight bow size and the Baltic skerries.
+- **Still parked:** the flight bow size and the Baltic skerries (taken up in stage 7; see below).
 
 **Revision, 2026-10-16 (stage 6 decisions):**
 
@@ -144,7 +144,77 @@ describe the layered export unless they say otherwise.
     409 and nothing changes.
 - **Not in this stage:** the open items from stages 4 and 5 (flight bow,
   Baltic skerries, the pale `aloftandaway` style, white signs on `monochrome`,
-  the badge under a sign, fontnik, thin assertions).
+  the badge under a sign, fontnik, thin assertions) (taken up in stage 7; see below).
+
+**Revision, 2026-10-16 (stage 7 decisions):**
+
+- **Scope:** the open items from stages 4 to 6, each fixed with a test or
+  parked with a reason. **The Baltic skerries become stage 8**, "Sea routes
+  against OpenFreeMap water". That needs vector tiles decoded in Node, land
+  rebuilt from clipped tile polygons, and network in a router that is pure and
+  offline today, so it is a stage of its own.
+- **Final Cut check 9 stays pending.** The Final Cut import of a layered
+  export is still unchecked.
+- **Burned satellite credit** keeps EOX's wording and adds the licence:
+  `Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016), CC BY 4.0`.
+- **Flight bow:** the 15% minimum stays. Air legs follow the great circle,
+  bowed toward the nearer pole so even short flights curve (at least 15% of
+  their length).
+- **Warnings.** A render can finish with warnings. `RenderResult.warnings`
+  lists them. They show in the manifest, in the tool summaries (`render`,
+  `render_status`, `preview_frame`, `preview_contact_sheet`) and on the CLI's
+  stderr.
+  - A terrain frame whose camera height never settles is now reported as a
+    warning, where before it was only logged in the page. The render doesn't
+    fail either way. The warning names the frames, as `Frames 12, 13 and
+    40: the camera height over terrain hadn't settled, so these frames may
+    differ slightly between renders and between layers.` (`Frame 7: … this
+    frame …` for one). Past ten frames the rest are counted.
+  - Frame numbers count from the start of each scene, as `preview_frame`
+    counts them, not from the start of a ranged output file. On a project with
+    several scenes the line starts with the scene label.
+  - A failed delete of the parts of a joined render is also a warning.
+- **Turning symbols** (plane, helicopter, arrow) take their angle from the
+  line as drawn on screen, so tilt doesn't throw them off. The helicopter is
+  mirrored top to bottom when its on-screen direction points west, so the rotor
+  stays on top. Within 15 degrees of vertical on screen, the leg's own east or
+  west facing decides, so a north-south leg doesn't flicker.
+- **Look:**
+  - `aloftandaway` gets a blue-grey sea and light land. `monochrome` gets a
+    grey sea and near-white land.
+  - Every sign in every style gets an edge: a soft shadow plus a hairline.
+  - **`signLift(scene)`** is how far a sign's box sits above its stop:
+    `max(16, r + pointer + 6)` px, where `pointer` is the sign's pointer
+    height (10 px) and `r` is the largest vehicle radius among the scene's
+    symbols (the look's and every leg's), other than `dot` and `none`. The
+    pointer's tip clears the vehicle by 6 px. That gives 41 px for a badge and
+    32 px for an icon. A scene with only a dot, or no symbol, stays at 16 px.
+- **Scene names.** A blank or all-space name is refused, on `add_scene` and on
+  `sceneSet`. Names are stored trimmed. Project files stay at version 2, and an
+  older file with a blank name still loads. `sceneTitle(project, index)` (and
+  `sceneTitleOf(name, index)`) gives the name to show: the trimmed name, or
+  `Scene N`. Tool results, studio tabs and the FCPXML compound and asset names
+  all use it. Undoing a rename of a blank-named scene restores `Scene N`.
+- **Studio scene tabs** show the length to a tenth of a second (`13.0 s`),
+  commit a rename when the field loses focus, and take Home and End to move to
+  the first and last tab.
+- **Map-data errors** name the failing source in their fix text: OpenFreeMap,
+  EOX satellite or AWS terrain. A page gives up on its map style after 60
+  seconds, and the load timeout around it is 70 seconds so that message
+  arrives first.
+- **MapLibre** is pinned to exactly 6.14.0 (`maplibre-gl`, no range), because
+  the render depends on how it settles terrain.
+- **Sync.** Two agent writes that land within the server's 50 ms reload
+  debounce are merged into one reload, and the studio shows the final state.
+- **The `MAPPER_NET` flake** was reproduced (21 failures in 200 cold-cache
+  runs). The test diffed two independently loaded pages and counted every
+  changed pixel as credit. In the failing runs, satellite and terrain tile
+  seams came out 1 colour level apart between the two pages. That is
+  invisible and doesn't misalign layers, so the product doesn't change. The
+  test changes instead.
+- **A rare corrupt capture** (one page in about 400 in a probe) is parked:
+  it didn't reproduce in 3,000 loads. See "Known capture glitch" in
+  `docs/render-speed.md`.
 
 ## Purpose
 
@@ -165,8 +235,9 @@ layered clip with an FCPXML file.
    tools, with no hand-written project JSON.
 2. The user can open a local preview, scrub it, and drag points, signs and
    camera shots, and the agent sees those edits.
-3. Opening the exported FCPXML in Final Cut Pro gives a compound clip with
-   map, route and signs on separate lanes, with a marker at each arrival.
+3. Opening the exported FCPXML in Final Cut Pro gives a compound clip per
+   scene with map, route and signs on separate lanes, with a marker at each
+   arrival.
 4. The preview and the final render come from the same code and match.
 5. Nothing is hosted. Everything runs on the user's machine.
 
@@ -362,7 +433,9 @@ Each leg becomes a polyline in `[lng, lat]`:
 - **line**: a smooth curve (centripetal Catmull-Rom) through stop → via → stop.
   A `sharp` stop or via point splits the curve, so the two sides meet at a
   corner instead of curving through.
-- **air**: a great-circle arc. If `via` is given, arcs between each pair.
+- **air**: follows the great circle, bowed toward the nearer pole so even
+  short flights curve (at least 15% of their length). If `via` is given, arcs
+  between each pair.
 - **sea**: the shortest path over water. Natural Earth 1:10m land polygons
   (public domain) are rasterised into a coarse water grid around the leg's
   bounds, where any cell with some water in it is passable. A* finds the way
@@ -648,7 +721,7 @@ lists the names.
   points (a corner exists exactly at the sharp point), transport default
   modes, timeline
   frame maths at 25 and 23.976 fps, camera determinism (frame `n` is the
-  same however it's reached), great-circle arcs, sea routing fixtures
+  same however it's reached), flight arcs, sea routing fixtures
   (Athens → Mykonos and Barcelona → Marseille stay at sea; a path between
   two landlocked points fails cleanly).
 - **GPX**: parser fixtures (tracks, routes, named waypoints, multiple tracks).
@@ -691,6 +764,11 @@ Each stage gets its own implementation plan.
 6. **Scenes**: several scenes per project, scene ops and the `scene`
    argument on tools, studio scene tabs, renders per scene or joined, a
    compound clip per scene in FCPXML.
+7. **Fix pass** (built): the open items from stages 4 to 6, each fixed with a
+   test or parked with a reason. Render warnings, sign lift, screen-angle
+   turning symbols, blank scene names, source-aware map-data errors.
+8. **Sea routes against OpenFreeMap water** (planned): sea routing that uses
+   the water the basemap draws, so a route stays off every island it shows.
 
 ## Risks
 

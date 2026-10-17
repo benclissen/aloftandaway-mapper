@@ -185,6 +185,34 @@ function joinCentres(a: LngLat, na: number, b: LngLat, nb: number): LngLat {
 }
 
 /**
+ * A deque of indices whose values only rise from front to back, for the least value in a sliding window. Give it
+ * `value(j)` negated for the greatest.
+ */
+class WindowMin {
+  private readonly at: Int32Array
+  private head = 0
+  private tail = 0
+  constructor(
+    size: number,
+    private readonly value: (j: number) => number,
+  ) {
+    this.at = new Int32Array(size)
+  }
+  push(j: number): void {
+    const v = this.value(j)
+    while (this.tail > this.head && this.value(this.at[this.tail - 1]!) >= v) this.tail--
+    this.at[this.tail++] = j
+  }
+  /** Drops the indices at or before `i`. */
+  dropTo(i: number): void {
+    while (this.tail > this.head && this.at[this.head]! <= i) this.head++
+  }
+  least(): number {
+    return this.value(this.at[this.head]!)
+  }
+}
+
+/**
  * Where the track stood still: each maximal run of consecutive points, in time order, all within `STAY_RADIUS_KM` of
  * the run's first point and spanning at least `minStayMs`. Greedy from the left: a run that's long enough is a stay and
  * the search goes on after it; one that isn't moves the start on one point. `start` and `end` index the time-sorted
@@ -195,12 +223,17 @@ function joinCentres(a: LngLat, na: number, b: LngLat, nb: number): LngLat {
  * within `STAY_RADIUS_KM` of the stay's centre so far. And a stay that follows another with no point between, and has
  * its centre within `STAY_RADIUS_KM` of the other's, joins it.
  *
- * Speed: a stay's points are scanned once and consumed, and its centre is kept as running sums. A start that fails is
- * scanned until a point leaves its circle. While moving, that's the points logged while crossing 1 km, about a dozen
- * for a ship logging every 10 s. Inside a stop shorter than `minStayMs`, though, every start scans to the end of the
- * stop, so the cost is quadratic in that stop's point count: a 1-hour stop logged every second is about 6.5 million
- * distance tests. Each test is a flat-earth sum of squares on typed arrays, exact to well under 1% at 1 km; only a pair
- * within 2% of the radius falls back to `haversineKm`.
+ * Speed: a start is a stay exactly when every point from it up to the first one `minStayMs` later (its window) is
+ * within the radius, so only that window is looked at, never the points beyond. The search ends when less than
+ * `minStayMs` of log is left. The windows slide forward with the start, and four deques keep the box round each one's
+ * points, so each start costs O(1) when its box settles it: inside the circle, it's a stay; reaching beyond the radius
+ * north, south, east or west, a point in it is outside. Only a window whose box straddles the circle's edge is checked
+ * point by point, and the outside point found is tried first on the next start. A stay's points are scanned once and
+ * consumed, and its centre is kept as running sums. So a log costs O(points), a dense stop shorter than `minStayMs`
+ * included. Only a window that fills the box but not the circle for most of `minStayMs`, at each of many starts in a
+ * row, costs as much as its own points. Each test is a flat-earth sum of squares on typed arrays, exact to well under
+ * 1% at 1 km; only a pair within 2% of the radius falls back to `haversineKm`, and the boxes keep that 2% margin, so
+ * they decide just as the tests would.
  */
 export function findStays(track: RecordedTrack, minStayMs: number): Stay[] {
   const { points, times } = byTime(track)
@@ -209,9 +242,18 @@ export function findStays(track: RecordedTrack, minStayMs: number): Stay[] {
   const rad = Math.PI / 180
   const lng = new Float64Array(n)
   const lat = new Float64Array(n)
+  // Longitudes unwrapped along the track, for the boxes.
+  const unwrapped = new Float64Array(n)
   for (let i = 0; i < n; i++) {
     lng[i] = points[i]![0] * rad
     lat[i] = points[i]![1] * rad
+    if (i === 0) unwrapped[i] = lng[i]!
+    else {
+      let dl = lng[i]! - lng[i - 1]!
+      if (dl > Math.PI) dl -= 2 * Math.PI
+      else if (dl < -Math.PI) dl += 2 * Math.PI
+      unwrapped[i] = unwrapped[i - 1]! + dl
+    }
   }
   const r2 = (STAY_RADIUS_KM / (WORLD_KM / (2 * Math.PI))) ** 2
   /** Whether point `j` is within the radius of the place at `lngA`, `latA` (radians, `cosA` its cosine). */
@@ -227,39 +269,74 @@ export function findStays(track: RecordedTrack, minStayMs: number): Stay[] {
     return haversineKm([(lngA * 180) / Math.PI, (latA * 180) / Math.PI], points[j]!) <= STAY_RADIUS_KM
   }
 
+  // The box round the window: the points after the start up to and including `last`.
+  const west = new WindowMin(n, (j) => unwrapped[j]!)
+  const east = new WindowMin(n, (j) => -unwrapped[j]!)
+  const south = new WindowMin(n, (j) => lat[j]!)
+  const north = new WindowMin(n, (j) => -lat[j]!)
+  const boxes = [west, east, south, north]
+  let last = 0
+  // The last point found outside a start's circle.
+  let outside = -1
+
+  /** Whether every point in the window of start `i` is within the radius of it. */
+  const windowNear = (i: number, cosI: number): boolean => {
+    for (const box of boxes) box.dropTo(i)
+    const dx = Math.max(unwrapped[i]! - west.least(), -east.least() - unwrapped[i]!) * cosI
+    const dy = Math.max(lat[i]! - south.least(), -north.least() - lat[i]!)
+    if (Math.max(dx, dy) ** 2 > 1.02 * r2) return false
+    if (dx * dx + dy * dy < 0.98 * r2) return true
+    if (outside > i && outside <= last && !near(lng[i]!, lat[i]!, cosI, outside)) return false
+    for (let k = i + 1; k <= last; k++) {
+      if (!near(lng[i]!, lat[i]!, cosI, k)) {
+        outside = k
+        return false
+      }
+    }
+    return true
+  }
+
   const stays: Stay[] = []
   let i = 0
-  while (i < n) {
+  // A stay needs a second point, and `minStayMs` of log from its start.
+  while (i < n - 1 && times[n - 1]! - times[i]! >= minStayMs) {
+    // The window ends at the first point after the start that's `minStayMs` on. The log's last point is one.
+    while (last <= i || times[last]! - times[i]! < minStayMs) {
+      last++
+      for (const box of boxes) box.push(last)
+    }
     const cosI = Math.cos(lat[i]!)
-    let j = i
+    if (!windowNear(i, cosI)) {
+      i++
+      continue
+    }
+    let j = last
     while (j + 1 < n && near(lng[i]!, lat[i]!, cosI, j + 1)) j++
-    if (j > i && times[j]! - times[i]! >= minStayMs) {
-      // Running sums for the centre, with longitudes unwrapped around the run's first point.
-      const ref = points[i]![0]
-      let sumLng = 0
-      let sumLat = 0
-      for (let k = i; k <= j; k++) {
-        sumLng += unwrapLng(ref, points[k]![0])
-        sumLat += points[k]![1]
-      }
-      for (;;) {
-        const count = j + 1 - i
-        const cLat = sumLat / count
-        if (j + 1 >= n || !near((sumLng / count) * rad, cLat * rad, Math.cos(cLat * rad), j + 1)) break
-        j++
-        sumLng += unwrapLng(ref, points[j]![0])
-        sumLat += points[j]![1]
-      }
+    // Running sums for the centre, with longitudes unwrapped around the run's first point.
+    const ref = points[i]![0]
+    let sumLng = 0
+    let sumLat = 0
+    for (let k = i; k <= j; k++) {
+      sumLng += unwrapLng(ref, points[k]![0])
+      sumLat += points[k]![1]
+    }
+    for (;;) {
       const count = j + 1 - i
-      const at: LngLat = [wrapLng(sumLng / count), sumLat / count]
-      const prev = stays[stays.length - 1]
-      if (prev && prev.end === i - 1 && haversineKm(prev.at, at) <= STAY_RADIUS_KM) {
-        prev.at = joinCentres(prev.at, i - prev.start, at, j + 1 - i)
-        prev.end = j
-        prev.depart = times[j]!
-      } else stays.push({ start: i, end: j, at, arrive: times[i]!, depart: times[j]! })
-      i = j + 1
-    } else i++
+      const cLat = sumLat / count
+      if (j + 1 >= n || !near((sumLng / count) * rad, cLat * rad, Math.cos(cLat * rad), j + 1)) break
+      j++
+      sumLng += unwrapLng(ref, points[j]![0])
+      sumLat += points[j]![1]
+    }
+    const count = j + 1 - i
+    const at: LngLat = [wrapLng(sumLng / count), sumLat / count]
+    const prev = stays[stays.length - 1]
+    if (prev && prev.end === i - 1 && haversineKm(prev.at, at) <= STAY_RADIUS_KM) {
+      prev.at = joinCentres(prev.at, i - prev.start, at, j + 1 - i)
+      prev.end = j
+      prev.depart = times[j]!
+    } else stays.push({ start: i, end: j, at, arrive: times[i]!, depart: times[j]! })
+    i = j + 1
   }
   return stays
 }

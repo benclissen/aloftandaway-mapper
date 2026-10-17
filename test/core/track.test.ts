@@ -280,6 +280,88 @@ describe('findStays', () => {
     expect(stays).toHaveLength(ports)
     expect(ms).toBeLessThan(3000)
   })
+
+  /** How long `f` takes, in ms. */
+  const timed = (f: () => void): number => {
+    const t0 = performance.now()
+    f()
+    return performance.now() - t0
+  }
+  /** `n` points within 20 m of `at`, from `t0` over `ms`. */
+  const parked = (at: LngLat, n: number, t0: number, ms: number, rand: () => number): { points: LngLat[]; times: number[] } => ({
+    points: Array.from({ length: n }, () => [at[0] + (rand() - 0.5) * 0.0005, at[1] + (rand() - 0.5) * 0.0003]),
+    times: Array.from({ length: n }, (_, i) => t0 + Math.floor((i * ms) / n)),
+  })
+
+  it('a dense log shorter than a stay is quick', { timeout: 60_000 }, () => {
+    // 200,000 rows in one place over 1 h, under the 2 h a stay needs, so no start in it can be one.
+    const track = parked([10, 50], 200_000, 0, HOUR, lcg(5))
+    let stays: unknown[] = []
+    expect(timed(() => (stays = findStays(track, 120 * MIN)))).toBeLessThan(2000)
+    expect(stays).toEqual([])
+    const ms = timed(() => trackToStops(track, { stops: 'stays', minStayMinutes: 120 }))
+    expect(ms).toBeLessThan(2000)
+  })
+
+  it('a dense short stop in the middle of a long log is quick', { timeout: 60_000 }, () => {
+    // 10,000 points either side, every 10 s at 11 km/h, and 180,000 in between parked for 1 h.
+    const rand = lcg(6)
+    const points: LngLat[] = []
+    const times: number[] = []
+    const sail = (n: number): void => {
+      for (let i = 0; i < n; i++) {
+        const last = points.at(-1) ?? [0, 45]
+        points.push([last[0] + 0.0004, last[1]])
+        times.push((times.at(-1) ?? 0) + 10_000)
+      }
+    }
+    sail(10_000)
+    const stop = parked(points.at(-1)!, 180_000, times.at(-1)! + 10_000, HOUR, rand)
+    for (let i = 0; i < stop.points.length; i++) {
+      points.push(stop.points[i]!)
+      times.push(stop.times[i]!)
+    }
+    sail(10_000)
+    expect(points).toHaveLength(200_000)
+    let stays: unknown[] = []
+    expect(timed(() => (stays = findStays({ points, times }, 120 * MIN)))).toBeLessThan(2000)
+    expect(stays).toEqual([])
+  })
+
+  it('a dense shuttle back to the same quay is quick, and its long call is found', { timeout: 60_000 }, () => {
+    // A ferry parked 1 h at the quay, out 5 km and back in 1 h, and so on, with the logger on every 50 ms while parked.
+    // Each call is too short to be a stay, but the track is back at the quay when one would have lasted 2 h, so the point
+    // 2 h on doesn't rule a start out. The last call lasts 3 h.
+    const rand = lcg(7)
+    const quay: LngLat = [12, 55]
+    const points: LngLat[] = []
+    const times: number[] = []
+    const add = (part: { points: LngLat[]; times: number[] }): void => {
+      for (let i = 0; i < part.points.length; i++) {
+        points.push(part.points[i]!)
+        times.push(part.times[i]!)
+      }
+    }
+    let t = 0
+    for (let call = 0; call < 3; call++) {
+      add(parked(quay, 50_000, t, HOUR, rand))
+      t += HOUR
+      for (let k = 1; k < 360; k++) {
+        const km = 5 * Math.sin((Math.PI * k) / 360)
+        points.push([quay[0] + km / 64, quay[1]])
+        times.push(t + k * 10_000)
+      }
+      t += HOUR
+    }
+    add(parked(quay, 50_000, t, 3 * HOUR, rand))
+    let stays: { arrive: number; depart: number }[] = []
+    expect(timed(() => (stays = findStays({ points, times }, 120 * MIN)))).toBeLessThan(2000)
+    // The stay starts on the way in, within 1 km of the quay.
+    expect(stays).toHaveLength(1)
+    expect(stays[0]!.depart).toBe(times.at(-1))
+    expect(stays[0]!.arrive).toBeGreaterThan(t - 10 * MIN)
+    expect(stays[0]!.arrive).toBeLessThanOrEqual(t)
+  })
 })
 
 describe('trackToStops', () => {

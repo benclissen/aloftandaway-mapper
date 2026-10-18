@@ -439,8 +439,10 @@ function copyContext(project: Project, scene: Scene, op: CopyContextOp, at: numb
   if (from.stops.length < 2) {
     fail(['ops', at, 'scene'], `scene '${sceneTitle(source, found.index)}' has ${from.stops.length} ${from.stops.length === 1 ? 'stop' : 'stops'}; it needs at least 2 to be a context`)
   }
+  // The default single-scene project has the same name as its scene; say it once.
+  const title = sceneTitle(source, found.index)
   const context: Context = {
-    from: `${source.name} · ${sceneTitle(source, found.index)}`,
+    from: title === source.name ? title : `${source.name} · ${title}`,
     stops: from.stops.map((s) => ({ name: s.name, at: [...s.at] })),
     // A context keeps no recorded tracks, so a track leg is copied as a plain line between its stops.
     legs: from.legs.map((l) => ({ mode: l.mode === 'track' ? 'line' : l.mode, via: structuredClone(l.via) })),

@@ -1231,10 +1231,10 @@ describe('camera keys and route context', () => {
     expect(result.isError, text(result)).toBeFalsy()
     const data = result.structuredContent as unknown as ContextResult
     const context = data.project.scenes[0]!.context!
-    expect(context.from).toBe('cruise · cruise')
+    expect(context.from).toBe('cruise')
     expect(context.stops.map((s) => s.name)).toEqual(['Piraeus', 'Mykonos', 'Santorini', 'Rhodes'])
     expect(context.legs.length).toBe(3)
-    expect(text(result)).toContain('Context: cruise · cruise, 4 stops.')
+    expect(text(result)).toContain('Context: cruise, 4 stops.')
     // The shot fits the whole cruise, not the two stops of the scene.
     const fit = data.scenes[0]!.camera.resolvedContext!
     expect(fit.center[0]).toBeGreaterThan(24)

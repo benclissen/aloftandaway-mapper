@@ -5,6 +5,7 @@ import {
   SATELLITE_CREDIT_WRITTEN,
   TERRAIN_CREDIT,
   TERRAIN_CREDIT_WRITTEN,
+  hasSeaLeg,
   projectCredit,
   sceneCredit,
   usesElevation,
@@ -53,6 +54,24 @@ describe('map credit per scene', () => {
     const withTerrain = blankLegs(true, 'sea', 'air')
     expect(sceneCredit(withTerrain)).toEqual([MAP_CREDIT, TERRAIN_CREDIT])
     expect(projectCredit({ scenes: [scene] }, 'written')).toEqual([MAP_CREDIT])
+  })
+
+  test('a blank scene whose context has a sea leg carries the map credit', () => {
+    const scene = blankLegs(false, 'air', 'line')
+    scene.context = {
+      from: 'Cruise',
+      stops: scene.stops.map(({ name, at }) => ({ name, at })),
+      legs: [
+        { mode: 'line', via: [] },
+        { mode: 'sea', via: [] },
+      ],
+    }
+    expect(hasSeaLeg(scene)).toBe(true)
+    expect(sceneCredit(scene)).toEqual([MAP_CREDIT])
+    expect(sceneCredit(scene, 'written')).toEqual([MAP_CREDIT])
+    expect(projectCredit({ scenes: [scene] }, 'written')).toEqual([MAP_CREDIT])
+    scene.context.legs[1] = { mode: 'air', via: [] }
+    expect(sceneCredit(scene)).toEqual([])
   })
 
   test('a blank scene without a sea leg still has no credit', () => {

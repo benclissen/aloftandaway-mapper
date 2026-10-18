@@ -794,6 +794,15 @@ describe('copy_context', () => {
     expect(sceneOf(source).context).toBeUndefined()
   })
 
+  test('the label is the project name alone when the scene has the same title', () => {
+    const source = greekIslands()
+    source.name = 'Cruise'
+    sceneOf(source).name = 'Cruise'
+    const sources = new Map([['/trips/cruise', source]])
+    const out = applyPatch(pacific(), { ops: [{ op: 'copy_context', folder: '/trips/cruise' }] }, { sources })
+    expect(sceneOf(out).context!.from).toBe('Cruise')
+  })
+
   test('a scene of a source project with the same ids (a copied folder) is not this scene', () => {
     const source = structuredClone(twoSceneProject())
     const out = applyPatch(twoSceneProject(), { scene: 2, ops: [{ op: 'copy_context', folder: '/other', scene: 2 }] }, { sources: new Map([['/other', source]]) })

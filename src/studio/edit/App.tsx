@@ -630,7 +630,7 @@ export function App() {
           <ShotPanel
             mode={scene.camera.mode}
             freeView={freeView}
-            keys={keys}
+            keys={[...keys].sort((a, b) => a.at - b.at)}
             onMode={(mode) => {
               setFreeView(false)
               void edit({ sceneSet: { camera: { mode } } }, `Camera mode: ${MODE_NAMES[mode]}`)

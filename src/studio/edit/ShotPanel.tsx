@@ -25,7 +25,7 @@ export function keyTime(at: number): string {
 
 const MODES: { mode: Mode; label: string; hint: string }[] = [
   { mode: 'fixed', label: 'Fixed', hint: 'The camera holds the start shot' },
-  { mode: 'glide', label: 'Glide', hint: 'The camera moves from the start shot to the end shot' },
+  { mode: 'glide', label: 'Glide', hint: 'The camera moves from the start shot to the end shot, or from key to key' },
 ]
 
 /** The camera controls: fixed or glide, and the start and end shots. */
@@ -76,8 +76,8 @@ export function ShotPanel({
         </button>
       )}
       {keyed &&
-        keys.map((key) => (
-          <span className="camera-key" key={key.at}>
+        keys.map((key, i) => (
+          <span className="camera-key" key={`${i}-${key.at}`}>
             <button
               type="button"
               data-testid="camera-key"

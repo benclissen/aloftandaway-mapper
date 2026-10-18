@@ -33,9 +33,10 @@ page.
    scenes, check each scene (see "Scenes").
 6. Tweak with `update_project`, then check the contact sheet again. `set`
    changes the project's name, output and credit. `sceneSet` changes the
-   scene's name, timing, look and camera (for example `look.theme`,
+   scene's name, timing, look, camera and context (for example `look.theme`,
    `look.terrain` or `look.symbolStyle`). `ops` edits stops, legs and via
-   points, and adds, duplicates, removes or moves scenes. Passing `null`
+   points, copies a route in as context (`copy_context`), and adds, duplicates,
+   removes or moves scenes. Passing `null`
    removes a key.
 7. `open_studio` and give the user the link. They can scrub the preview, drag
    stops, set start and end shots, and reshape routes: click a leg to select
@@ -334,8 +335,9 @@ picker. Pick by what the film needs:
   project is only read. `sceneSet: { "context": null }` removes it. Context
   shows as a thin line in the line colour at about a third opacity, plus a
   faint dot at each of its stops, with no name tags. In a layered export it is
-  on the `route` layer. Context sea legs are routed like any sea leg, and a
-  context sea leg that falls back to a straight line is a warning.
+  on the `route` layer. Context sea legs are routed like any sea leg, so the first update after
+  `copy_context` may take a while on a long cruise, and a context sea leg that
+  falls back to a straight line is a warning.
   `get_project` gives each scene's `resolvedContext`: a shot that fits the
   whole context route in the output frame. That's your wide shot for key 0.
 
@@ -345,23 +347,31 @@ Say a trip has several islands, and the film wants a clip of just the sail from
 one to the next. Make it a one-leg scene with the full trip as context.
 
 1. Make a project, or add a scene, with the two ports as its only stops. Set the
-   leg mode (a ferry, say).
+   leg's mode to `sea` and its symbol (`cruise-ship` or `ferry`). A symbol
+   alone also sets the mode.
 2. `update_project` with `ops: [{ "op": "copy_context", "folder": "<abs path of the full trip project>", "scene": 1 }]`.
    (`scene` is the trip's scene to copy from.) The full route now shows faintly
    under the leg.
 3. `get_project` and take `resolvedContext` from the scene's `camera`. That's
    the whole trip in frame.
-4. Set `timing.holdStart` so the ship leaves after the zoom, say 3 s, and read
-   the arrival time from the scene's `timeline` (`holdStart` plus `travel`).
+4. Set `timing.holdStart` so the ship leaves after the zoom, say 3 s. Then read
+   the departure time (the first stop's) and the arrival time (the second
+   stop's) from the scene's `timeline` in the tool result. The ship leaves at
+   `holdStart` plus the first stop's `pause`, which is 0 unless you set it.
 5. Set `camera.keys` with `sceneSet`, in this order:
    - `at: 0`, the `resolvedContext` shot, so the clip opens on the whole trip.
    - `at: 1`, a close shot of the first port.
-   - `at: 3`, the same close shot again, so the camera holds there until the
-     ship sets off. Match this to `holdStart`.
+   - `at: <departure time>`, the same close shot again, so the camera holds
+     there until the ship sets off.
    - `at: <arrival time>`, a close shot of the next port.
 6. `preview_contact_sheet`, and look at it. Check that the whole trip shows
    first, the camera is close on the first port by about a second in, and it has
-   flown to the next port by the time the ship arrives. Nudge the key times and zooms, then check again.
+   flown to the next port by the time the ship arrives. Also check that the
+   ship stays in frame between the keys: the camera starts slower than the
+   ship, so with very close port shots (around zoom 13 on a leg of about 200 km)
+   it can leave the frame mid-leg. Pick port shots loose enough that the ship
+   stays in frame (zoom 9 to 12 does for a leg like that), or add a key
+   mid-leg. Nudge the key times and zooms, then check again.
 
 ## Rules
 

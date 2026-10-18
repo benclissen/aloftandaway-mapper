@@ -204,6 +204,15 @@ describe('validateProject', () => {
       expect(warnings).toEqual([expect.objectContaining({ code: 'camera-key-late', path: ['scenes', 0, 'camera', 'keys', 2, 'at'] })])
       expect(warnings[0]!.message).toContain(`at ${+late.toFixed(2)} s`)
       expect(warnings[0]!.fix).toContain(`${+last.toFixed(2)} s or earlier`)
+      expect(warnings[0]!.fix).toContain('timing.travel or timing.holdEnd')
+    })
+
+    test('a late key on a scene with a fixed length points at timing.length', () => {
+      const project = keyed([{ at: 0, shot: shot(6) }, { at: 30, shot: shot(7) }])
+      sceneOf(project).timing = { ...sceneOf(project).timing, length: 10 }
+      const late = validateProject(project).warnings.filter((w) => w.code === 'camera-key-late')
+      expect(late).toHaveLength(1)
+      expect(late[0]!.fix).toContain('lengthen the scene with timing.length.')
     })
 
     test('every key zoom is checked against the theme, and start and end are not', () => {

@@ -223,7 +223,7 @@ function validateScene(
           code: 'camera-key-late',
           message: `The camera key at ${secondsText(key.at)} s comes after the scene's last frame, at ${secondsText(lastFrame / rate)} s, so the camera never reaches it`,
           path: ['camera', 'keys', k, 'at'],
-          fix: `With update_project sceneSet, move the key to ${secondsText(lastFrame / rate)} s or earlier, sending the whole keys list, or lengthen the scene with timing.travel or timing.holdEnd.`,
+          fix: `With update_project sceneSet, move the key to ${secondsText(lastFrame / rate)} s or earlier, sending the whole keys list, or lengthen the scene with ${timing.length === undefined ? 'timing.travel or timing.holdEnd' : 'timing.length'}.`,
         })
       })
     }

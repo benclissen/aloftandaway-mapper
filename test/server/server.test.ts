@@ -753,6 +753,25 @@ describe('sea paths', () => {
     expect(body.seaPaths[legKey].status).toBe('ok')
   })
 
+  test('GET routes a sea leg that only a scene context has', async () => {
+    const own = withSeaLeg(await loadProject(folder))
+    const scene = own.scenes[0]!
+    const withContext: Project = {
+      ...own,
+      scenes: [
+        {
+          ...scene,
+          legs: [{ mode: 'line', via: [] }],
+          context: { from: 'Cruise', stops: scene.stops.map(({ name, at }) => ({ name, at })), legs: [{ mode: 'sea', via: [] }] },
+        },
+      ],
+    }
+    await saveProject(folder, withContext)
+    await seaServer(async () => island())
+    const body = (await call(seaUrl())).json()
+    expect(body.seaPaths[legKey].status).toBe('ok')
+  })
+
   test('a patch answer carries seaPaths for a new sea leg', async () => {
     await seaServer(async () => island())
     const before = (await call(seaUrl())).json()

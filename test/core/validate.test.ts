@@ -1,5 +1,7 @@
 import { describe, expect, test, vi } from 'vitest'
 import {
+  buildRoute,
+  buildTimeline,
   NO_LAND_DATA,
   SYMBOLS,
   haversineKm,
@@ -143,6 +145,82 @@ describe('validateProject', () => {
     expect(both).toEqual([expect.objectContaining({ path: ['scenes', 0, 'camera'] })])
     expect(both[0]!.message).toContain('fitted start and end views are at zoom 16')
     expect(both[0]!.fix).toContain('scenes[0].camera.resolvedStart and scenes[0].camera.resolvedEnd')
+  })
+
+  describe('camera keys', () => {
+    const shot = (zoom: number) => ({ center: [24, 37] as [number, number], zoom, bearing: 0, pitch: 0 })
+    const keyed = (keys: { at: number; shot: ReturnType<typeof shot> }[], over: Record<string, unknown> = {}) =>
+      greekIslands({ camera: { mode: 'glide', easing: 'smooth', keys, ...over } })
+
+    test('keys in order give no issues', () => {
+      expect(validateProject(keyed([{ at: 0, shot: shot(6) }, { at: 1, shot: shot(8) }, { at: 12, shot: shot(7) }]))).toEqual({
+        errors: [],
+        warnings: [],
+      })
+    })
+
+    test('keys out of order or at the same time are errors', () => {
+      const { errors } = validateProject(keyed([{ at: 2, shot: shot(6) }, { at: 1, shot: shot(8) }, { at: 1, shot: shot(7) }]))
+      expect(errors).toEqual([
+        expect.objectContaining({ code: 'camera-keys-order', path: ['scenes', 0, 'camera', 'keys', 1, 'at'] }),
+        expect.objectContaining({ code: 'camera-keys-order', path: ['scenes', 0, 'camera', 'keys', 2, 'at'] }),
+      ])
+      expect(errors[0]!.message).toBe('Camera key 2, at 1 s, comes before key 1, at 2 s')
+      expect(errors[1]!.message).toBe('Camera keys 2 and 3 are both at 1 s')
+      expect(errors[0]!.fix).toContain('update_project sceneSet')
+    })
+
+    test('keys on a fixed or follow camera are ignored, with a warning', () => {
+      for (const mode of ['fixed', 'follow'] as const) {
+        // Out of order too, but unused, so not an error.
+        const { errors, warnings } = validateProject(keyed([{ at: 2, shot: shot(6) }, { at: 1, shot: shot(20) }], { mode }))
+        expect(errors).toEqual([])
+        expect(warnings).toEqual([expect.objectContaining({ code: 'camera-keys-ignored', path: ['scenes', 0, 'camera', 'keys'] })])
+        expect(warnings[0]!.message).toContain(mode)
+        expect(warnings[0]!.fix).toContain("camera.mode to 'glide'")
+      }
+    })
+
+    test('a stored start or end alongside keys is ignored, with a warning', () => {
+      const keys = [{ at: 0, shot: shot(6) }]
+      const start = validateProject(keyed(keys, { start: shot(5) })).warnings
+      expect(start).toEqual([expect.objectContaining({ code: 'camera-start-end-ignored', path: ['scenes', 0, 'camera', 'start'] })])
+      expect(start[0]!.fix).toContain('camera.start to null')
+      const end = validateProject(keyed(keys, { end: shot(5) })).warnings
+      expect(end).toEqual([expect.objectContaining({ code: 'camera-start-end-ignored', path: ['scenes', 0, 'camera', 'end'] })])
+      const both = validateProject(keyed(keys, { start: shot(5), end: shot(5) })).warnings
+      expect(both).toEqual([expect.objectContaining({ code: 'camera-start-end-ignored', path: ['scenes', 0, 'camera'] })])
+      expect(both[0]!.message).toContain('start and end shots are ignored')
+      expect(both[0]!.fix).toContain('camera.start and camera.end to null')
+    })
+
+    test('a key after the last frame is a warning', () => {
+      const plain = greekIslands()
+      const last = (buildTimeline(sceneOf(plain), plain.output.fps, buildRoute(sceneOf(plain))).totalFrames - 1) / 25
+      expect(Number.isInteger(last * 25)).toBe(true)
+      const late = last + 0.5
+      const { errors, warnings } = validateProject(keyed([{ at: 0, shot: shot(6) }, { at: last, shot: shot(7) }, { at: late, shot: shot(8) }]))
+      expect(errors).toEqual([])
+      expect(warnings).toEqual([expect.objectContaining({ code: 'camera-key-late', path: ['scenes', 0, 'camera', 'keys', 2, 'at'] })])
+      expect(warnings[0]!.message).toContain(`at ${+late.toFixed(2)} s`)
+      expect(warnings[0]!.fix).toContain(`${+last.toFixed(2)} s or earlier`)
+    })
+
+    test('every key zoom is checked against the theme, and start and end are not', () => {
+      // Two close stops would put the fitted shots over the paper theme's maximum; keys replace them.
+      const project = stopsAt([[25, 37], [25.01, 37]], {
+        look: paperLook,
+        camera: { mode: 'glide', easing: 'smooth', keys: [{ at: 0, shot: shot(15) }, { at: 1, shot: shot(10) }, { at: 2, shot: shot(15.001) }] },
+      })
+      const over = validateProject(project).warnings.filter((w) => w.code === 'zoom-above-max')
+      expect(over).toEqual([
+        expect.objectContaining({ path: ['scenes', 0, 'camera', 'keys', 0, 'shot', 'zoom'] }),
+        expect.objectContaining({ path: ['scenes', 0, 'camera', 'keys', 2, 'shot', 'zoom'] }),
+      ])
+      expect(over[0]!.message).toContain('camera key at 0 s is at zoom 15')
+      expect(over[1]!.message).toContain('zoom 15.01')
+      expect(over[0]!.fix).toContain('camera.keys[0].shot.zoom')
+    })
   })
 
   test("zoom fix string names the scene's index", () => {

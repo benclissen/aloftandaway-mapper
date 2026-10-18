@@ -1,7 +1,7 @@
 import { cameraAt, projectToLayout, resolveShots } from './camera.js'
 import { haversineKm } from './geo.js'
 import { buildRoute } from './route.js'
-import { THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
+import { fpsValue, THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
 import { NO_LAND_DATA, STOP_FAR_KM, STRAIGHT_LINE, UNVERIFIED_CAUSE, type SeaPaths } from './sea.js'
 import { SAME_PLACE_KM, TRACK_NEAR_KM } from './track.js'
 import { signBox, signLift, signText } from './signs.js'
@@ -86,6 +86,9 @@ function signOverlaps(
   return issues
 }
 
+/** Seconds for a message, to 2 decimals and trimmed. */
+const secondsText = (s: number): string => String(+s.toFixed(2))
+
 /** A zoom for a message, rounded up to 2 decimals and trimmed, so a value over the maximum never reads as the maximum. */
 const zoomText = (zoom: number): string => String(Math.ceil(zoom * 100 - 1e-9) / 100)
 
@@ -119,6 +122,8 @@ function validateScene(
   const errors: Issue[] = []
   const warnings: Issue[] = []
   const { stops, camera, look, timing } = scene
+  /** The keys the camera follows: a glide's, or none. */
+  const keys = camera.mode === 'glide' ? camera.keys : undefined
 
   if (stops.length < 2) {
     errors.push({
@@ -166,8 +171,8 @@ function validateScene(
     const max = THEME_MAX_ZOOM[look.theme]
     const resolved = resolveShots(scene, aspect, route)
     const fitted: ('start' | 'end')[] = []
-    // Follow doesn't use the start and end shots' zooms.
-    for (const which of camera.mode === 'follow' ? [] : (['start', 'end'] as const)) {
+    // Follow doesn't use the start and end shots' zooms, and a keyed glide checks its keys instead.
+    for (const which of camera.mode === 'follow' || keys ? [] : (['start', 'end'] as const)) {
       const zoom = resolved[which].zoom
       if (zoom <= max) continue
       if (camera[which]) {
@@ -196,6 +201,62 @@ function validateScene(
           `get_project shows the fitted ${fitted.length > 1 ? 'shots' : 'shot'} as ${fitted.map(resolvedName).join(' and ')}; start from ${fitted.length > 1 ? 'those' : 'that'}.`,
       })
     }
+
+    if (keys) {
+      keys.forEach((key, k) => {
+        if (key.shot.zoom <= max) return
+        warnings.push({
+          code: 'zoom-above-max',
+          message: `The ${look.theme} theme's tiles stop at zoom ${max}, but the camera key at ${secondsText(key.at)} s is at zoom ${zoomText(key.shot.zoom)}`,
+          path: ['camera', 'keys', k, 'shot', 'zoom'],
+          fix: `With update_project sceneSet, set camera.keys[${k}].shot.zoom to ${max} or less, sending the whole keys list, or set look.theme to 'blank' if you need the deeper zoom.`,
+        })
+      })
+      const rate = fpsValue(fps)
+      const lastFrame = buildTimeline(scene, fps, route).totalFrames - 1
+      keys.forEach((key, k) => {
+        if (key.at * rate <= lastFrame + 1e-9) return
+        warnings.push({
+          code: 'camera-key-late',
+          message: `The camera key at ${secondsText(key.at)} s comes after the scene's last frame, at ${secondsText(lastFrame / rate)} s, so the camera never reaches it`,
+          path: ['camera', 'keys', k, 'at'],
+          fix: `With update_project sceneSet, move the key to ${secondsText(lastFrame / rate)} s or earlier, sending the whole keys list, or lengthen the scene with timing.travel or timing.holdEnd.`,
+        })
+      })
+    }
+  }
+
+  if (keys) {
+    keys.forEach((key, k) => {
+      const prev = keys[k - 1]
+      if (!prev || key.at > prev.at) return
+      errors.push({
+        code: 'camera-keys-order',
+        message:
+          key.at === prev.at
+            ? `Camera keys ${k} and ${k + 1} are both at ${secondsText(key.at)} s`
+            : `Camera key ${k + 1}, at ${secondsText(key.at)} s, comes before key ${k}, at ${secondsText(prev.at)} s`,
+        path: ['camera', 'keys', k, 'at'],
+        fix: 'With update_project sceneSet, send camera.keys in ascending order of at, with no two keys at the same time.',
+      })
+    })
+    const stored = (['start', 'end'] as const).filter((w) => camera[w])
+    if (stored.length > 0) {
+      const names = stored.map((w) => `camera.${w}`).join(' and ')
+      warnings.push({
+        code: 'camera-start-end-ignored',
+        message: `The glide camera follows its keys, so the stored ${stored.join(' and ')} ${stored.length > 1 ? 'shots are' : 'shot is'} ignored`,
+        path: stored.length > 1 ? ['camera'] : ['camera', stored[0]!],
+        fix: `With update_project sceneSet, set ${names} to null, or set camera.keys to null to glide from the stored ${stored.length > 1 ? 'shots' : 'shot'} instead.`,
+      })
+    }
+  } else if (camera.keys) {
+    warnings.push({
+      code: 'camera-keys-ignored',
+      message: `A ${camera.mode} camera ignores its keys; only a glide uses them`,
+      path: ['camera', 'keys'],
+      fix: "With update_project sceneSet, set camera.mode to 'glide' to use the keys, or set camera.keys to null to drop them.",
+    })
   }
 
   const followZoom = camera.mode === 'follow' ? camera.follow?.zoom : undefined

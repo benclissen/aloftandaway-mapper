@@ -100,6 +100,22 @@ describe('project schema', () => {
     expect(() => parseProject(bad)).toThrow(/camera\.follow\.pitch/)
   })
 
+  test('accepts camera keys and rejects bad ones', () => {
+    const shot = { center: [24, 37] as [number, number], zoom: 8, bearing: 0, pitch: 0 }
+    const p = greekIslands()
+    sceneOf(p).camera = { mode: 'glide', easing: 'smooth', keys: [{ at: 0, shot }, { at: 1.5, shot: { ...shot, zoom: 10 } }] }
+    expect(parseProject(JSON.parse(JSON.stringify(p)))).toEqual(p)
+    const withKeys = (keys: unknown) => {
+      const bad = greekIslands()
+      ;(sceneOf(bad).camera as { keys?: unknown }).keys = keys
+      return bad
+    }
+    expect(() => parseProject(withKeys([]))).toThrow(/scenes\.0\.camera\.keys/)
+    expect(() => parseProject(withKeys([{ at: -1, shot }]))).toThrow(/scenes\.0\.camera\.keys\.0\.at/)
+    expect(() => parseProject(withKeys([{ at: 0, shot: { ...shot, zoom: 23 } }]))).toThrow(/scenes\.0\.camera\.keys\.0\.shot\.zoom/)
+    expect(() => parseProject(withKeys([{ at: 0, shot, ease: 'linear' }]))).toThrow(/scenes\.0\.camera\.keys\.0/)
+  })
+
   test('loads a stage 4 project unchanged', () => {
     const p = greekIslands()
     const look = sceneOf(p).look

@@ -200,10 +200,19 @@ export const ShotSchema = z.strictObject({
 })
 export type Shot = z.infer<typeof ShotSchema>
 
+/** A shot the glide camera reaches `at` seconds from the scene's first frame. */
+export const CameraKeySchema = z.strictObject({
+  at: z.number().min(0),
+  shot: ShotSchema,
+})
+export type CameraKey = z.infer<typeof CameraKeySchema>
+
 export const CameraSchema = z.strictObject({
   mode: z.enum(['fixed', 'glide', 'follow']),
   start: ShotSchema.optional(),
   end: ShotSchema.optional(),
+  /** Glide only. When set, the camera flies key to key on its own clock and `start` and `end` are ignored. */
+  keys: z.array(CameraKeySchema).min(1).optional(),
   follow: z
     .strictObject({
       zoom: z.number().min(0).max(22).optional(),

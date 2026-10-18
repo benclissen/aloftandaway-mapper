@@ -9,6 +9,7 @@ import {
   newSceneId,
   sceneTitle,
   sceneTitleOf,
+  type CameraKey,
   type PatchResponse,
   type SeaPaths,
   type Project,
@@ -22,7 +23,7 @@ import { PointMenu } from './PointMenu.js'
 import { isSharp, removeViaEdit, sharpEdit, type PointMenuTarget } from './RouteEditor.js'
 import { SceneTabs, type SceneSummary } from './SceneTabs.js'
 import { Scrubber, type Tick } from './Scrubber.js'
-import { ShotPanel } from './ShotPanel.js'
+import { keyTime, ShotPanel } from './ShotPanel.js'
 import { StylePicker } from './StylePicker.js'
 import { Stage, type StageHandle } from './Stage.js'
 import './edit.css'
@@ -478,6 +479,34 @@ export function App() {
     else void edit({ sceneSet: { camera: { end: shot } } }, 'Set the end shot', { saved: 'End shot saved' })
   }
 
+  const keys = scene.camera.keys ?? []
+  const keyRate = fpsValue(project.output.fps)
+  const keyEdit = (next: CameraKey[], label: string, saved: string) =>
+    void edit({ sceneSet: { camera: { keys: next.length > 0 ? next : null } } }, label, { saved })
+
+  // The view now becomes a key at the scrubber's frame, in seconds to the millisecond so it lands back on that frame.
+  const addKey = () => {
+    const shot = stage.current?.shot()
+    if (!shot) return
+    const at = Math.round((shown / keyRate) * 1000) / 1000
+    const others = keys.filter((k) => Math.round(k.at * keyRate) !== shown)
+    const next = [...others, { at, shot }].sort((a, b) => a.at - b.at)
+    keyEdit(next, `Add camera key at ${keyTime(at)}`, 'Camera key saved')
+  }
+
+  const goToKey = (index: number) => {
+    const key = keys[index]
+    if (!key) return
+    setPlaying(false)
+    setFreeView(false)
+    setFrame(Math.min(Math.round(key.at * keyRate), last))
+  }
+
+  const removeKey = (index: number) => {
+    const key = keys[index]
+    if (key) keyEdit(keys.filter((_, i) => i !== index), `Remove camera key at ${keyTime(key.at)}`, 'Camera key removed')
+  }
+
   return (
     <div className="studio">
       <SceneTabs
@@ -566,6 +595,7 @@ export function App() {
           <ShotPanel
             mode={scene.camera.mode}
             freeView={freeView}
+            keys={keys}
             onMode={(mode) => {
               setFreeView(false)
               void edit({ sceneSet: { camera: { mode } } }, `Camera mode: ${MODE_NAMES[mode]}`)
@@ -574,8 +604,14 @@ export function App() {
             onUseEnd={() => saveShot('end')}
             onFit={() => {
               setFreeView(false)
-              void edit({ sceneSet: { camera: { start: null, end: null } } }, 'Fit to route', { saved: 'Camera fits the route' })
+              void edit({ sceneSet: { camera: { start: null, end: null, keys: null } } }, 'Fit to route', {
+                saved: 'Camera fits the route',
+              })
             }}
+            onAddKey={addKey}
+            onGoToKey={goToKey}
+            onRemoveKey={removeKey}
+            onClearKeys={() => void edit({ sceneSet: { camera: { keys: null } } }, 'Clear camera keys', { saved: 'Camera keys cleared' })}
           />
           <StylePicker theme={scene.look.theme} terrain={scene.look.terrain} onEdit={onEdit} />
           {notice && (

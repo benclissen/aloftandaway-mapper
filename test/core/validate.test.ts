@@ -2,6 +2,9 @@ import { describe, expect, test, vi } from 'vitest'
 import {
   NO_LAND_DATA,
   SYMBOLS,
+  haversineKm,
+  trackKey,
+  type LngLat,
   SYMBOL_STYLES,
   seaLegKey,
   validateProject,
@@ -80,6 +83,20 @@ describe('validateProject', () => {
     expect(legs.map((w) => w.path)).toEqual([['scenes', 0, 'legs', 0], ['scenes', 0, 'legs', 1]])
     expect(legs[0]!.message).toBe('Leg 1 (S0 → S1) lasts 0.5 s')
     expect(legs[0]!.fix).toBeTruthy()
+  })
+
+  test('short-leg on a fixed-length scene says raise timing.length', () => {
+    const project = stopsAt(
+      [
+        [23.6466, 37.942],
+        [25.3289, 37.4467],
+        [25.4317, 36.4166],
+      ],
+      { timing: { holdStart: 1, travel: 10, holdEnd: 2, length: 4 } },
+    )
+    const legs = validateProject(project).warnings.filter((w) => w.code === 'short-leg')
+    expect(legs).toHaveLength(2)
+    expect(legs[0]!.fix).toMatch(/^Raise timing\.length/)
   })
 
   test('zoom-above-max names a stored shot by its path', () => {
@@ -544,6 +561,77 @@ describe('validateProject', () => {
 
     test('does not warn for signs far apart', () => {
       expect(codes(validateProject(greekIslands()).warnings)).not.toContain('sign-overlap')
+    })
+  })
+
+  describe('track legs', () => {
+    const TRACK = '0123456789ab'
+    /** Greek Islands with every leg on one track: each stop, with a point between each pair. */
+    const trackProject = (move: Record<number, LngLat> = {}) => {
+      const project = greekIslands()
+      const scene = sceneOf(project)
+      scene.legs = scene.legs.map(() => ({ mode: 'track' as const, track: TRACK, via: [] }))
+      const at = scene.stops.map((stop, i) => move[i] ?? stop.at)
+      const points = at.flatMap((p, i): LngLat[] => {
+        const next = at[i + 1]
+        return next ? [p, [(p[0] + next[0]) / 2, (p[1] + next[1]) / 2]] : [p]
+      })
+      const seaPaths: SeaPaths = { [trackKey(TRACK)]: { status: 'ok', path: points, knots: [] } }
+      return { project, seaPaths, points }
+    }
+
+    test('track-missing is an error', () => {
+      const { project } = trackProject()
+      const { errors, warnings } = validateProject(project, { seaPaths: {} })
+      expect(codes(warnings)).not.toContain('track-missing')
+      expect(errors.filter((e) => e.code === 'track-missing')).toHaveLength(3)
+      expect(errors[0]).toEqual({
+        code: 'track-missing',
+        message: 'Leg 1 (Piraeus → Mykonos) uses the recorded track 0123456789ab, but tracks/0123456789ab.json is missing or unreadable.',
+        path: ['scenes', 0, 'legs', 0],
+        fix: 'Put the file back, or run import_track again.',
+      })
+    })
+
+    test('track-missing needs seaPaths, like the sea checks', () => {
+      const { project } = trackProject()
+      expect(codes(validateProject(project).errors)).not.toContain('track-missing')
+    })
+
+    test('track-stop-far names the stop and the gap', () => {
+      // The track turns 5.9 km south-west of Mykonos, and neither of its segments there comes nearer the stop.
+      const off: LngLat = [25.2817, 37.4092]
+      const { project, seaPaths } = trackProject({ 1: off })
+      const found = validateProject(project, { seaPaths }).warnings.filter((w) => w.code === 'track-stop-far')
+      // Mykonos ends leg 1 and starts leg 2 at the same cut, and is warned once.
+      expect(found).toEqual([
+        {
+          code: 'track-stop-far',
+          message: `Mykonos is ${haversineKm(off, [25.3289, 37.4467]).toFixed(1)} km from the recorded track of Leg 1 (Piraeus → Mykonos), so the line jumps to it.`,
+          path: ['scenes', 0, 'stops', 1],
+          fix: 'Move the stop onto the track, or check the stops are in travel order.',
+        },
+      ])
+      expect(found[0]!.message).toContain(' 5.9 km ')
+      expect(codes(validateProject(project).warnings)).not.toContain('track-stop-far')
+    })
+
+    test('a two-stop loop on a track is not the same place, but two stops on a line still are', () => {
+      // Out 5 km and back to where it began: the stops are 10 m apart, with a 10 km leg between them.
+      const project = stopsAt([[25, 37], [25, 37.00009]])
+      const scene = sceneOf(project)
+      const points: LngLat[] = [[25, 37], [25.03, 37.02], [25.06, 37], [25.03, 36.98], [25, 37.00009]]
+      const seaPaths: SeaPaths = { [trackKey(TRACK)]: { status: 'ok', path: points, knots: [] } }
+      expect(codes(validateProject(project, { seaPaths }).warnings)).toContain('same-place')
+      scene.legs = [{ mode: 'track', track: TRACK, via: [] }]
+      expect(codes(validateProject(project, { seaPaths }).warnings)).not.toContain('same-place')
+      // With its file gone the leg is a straight line again, and the stops are the same place.
+      expect(codes(validateProject(project, { seaPaths: {} }).warnings)).toContain('same-place')
+    })
+
+    test('no sea warnings on a track leg', () => {
+      const { project, seaPaths } = trackProject()
+      expect(validateProject(project, { seaPaths })).toEqual({ errors: [], warnings: [] })
     })
   })
 

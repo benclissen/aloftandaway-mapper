@@ -2,23 +2,29 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
 import {
   AIR_SAMPLES,
+  applyPatch,
   buildRoute,
   clampLat,
   decodeLand,
   effectiveSymbol,
   haversineKm,
+  importTrack,
   LngLatSchema,
   MAX_LAT,
   headingDeg,
   landIndex,
   nearestOnLeg,
+  parseTrackCsv,
   pointAt,
   routeSea,
   seaLegKey,
   slicePath,
   toLngLat,
   toXY,
+  trackKey,
+  trackToStops,
   unwrapLng,
+  validateProject,
   type LngLat,
   type RouteLeg,
   type Scene,
@@ -28,6 +34,7 @@ import {
   type XY,
 } from '../../src/core/index.js'
 import { emptyProject, greekIslands, pacific, sceneOf, stopsAt } from '../fixtures/projects.js'
+import { syntheticLoop } from '../fixtures/tracks.js'
 
 describe('geo', () => {
   test('clampLat keeps a latitude inside the schema, which stops short of MapLibre\'s 85.051129', () => {
@@ -583,5 +590,308 @@ describe('effectiveSymbol', () => {
     scene.look.symbol = 'none'
     expect(effectiveSymbol(scene, 2)).toBe('none')
     expect(effectiveSymbol(scene, 1)).toBe('ferry')
+  })
+})
+
+describe('track legs', () => {
+  const TRACK = '0123456789ab'
+
+  /** A scene on `stops` whose legs all follow `points`, passed in `seaPaths` as the server does. */
+  function onTrack(stops: LngLat[], points: LngLat[]): { scene: Scene; seaPaths: SeaPaths } {
+    const base = sceneOf(stopsAt(stops))
+    const scene: Scene = { ...base, legs: base.legs.map(() => ({ mode: 'track' as const, track: TRACK, via: [] })) }
+    return { scene, seaPaths: { [trackKey(TRACK)]: { status: 'ok', path: points, knots: [] } } }
+  }
+
+  test('trackKey prefixes the id, so it never collides with a sea key', () => {
+    expect(trackKey(TRACK)).toBe('track:0123456789ab')
+  })
+
+  test('a track leg follows its points', () => {
+    const points: LngLat[] = [[0, 0], [0.1, 0.05], [0.2, 0.1], [0.3, 0.05], [0.4, 0]]
+    const { scene, seaPaths } = onTrack([[0.001, 0], [0.401, 0]], points)
+    const leg = buildRoute(scene, seaPaths).legs[0]!
+    expect(leg.mode).toBe('track')
+    expect(leg.drawnAs).toBe('track')
+    expect(leg.path).toEqual([[0.001, 0], ...points.slice(1, 4), [0.401, 0]])
+    expect(leg.knots).toEqual([0, 4])
+    expect(leg.xy).toHaveLength(5)
+    expect(leg.length).toBe(leg.cum.at(-1))
+    expect(leg.track).toMatchObject({ status: 'ok', id: TRACK })
+    expect(leg.track!.stopGapKm![0]).toBeCloseTo(haversineKm([0, 0], [0.001, 0]), 9)
+    expect(leg.track!.stopGapKm![1]).toBeCloseTo(haversineKm([0.4, 0], [0.401, 0]), 9)
+    expect(leg.sea).toBeUndefined()
+  })
+
+  test('two legs on one track share the cut', () => {
+    // A round trip B → A → B, then on to C. Searched from the start, leg 3 would begin at the first B.
+    const points: LngLat[] = [[0, 0], [0.1, 0], [0.2, 0], [0.1, 0.01], [0.01, 0.01], [0.01, 0.1], [0.01, 0.2]]
+    const { scene, seaPaths } = onTrack([[0, 0], [0.2, 0], [0, 0.01], [0.01, 0.2]], points)
+    const legs = buildRoute(scene, seaPaths).legs
+    expect(legs.map((l) => l.drawnAs)).toEqual(['track', 'track', 'track'])
+    expect(legs[0]!.path).toEqual([[0, 0], [0.1, 0], [0.2, 0]])
+    expect(legs[1]!.path).toEqual([[0.2, 0], [0.1, 0.01], [0, 0.01]])
+    expect(legs[2]!.path).toEqual([[0, 0.01], [0.01, 0.1], [0.01, 0.2]])
+    expect(legs[1]!.path[0]).toEqual(legs[0]!.path.at(-1))
+    expect(legs[2]!.path[0]).toEqual(legs[1]!.path.at(-1))
+    // The shared stop is measured to the same cut point from both sides.
+    expect(legs[2]!.track!.stopGapKm![0]).toBe(legs[1]!.track!.stopGapKm![1])
+  })
+
+  test('a port called at twice cuts at the first call', () => {
+    // A → B (500 m off) → C → B (exactly) → D. The nearest point to B is the second call, but the leg ends at the first.
+    const A: LngLat = [0, 0]
+    const B: LngLat = [0.3, 0]
+    const C: LngLat = [0.3, 0.3]
+    const points: LngLat[] = [A, [0.15, 0], [0.3, 0.0045], [0.3, 0.15], C, [0.3, 0.15], B, [0.45, 0], [0.6, 0]]
+    const { scene, seaPaths } = onTrack([A, B, C], points)
+    const legs = buildRoute(scene, seaPaths).legs
+    expect(legs[0]!.path).toEqual([A, [0.15, 0], B])
+    expect(legs[1]!.path).toEqual([B, [0.3, 0.15], C])
+  })
+
+  test('a cruise that ends where it began cuts at the end', () => {
+    // The last point is exactly on A and the first is 300 m off, so the nearest point to A is the last.
+    const A: LngLat = [0, 0]
+    const B: LngLat = [0.4, 0]
+    const points: LngLat[] = [[0, 0.0027], [0.1, 0.05], [0.2, 0.05], B, [0.3, -0.05], [0.1, -0.05], A]
+    const { scene, seaPaths } = onTrack([A, B, A], points)
+    const legs = buildRoute(scene, seaPaths).legs
+    expect(legs[0]!.path).toEqual([A, [0.1, 0.05], [0.2, 0.05], B])
+    expect(legs[1]!.path).toEqual([B, [0.3, -0.05], [0.1, -0.05], A])
+  })
+
+  test('a loop with two stops follows the whole loop', () => {
+    // As import_track's ends mode gives it: a stop on the first point and one on the last, a few metres apart. The
+    // track starts inside the end stop's circle, so the end is where it comes back, not where it leaves.
+    const { points, lengthKm } = syntheticLoop({ stayMinutes: 0 })
+    const { scene, seaPaths } = onTrack([points[0]!, points.at(-1)!], points)
+    const r = buildRoute(scene, seaPaths)
+    const leg = r.legs[0]!
+    expect(leg.drawnAs).toBe('track')
+    expect(leg.path).toEqual(points)
+    expect(leg.track!.stopGapKm).toEqual([0, 0])
+    let km = 0
+    for (let k = 1; k < leg.path.length; k++) km += haversineKm(leg.path[k - 1]!, leg.path[k]!)
+    expect(km).toBeGreaterThan(lengthKm * 0.98)
+    expect(km).toBeLessThan(lengthKm * 1.02)
+    expect(r.length).toBe(leg.length)
+  })
+
+  /** The great-circle length of `path`, in km. */
+  const pathKm = (path: LngLat[]): number => path.slice(1).reduce((km, p, k) => km + haversineKm(path[k]!, p), 0)
+  /** `p` moved `east` and `north` km. */
+  const moved = (p: LngLat, east: number, north: number): LngLat => [
+    p[0] + east / (111.32 * Math.cos((p[1] * Math.PI) / 180)),
+    p[1] + north / 111.32,
+  ]
+
+  test('a loop imported in ends mode follows the whole loop, however the logger sat while parked', () => {
+    // 3 h parked at home before and after the drive, jittering by ±20 m or ±50 m. The ends are a few metres apart,
+    // and every parked point is within 2 km of both.
+    for (const stayJitterM of [20, 50]) {
+      for (const seed of [1, 2, 3]) {
+        const imported = trackToStops(parseTrackCsv(syntheticLoop({ seed, stayJitterM }).csv), { stops: 'ends', minStayMinutes: 120 })
+        const { scene, seaPaths } = onTrack(imported.stops.map((s) => s.at), imported.points)
+        const leg = buildRoute(scene, seaPaths).legs[0]!
+        expect(leg.path, `±${stayJitterM} m, seed ${seed}`).toEqual(imported.points)
+      }
+    }
+  })
+
+  test('a loop keeps about its whole length with the start stop dragged off it', () => {
+    // Points every 100 m. A start stop 100 m, 200 m or 1 km off home still leaves from home, and the leg runs round.
+    const { points, home, lengthKm } = syntheticLoop({ stayMinutes: 0, samples: 400 })
+    for (const km of [0.1, 0.2, 1]) {
+      for (const from of [moved(home, 0, -km), moved(home, km, 0), moved(home, -km, 0)]) {
+        const { scene, seaPaths } = onTrack([from, points.at(-1)!], points)
+        const leg = buildRoute(scene, seaPaths).legs[0]!
+        expect(pathKm(leg.path), `${km} km`).toBeGreaterThan(lengthKm * 0.95)
+      }
+    }
+    // An end stop moved 100 m along the way out still waits for the track to come back.
+    const { scene, seaPaths } = onTrack([points[0]!, points[1]!], points)
+    expect(pathKm(buildRoute(scene, seaPaths).legs[0]!.path)).toBeGreaterThan(lengthKm * 0.95)
+  })
+
+  test('a short hop from near the start still ends at the first arrival', () => {
+    // A to C along the equator and back 220 m north of it. B is 1.6 km from A, so the track starts inside B's circle,
+    // and it passes B again on the way back. The leg to B ends on the way out, with B on a point or dragged 100 m off.
+    const out: LngLat[] = []
+    const back: LngLat[] = []
+    for (let k = 0; k <= 200; k++) out.push([k * 0.001, 0])
+    for (let k = 199; k >= 0; k--) back.push([k * 0.001, 0.002])
+    const points = [...out, ...back]
+    for (const B of [[0.014, 0], [0.014, 0.0009]] as LngLat[]) {
+      const { scene, seaPaths } = onTrack([[0, 0], B, [0.2, 0]], points)
+      const legs = buildRoute(scene, seaPaths).legs
+      expect(legs[0]!.path).toEqual([[0, 0], ...points.slice(1, 14), B])
+      expect(legs[1]!.path).toEqual([B, ...points.slice(15, 200), [0.2, 0]])
+    }
+  })
+
+  test('a hop to a stop 1 km off the track takes the nearer of two passes', () => {
+    // B is 1 km south of the way out and 1.22 km from the way back, so leg 0 ends on the way out and leg 1 runs on to C.
+    const points: LngLat[] = []
+    for (let k = 0; k <= 200; k++) points.push([k * 0.001, 0])
+    for (let k = 199; k >= 0; k--) points.push([k * 0.001, 0.002])
+    const B: LngLat = [0.014, -0.009]
+    const { scene, seaPaths } = onTrack([[0, 0], B, [0.2, 0]], points)
+    const legs = buildRoute(scene, seaPaths).legs
+    expect(legs[0]!.path).toEqual([[0, 0], ...points.slice(1, 14), B])
+    expect(legs[1]!.path).toEqual([B, ...points.slice(15, 200), [0.2, 0]])
+  })
+
+  test('a stop inserted on a thinned segment keeps the bends either side', () => {
+    // 201 points along [0,0] → [1,0] → [1,1] thin to those three. A stop put on the first segment, 55 km from any kept
+    // point, is on the track: the leg before it ends there, and the leg after it still turns at [1,0].
+    const logged: LngLat[] = [
+      ...Array.from({ length: 101 }, (_, k): LngLat => [k / 100, 0]),
+      ...Array.from({ length: 100 }, (_, k): LngLat => [1, (k + 1) / 100]),
+    ]
+    const imported = trackToStops({ points: logged }, { stops: 'ends', minStayMinutes: 120 })
+    expect(imported.points).toEqual([[0, 0], [1, 0], [1, 1]])
+    const base = importTrack(greekIslands(), { stops: imported.stops, track: TRACK })
+    const seaPaths: SeaPaths = { [trackKey(TRACK)]: { status: 'ok', path: imported.points, knots: [] } }
+    const p = applyPatch(base, { ops: [{ op: 'insert_stop', index: 1, stop: { name: 'Mid', at: [0.5, 0] } }] })
+    const legs = buildRoute(sceneOf(p), seaPaths).legs
+    expect(legs.map((l) => l.drawnAs)).toEqual(['track', 'track'])
+    expect(legs[0]!.path).toEqual([[0, 0], [0.5, 0]])
+    expect(legs[1]!.path).toEqual([[0.5, 0], [1, 0], [1, 1]])
+    for (const leg of legs) expect(Math.max(...leg.track!.stopGapKm!)).toBeLessThan(1e-6)
+    expect(validateProject(p, { seaPaths }).warnings.map((w) => w.code)).not.toContain('track-stop-far')
+
+    // Two stops on the same segment, and one dragged 300 m off it, still keep the corner after them.
+    const q = applyPatch(p, { ops: [{ op: 'insert_stop', index: 2, stop: { name: 'Off', at: [0.7, 0.0027] } }] })
+    const three = buildRoute(sceneOf(q), seaPaths).legs
+    expect(three.map((l) => l.path)).toEqual([[[0, 0], [0.5, 0]], [[0.5, 0], [0.7, 0.0027]], [[0.7, 0.0027], [1, 0], [1, 1]]])
+    expect(three[1]!.track!.stopGapKm![1]).toBeCloseTo(haversineKm([0.7, 0], [0.7, 0.0027]), 3)
+    expect(three[2]!.track!.stopGapKm![0]).toBe(three[1]!.track!.stopGapKm![1])
+  })
+
+  test('an out-and-back imported through thinning follows the whole way', () => {
+    // 201 points out along the equator to 1° E and back thin to three. The two segments both touch the stops' circle,
+    // but their shared point is 111 km outside it, so they're two runs: the leg leaves in the first and ends in the
+    // second.
+    const logged: LngLat[] = Array.from({ length: 201 }, (_, k): LngLat => [(k <= 100 ? k : 200 - k) / 100, 0])
+    const imported = trackToStops({ points: logged }, { stops: 'ends', minStayMinutes: 120 })
+    expect(imported.points).toEqual([[0, 0], [1, 0], [0, 0]])
+    const { scene, seaPaths } = onTrack(imported.stops.map((s) => s.at), imported.points)
+    const leg = buildRoute(scene, seaPaths).legs[0]!
+    expect(leg.path).toEqual([[0, 0], [1, 0], [0, 0]])
+    expect(pathKm(leg.path)).toBeCloseTo(2 * haversineKm([0, 0], [1, 0]), 6)
+  })
+
+  test('a sparse track past a port twice cuts at the first pass', () => {
+    // The first segment passes B 1.5 km off; the next comes back 55 km and runs over B. The far point between them is
+    // outside B's circle, so the passes are two runs, and the first is taken though the second is nearer.
+    const B: LngLat = [0.5, 0]
+    const points: LngLat[] = [[0, 0.0135], [1, 0.0135], [0, -0.0135], [0, -0.3]]
+    const { scene, seaPaths } = onTrack([points[0]!, B, points[3]!], points)
+    const legs = buildRoute(scene, seaPaths).legs
+    expect(legs[0]!.path).toEqual([points[0], B])
+    expect(legs[1]!.path).toEqual([B, points[1], points[2], points[3]])
+  })
+
+  test('a stop off a segment keeps a bend more than 100 m along from where it is cut', () => {
+    // The corner [0.02, 0] is 556 m along the track from where the inserted stop projects, [0.015, 0], though only
+    // 80 m further from the stop. The leg is cut at the projection, and the corner stays in the leg after it.
+    const logged: LngLat[] = [
+      ...Array.from({ length: 21 }, (_, k): LngLat => [k / 1000, 0]),
+      ...Array.from({ length: 100 }, (_, k): LngLat => [0.02, (k + 1) / 1000]),
+    ]
+    const imported = trackToStops({ points: logged }, { stops: 'ends', minStayMinutes: 120 })
+    expect(imported.points).toEqual([[0, 0], [0.02, 0], [0.02, 0.1]])
+    const seaPaths: SeaPaths = { [trackKey(TRACK)]: { status: 'ok', path: imported.points, knots: [] } }
+    const base = importTrack(greekIslands(), { stops: imported.stops, track: TRACK })
+    const p = applyPatch(base, { ops: [{ op: 'insert_stop', index: 1, stop: { name: 'Off', at: [0.015, -0.017] } }] })
+    expect(buildRoute(sceneOf(p), seaPaths).legs.map((l) => l.path)).toEqual([
+      [[0, 0], [0.015, -0.017]],
+      [[0.015, -0.017], [0.02, 0], [0.02, 0.1]],
+    ])
+    // Dragged to 220 m short of the corner, the corner still stays; dragged to 50 m short, the cut moves onto it.
+    const id = sceneOf(p).stops[1]!.id
+    const drag = (at: LngLat) => buildRoute(sceneOf(applyPatch(p, { ops: [{ op: 'update_stop', id, changes: { at } }] })), seaPaths).legs
+    expect(drag([0.018, -0.01]).map((l) => l.path)).toEqual([
+      [[0, 0], [0.018, -0.01]],
+      [[0.018, -0.01], [0.02, 0], [0.02, 0.1]],
+    ])
+    const snapped = drag([0.01955, -0.01])
+    expect(snapped.map((l) => l.path)).toEqual([
+      [[0, 0], [0.01955, -0.01]],
+      [[0.01955, -0.01], [0.02, 0.1]],
+    ])
+    expect(snapped[0]!.track!.stopGapKm![1]).toBeCloseTo(haversineKm([0.01955, -0.01], [0.02, 0]), 9)
+  })
+
+  test('a stop inserted on a thinned segment across 180° keeps the bend after it', () => {
+    // The same L shape from 179.5° E, logged with each longitude in [-180, 180].
+    const wrap = (lng: number): number => ((lng + 180) % 360) - 180
+    const logged: LngLat[] = [
+      ...Array.from({ length: 101 }, (_, k): LngLat => [wrap(179.5 + k / 100), 0]),
+      ...Array.from({ length: 100 }, (_, k): LngLat => [-179.5, (k + 1) / 100]),
+    ]
+    const imported = trackToStops({ points: logged }, { stops: 'ends', minStayMinutes: 120 })
+    expect(imported.points).toEqual([[179.5, 0], [-179.5, 0], [-179.5, 1]])
+    const base = importTrack(greekIslands(), { stops: imported.stops, track: TRACK })
+    const seaPaths: SeaPaths = { [trackKey(TRACK)]: { status: 'ok', path: imported.points, knots: [] } }
+    const p = applyPatch(base, { ops: [{ op: 'insert_stop', index: 1, stop: { name: 'Mid', at: [180, 0] } }] })
+    const legs = buildRoute(sceneOf(p), seaPaths).legs
+    expect(legs.map((l) => l.path)).toEqual([[[179.5, 0], [180, 0]], [[180, 0], [180.5, 0], [180.5, 1]]])
+    expect(validateProject(p, { seaPaths }).warnings.map((w) => w.code)).not.toContain('track-stop-far')
+  })
+
+  test('a stop far from the track reports the gap', () => {
+    const points: LngLat[] = [[0, 0], [0.1, 0], [0.2, 0]]
+    // 0.05° of latitude is about 5.6 km.
+    const { scene, seaPaths } = onTrack([[0, 0], [0.2, 0.05]], points)
+    const leg = buildRoute(scene, seaPaths).legs[0]!
+    expect(leg.drawnAs).toBe('track')
+    expect(leg.track!.stopGapKm![0]).toBe(0)
+    expect(leg.track!.stopGapKm![1]).toBeGreaterThan(2)
+    expect(leg.path).toEqual([[0, 0], [0.1, 0], [0.2, 0.05]])
+  })
+
+  test('a missing track draws a straight line', () => {
+    const { scene } = onTrack([[0, 0], [0.2, 0.1]], [])
+    for (const seaPaths of [{}, undefined]) {
+      const leg = buildRoute(scene, seaPaths).legs[0]!
+      expect(leg.mode).toBe('track')
+      expect(leg.drawnAs).toBe('line')
+      expect(leg.track).toEqual({ status: 'missing', id: TRACK })
+      expect(leg.path).toEqual([[0, 0], [0.2, 0.1]])
+      expect(leg.knots).toEqual([0, 1])
+    }
+  })
+
+  test('an imported track more than half way round goes the way it was logged', () => {
+    // 200° east along 60° S, logged once a degree with each longitude in [-180, 180]. The ends, 170° and 10°, are only
+    // 160° apart going west.
+    const logged: LngLat[] = Array.from({ length: 201 }, (_, i) => [((170 + i + 180) % 360) - 180, -60])
+    const imported = trackToStops({ points: logged }, { stops: 'ends', minStayMinutes: 120 })
+    expect(imported.stops.map((s) => s.at)).toEqual([[170, -60], [10, -60]])
+    const { scene, seaPaths } = onTrack(imported.stops.map((s) => s.at), imported.points)
+    const leg = buildRoute(scene, seaPaths).legs[0]!
+    expect(leg.drawnAs).toBe('track')
+    expect(leg.path[0]).toEqual([170, -60])
+    expect(leg.path.at(-1)).toEqual([370, -60])
+    for (let k = 1; k < leg.path.length; k++) expect(leg.path[k]![0]).toBeGreaterThan(leg.path[k - 1]![0])
+  })
+
+  test('a track leg across 180° is continuous', () => {
+    const points: LngLat[] = []
+    for (let k = 0; k <= 40; k++) {
+      const lng = 178 + k * 0.1
+      points.push([lng > 180 ? lng - 360 : lng, -17 + Math.sin(k / 6) * 0.2])
+    }
+    const base = sceneOf(stopsAt([[178, -17], [-178, -17 + Math.sin(40 / 6) * 0.2], [-177, -16]]))
+    const scene: Scene = { ...base, legs: [{ mode: 'track', track: TRACK, via: [] }, { mode: 'line', via: [] }] }
+    const r = buildRoute(scene, { [trackKey(TRACK)]: { status: 'ok', path: points, knots: [] } })
+    expect(r.legs[0]!.drawnAs).toBe('track')
+    const all = r.legs.flatMap((l) => l.path)
+    for (let k = 1; k < all.length; k++) expect(Math.abs(all[k]![0] - all[k - 1]![0])).toBeLessThanOrEqual(1)
+    expect(r.legs[0]!.path.at(-1)![0]).toBeCloseTo(182, 9)
+    expect(r.legs[1]!.path[0]).toEqual(r.legs[0]!.path.at(-1))
+    expect(r.legs[1]!.path.at(-1)![0]).toBeCloseTo(183, 9)
   })
 })

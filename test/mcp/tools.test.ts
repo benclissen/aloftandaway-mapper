@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -9,6 +9,10 @@ import { createMcpServer } from '../../src/mcp/server.js'
 import { creditLine, doneSummary, leftover, statusSummary, TOOLS } from '../../src/mcp/tools.js'
 import { startRenderJob, type RenderStatus } from '../../src/render/jobs.js'
 import { contactSheet, previewFrame } from '../../src/render/preview.js'
+import { loadProject, saveProject } from '../../src/server/store.js'
+import { readTrackPaths, TRACKS_DIR, writeTrack } from '../../src/server/tracks.js'
+import { buildRoute, haversineKm, type LngLat } from '../../src/core/index.js'
+import { syntheticCruise, syntheticLoop } from '../fixtures/tracks.js'
 
 // The real job runs; the spy records what the render tool asked for.
 vi.mock('../../src/render/jobs.js', async (importOriginal) => {
@@ -93,6 +97,7 @@ describe('tools', () => {
       'get_project',
       'set_stops',
       'import_gpx',
+      'import_track',
       'update_project',
       'validate_project',
       'preview_frame',
@@ -144,6 +149,23 @@ describe('tools', () => {
     expect(data.validation.warnings.map((w) => w.code)).not.toContain('not-available-yet')
   })
 
+  test('a track leg reports its recorded track once the file exists', async () => {
+    const folder = path.join(tmp, 'Track')
+    await call('create_project', { folder, name: 'Track' })
+    await call('set_stops', { folder, stops: STOPS.slice(0, 2), legMode: 'line' })
+    const id = await writeTrack(folder, { points: [STOPS[0]!.at, [24.5, 37.7], STOPS[1]!.at] as LngLat[] })
+    const project = await loadProject(folder)
+    const scene = project.scenes[0]!
+    await saveProject(folder, { ...project, scenes: [{ ...scene, legs: [{ mode: 'track', via: [], track: id }] }] })
+    const got = await call('get_project', { folder })
+    expect(text(got)).toContain('Leg 1 Piraeus → Mykonos: recorded track')
+    expect(text(got)).not.toContain('file missing')
+    await rm(path.join(folder, TRACKS_DIR, `${id}.json`))
+    const missing = await call('get_project', { folder })
+    expect(text(missing)).toContain('recorded track file missing')
+    expect(text(missing)).toContain('track-missing')
+  })
+
   test('validate_project warns that an offline sea route is unverified', async () => {
     const folder = path.join(tmp, 'sea-unverified')
     await call('create_project', { folder, name: 'Sea' })
@@ -172,6 +194,17 @@ describe('tools', () => {
     const lines = text(updated).split('\n')
     expect(lines.find((l) => l.startsWith('2. Mykonos'))).toMatch(/ · sharp$/)
     expect(lines.find((l) => l.startsWith('1. Piraeus'))).not.toContain('sharp')
+  })
+
+  test('the summary marks a fixed length', async () => {
+    const folder = path.join(tmp, 'fixed-length')
+    await call('create_project', { folder, name: 'Fixed' })
+    const set = await call('set_stops', { folder, stops: STOPS })
+    expect(text(set)).toMatch(/\d+ s \(\d+ frames\)/)
+    expect(text(set)).not.toContain('fixed length')
+    const updated = await call('update_project', { folder, sceneSet: { timing: { length: 8 } } })
+    expect(updated.isError, text(updated)).toBeFalsy()
+    expect(text(updated)).toContain('8.0 s (200 frames, fixed length)')
   })
 
   test('a landlocked sea leg reports the fallback', async () => {
@@ -312,6 +345,21 @@ describe('tools', () => {
     expect(text(result)).toContain('Leg 1 Piraeus → Mykonos: ferry (sea), 2 via points, 1 sharp')
     expect(text(result)).toContain('Leg 3 Santorini → Rhodes: plane (air)')
     expect(text(result)).not.toContain('Leg 2')
+  })
+
+  test('the summary flags a track leg whose file is missing', async () => {
+    const folder = path.join(tmp, 't')
+    await call('create_project', { folder, name: 'T' })
+    await call('set_stops', { folder, stops: STOPS.slice(0, 2) })
+    // A hand-edited file: the track it names was never imported.
+    const file = path.join(folder, 'mapper.json')
+    const json = JSON.parse(await readFile(file, 'utf8'))
+    json.scenes[0].legs = [{ mode: 'track', track: '0123456789ab', via: [] }]
+    await writeFile(file, JSON.stringify(json))
+    const result = await call('get_project', { folder })
+    expect(result.isError, text(result)).toBeFalsy()
+    expect(text(result)).toContain('Leg 1 Piraeus → Mykonos: recorded track file missing')
+    expect(text(result)).toContain('track-missing')
   })
 
   test('descriptions describe version 2', () => {
@@ -568,6 +616,7 @@ describe('tools', () => {
       for (const word of ['add_scene', 'duplicate_scene', 'remove_scene', 'move_scene']) expect(update).toContain(word)
       for (const words of ['0-based', 'scene id', 'appends', 'copyLookFrom is an id or 1-based position']) expect(update).toContain(words)
       expect(update).not.toContain('restore_scene')
+      expect(update).toContain("A leg symbol alone sets its mode, unless it's a track leg.")
     })
 
     test('preview_frame and preview_contact_sheet take a scene', async () => {
@@ -980,6 +1029,183 @@ describe('render summaries', () => {
       expect(result.isError).toBe(true)
       expect(text(result)).toContain("Error: No track 'Nope'")
       expect(text(result)).toContain('Fix: Pass a number from 1 to 1')
+    })
+  })
+
+  describe('import_track', () => {
+    interface TrackResult {
+      project: { scenes: { stops: { name: string }[]; legs: { mode: string; track?: string }[] }[] }
+      import: {
+        track: string
+        file: string
+        recorded: number
+        points: number
+        skippedRows: number
+        stops: { name: string; at: LngLat; arrive?: string; depart?: string }[]
+      }
+    }
+
+    async function setup(name: string, file: string, content: string): Promise<{ folder: string; file: string }> {
+      const folder = path.join(tmp, name)
+      await call('create_project', { folder, name: 'Cruise' })
+      const full = path.join(tmp, file)
+      await writeFile(full, content)
+      return { folder, file: full }
+    }
+
+    test('import_track imports a CSV cruise', async () => {
+      const { folder, file } = await setup('trk', 'cruise.csv', syntheticCruise().csv)
+      const result = await call('import_track', { folder, path: file })
+      expect(result.isError, text(result)).toBeFalsy()
+      const sc = result.structuredContent as unknown as TrackResult
+      const scene = sc.project.scenes[0]!
+      expect(scene.stops).toHaveLength(3)
+      expect(scene.legs).toHaveLength(2)
+      for (const leg of scene.legs) {
+        expect(leg.mode).toBe('track')
+        expect(leg.track).toBe(sc.import.track)
+      }
+      expect(sc.import.file).toBe(`tracks/${sc.import.track}.json`)
+      await expect(readFile(path.join(folder, sc.import.file), 'utf8')).resolves.toContain('"points"')
+      expect(sc.import.stops).toHaveLength(3)
+      expect(sc.import.stops[1]!.arrive).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/)
+      expect(sc.import.skippedRows).toBe(0)
+      expect(sc.import.points).toBeLessThanOrEqual(sc.import.recorded)
+      expect(text(result)).toMatch(/^Imported a recorded track: \d+ points kept as \d+, 3 stops \(3 stays of 120 min or more\)\./m)
+    })
+
+    test('import_track reads a GPX', async () => {
+      const { folder, file } = await setup('trk-gpx', 'cruise.gpx', syntheticCruise().gpx)
+      const result = await call('import_track', { folder, path: file })
+      expect(result.isError, text(result)).toBeFalsy()
+      const sc = result.structuredContent as unknown as TrackResult
+      expect(sc.project.scenes[0]!.stops).toHaveLength(3)
+      const saved = JSON.parse(await readFile(path.join(folder, sc.import.file), 'utf8')) as { name?: string }
+      expect(saved.name).toBe('Synthetic cruise')
+    })
+
+    test('import_track accepts an upper-case extension and picks a GPX track', async () => {
+      const { folder, file } = await setup('trk-upper', 'CRUISE.GPX', syntheticCruise().gpx)
+      const result = await call('import_track', { folder, path: file, track: 1 })
+      expect(result.isError, text(result)).toBeFalsy()
+      const missing = await call('import_track', { folder, path: file, track: 'Nope' })
+      expect(missing.isError).toBe(true)
+      expect(text(missing)).toContain("Error: No track 'Nope'")
+    })
+
+    test('import_track ends mode: with no times it defaults to ends', async () => {
+      const csv = 'lng,lat\n10,50\n11,50.5\n12,51\n'
+      const { folder, file } = await setup('trk-ends', 'plain.csv', csv)
+      const result = await call('import_track', { folder, path: file })
+      expect(result.isError, text(result)).toBeFalsy()
+      const sc = result.structuredContent as unknown as TrackResult
+      expect(sc.project.scenes[0]!.stops.map((s) => s.name)).toEqual(['Track start', 'Track end'])
+      expect(sc.import.stops[0]).not.toHaveProperty('arrive')
+      expect(text(result)).toContain('2 stops (no stays looked for: not every point has a time).')
+      expect(text(result)).not.toContain('0 stays')
+    })
+
+    test('import_track ends mode asked for says it used the first and last points', async () => {
+      const { folder, file } = await setup('trk-ends-asked', 'cruise.csv', syntheticCruise().csv)
+      const result = await call('import_track', { folder, path: file, stops: 'ends' })
+      expect(result.isError, text(result)).toBeFalsy()
+      expect(text(result)).toMatch(/, 2 stops \(first and last points\)\./)
+      expect(text(result)).not.toContain('stays of')
+    })
+
+    test('import_track follows a day loop that ends where it began', async () => {
+      // 3 h at the hotel, a 40 km drive round, and 3 h back at the hotel: two stops a few metres apart.
+      const loop = syntheticLoop()
+      const { folder, file } = await setup('trk-loop', 'loop.csv', loop.csv)
+      const result = await call('import_track', { folder, path: file })
+      expect(result.isError, text(result)).toBeFalsy()
+      const sc = result.structuredContent as unknown as TrackResult
+      expect(sc.import.stops).toHaveLength(2)
+      expect(text(result)).toContain('2 stops (2 stays of 120 min or more)')
+      const project = await loadProject(folder)
+      const leg = buildRoute(project.scenes[0]!, await readTrackPaths(folder, project)).legs[0]!
+      expect(leg.drawnAs).toBe('track')
+      // Every kept point is on the leg: the first and last are the stops, and the rest lie between them.
+      expect(leg.path).toHaveLength(sc.import.points)
+      let km = 0
+      for (let k = 1; k < leg.path.length; k++) km += haversineKm(leg.path[k - 1]!, leg.path[k]!)
+      expect(km).toBeGreaterThan(loop.lengthKm * 0.95)
+      expect(km).toBeLessThan(loop.lengthKm * 1.1)
+    })
+
+    test('import_track refuses a track choice for a CSV', async () => {
+      const { folder, file } = await setup('trk-csv-track', 'cruise.csv', syntheticCruise().csv)
+      const result = await call('import_track', { folder, path: file, track: 1 })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toContain('Error: track picks a track in a GPX file')
+      expect(text(result)).toContain('Fix: Leave out track')
+      await expect(readdir(path.join(folder, TRACKS_DIR))).rejects.toThrow()
+    })
+
+    test('import_track refuses stays without times', async () => {
+      const { folder, file } = await setup('trk-notime', 'plain.csv', 'lng,lat\n10,50\n11,50.5\n12,51\n')
+      const result = await call('import_track', { folder, path: file, stops: 'stays' })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toContain('Error: Stays need a time on every point')
+      expect(text(result)).toContain("Fix: Pass stops: 'ends'")
+    })
+
+    test('import_track says why times were dropped and counts bad rows', async () => {
+      const csv = 'lng,lat,time\n10,50,2026-06-01T06:00:00\n11,50.5,2026-06-01T07:00:00\nx,y,z\n'
+      const { folder, file } = await setup('trk-badtime', 'zoneless.csv', csv)
+      const result = await call('import_track', { folder, path: file })
+      expect(result.isError, text(result)).toBeFalsy()
+      const sc = result.structuredContent as unknown as TrackResult & { import: { badTimes?: number } }
+      expect(sc.import.skippedRows).toBe(1)
+      expect(sc.import.badTimes).toBe(2)
+      expect(text(result)).toContain("2 stops (no stays looked for: 2 of the track's times can't be read).")
+      const refused = await call('import_track', { folder, path: file, stops: 'stays' })
+      expect(refused.isError).toBe(true)
+      expect(text(refused)).toContain("times can't be read")
+    })
+
+    test('import_track refuses another extension', async () => {
+      const { folder } = await setup('trk-ext', 'x.csv', 'lng,lat\n')
+      const result = await call('import_track', { folder, path: path.join(tmp, 'cruise.txt') })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toMatch(/\.gpx or \.csv/)
+      expect(text(result)).toContain('Fix:')
+    })
+
+    test('import_track refuses a relative path', async () => {
+      const { folder } = await setup('trk-rel', 'x.csv', 'lng,lat\n')
+      const result = await call('import_track', { folder, path: 'cruise.csv' })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toMatch(/Error: .*absolute/)
+    })
+
+    test('import_track writes nothing when the folder or scene is wrong', async () => {
+      const { folder, file } = await setup('trk-bad', 'cruise.csv', syntheticCruise().csv)
+      const none = (dir: string) => expect(readdir(path.join(dir, TRACKS_DIR))).rejects.toThrow()
+
+      const relative = await call('import_track', { folder: 'rel-trk-folder', path: file })
+      expect(relative.isError).toBe(true)
+      expect(text(relative)).toMatch(/absolute/)
+      await none(path.resolve('rel-trk-folder'))
+
+      const notProject = path.join(tmp, 'not-a-project')
+      await mkdir(notProject)
+      const missing = await call('import_track', { folder: notProject, path: file })
+      expect(missing.isError).toBe(true)
+      expect(text(missing)).toContain('No project found')
+      await none(notProject)
+
+      const badScene = await call('import_track', { folder, path: file, scene: 5 })
+      expect(badScene.isError).toBe(true)
+      await none(folder)
+    })
+
+    test('importing twice reuses the track file', async () => {
+      const { folder, file } = await setup('trk-twice', 'cruise.csv', syntheticCruise().csv)
+      const first = (await call('import_track', { folder, path: file })).structuredContent as unknown as TrackResult
+      const second = (await call('import_track', { folder, path: file })).structuredContent as unknown as TrackResult
+      expect(second.import.track).toBe(first.import.track)
+      expect(await readdir(path.join(folder, TRACKS_DIR))).toEqual([`${first.import.track}.json`])
     })
   })
 })

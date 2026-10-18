@@ -131,7 +131,7 @@ const RENAMED_SYMBOLS: Partial<Record<SymbolKindV1, SymbolKind>> = { ship: 'crui
 const upgradeSymbol = (symbol: SymbolKindV1): SymbolKind => RENAMED_SYMBOLS[symbol] ?? (symbol as SymbolKind)
 
 /**
- * Upgrades a parsed version 1 project to version 2: its scene fields become one scene with the project's id and name,
+ * Upgrades a parsed version 1 project to version 2 (`upgradeV2` takes it on to 3): its scene fields become one scene with the project's id and name,
  * each via point becomes `{ at }`, and renamed symbols take their new names. The result still needs parsing with the
  * current schema.
  */
@@ -153,7 +153,7 @@ export function upgradeV1(v1: ProjectV1): unknown {
     look: { ...v1.look, symbol: upgradeSymbol(v1.look.symbol) },
     camera: v1.camera,
   }
-  const project: Project = {
+  const project: Omit<Project, 'schemaVersion'> & { schemaVersion: 2 } = {
     schemaVersion: 2,
     id: v1.id,
     name: v1.name,
@@ -164,4 +164,12 @@ export function upgradeV1(v1: ProjectV1): unknown {
     scenes: [scene],
   }
   return project
+}
+
+/**
+ * Upgrades a version 2 project to version 3. Version 3 only adds optional fields, so the version number is the one
+ * change. It works on a shallow copy and doesn't check the result; the current schema does that.
+ */
+export function upgradeV2(json: unknown): unknown {
+  return { ...(json as object), schemaVersion: 3 }
 }

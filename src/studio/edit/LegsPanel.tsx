@@ -1,8 +1,6 @@
 import { SYMBOL_ICON, SYMBOLS, type LegMode, type ProjectPatch, type Route, type Scene, type SymbolKind } from '../../core/index.js'
 import { ICONS, type IconName } from '../stage/icons.js'
-import { fallbackNote, MODE_LABELS, SYMBOL_LABELS, unverifiedNote } from './labels.js'
-
-const MODES = Object.keys(MODE_LABELS) as LegMode[]
+import { fallbackNote, legModeChanges, legModeOptions, MODE_LABELS, SYMBOL_LABELS, trackNote, unverifiedNote } from './labels.js'
 
 /** A transport's icon, drawn small beside its name. `none` and `dot` have no icon. */
 function SymbolIcon({ symbol, testId }: { symbol: SymbolKind; testId: string }) {
@@ -46,6 +44,7 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
           {scene.legs.map((leg, i) => {
             const sea = route.legs[i]?.sea
             const fallback = fallbackNote(sea)
+            const track = trackNote(route.legs[i]?.track)
             return (
             <li
               key={i}
@@ -93,12 +92,12 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
                   onChange={(e) => {
                     const mode = e.target.value as LegMode
                     void onEdit(
-                      { scene: scene.id, ops: [{ op: 'update_leg', index: i, changes: { mode } }] },
+                      { scene: scene.id, ops: [{ op: 'update_leg', index: i, changes: legModeChanges(mode) }] },
                       `Leg ${i + 1} mode: ${MODE_LABELS[mode]}`,
                     )
                   }}
                 >
-                  {MODES.map((m) => (
+                  {legModeOptions(leg).map((m) => (
                     <option key={m} value={m}>
                       {MODE_LABELS[m]}
                     </option>
@@ -106,6 +105,7 @@ export function LegsPanel({ scene, route, selectedLeg, onSelectLeg, onEdit }: Le
                 </select>
               </div>
               {fallback && <p className="leg-note">{fallback}</p>}
+              {track && <p className="leg-note" data-testid={`leg-track-${i}`}>{track}</p>}
               {sea?.status === 'pending' && <p className="leg-note">Finding a sea route…</p>}
               {sea?.unverified && (
                 <p className="leg-note" data-testid={`leg-unverified-${i}`}>

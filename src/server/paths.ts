@@ -4,6 +4,7 @@ import { ROUTER_VERSION, routeSea, seaLegKey, type LandSource, type LngLat, type
 import { writeFileAtomic } from './atomic.js'
 import { loadLand } from './land.js'
 import { OFFLINE_MS, SEA_BUDGET_TILES, SEA_WATER_VERSION, seaWater, type SeaBudget, type SeaWater, type WaterNote } from './sea-water.js'
+import { readTrackPaths } from './tracks.js'
 
 export const PATHS_FILE = path.join('.mapper', 'paths.json')
 
@@ -200,8 +201,9 @@ export function resolveSeaPaths(folder: string, project: Project, opts: ResolveO
   const dir = path.resolve(folder)
   const water = 'water' in opts ? opts.water : seaWater()
   return inOrder(dir, async () => {
+    const tracks = await readTrackPaths(dir, project)
     const legs = seaLegsOf(project)
-    if (legs.size === 0) return {}
+    if (legs.size === 0) return tracks
 
     const land = opts.land ?? (await loadLand())
     // The planet build stays out: a new one doesn't re-route anything, and each entry records its own.
@@ -213,7 +215,7 @@ export function resolveSeaPaths(folder: string, project: Project, opts: ResolveO
     let routed = false
     // Once one leg finds the network down, the rest of this call doesn't wait for it again.
     let offline = false
-    const result: SeaPaths = {}
+    const result: SeaPaths = { ...tracks }
     for (const [key, [from, to, via]] of legs) {
       let entry = cache[key]
       if (!entry || due(entry, clock())) {

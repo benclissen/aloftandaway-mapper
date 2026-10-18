@@ -12,7 +12,7 @@ or copy.
 
 ## Status
 
-Stages 1 to 9 (agent-driven MVP, Final Cut export, route editing, routes, look, scenes, a fix pass, sea routes against OpenFreeMap water, a second fix pass) built. What works today:
+Stages 1 to 10 (agent-driven MVP, Final Cut export, route editing, routes, look, scenes, a fix pass, sea routes against OpenFreeMap water, a second fix pass, recorded tracks and exact length) built. What works today:
 
 - An MCP server and CLI. The agent creates a project, sets stops, validates,
   previews, opens the studio and renders.
@@ -42,6 +42,11 @@ Stages 1 to 9 (agent-driven MVP, Final Cut export, route editing, routes, look, 
   with tilt, and drawn transport icons in three styles. See [Look](#look).
 - Scenes: a project can hold several, each with its own stops, look, camera
   and timing. See [Scenes](#scenes).
+- Recorded tracks: `import_track` (or `mapper import-track`) reads a GPX or CSV
+  log, puts a stop wherever it stood still, and draws the line along the
+  recorded points. See [Recorded tracks](#recorded-tracks).
+- Exact length: a scene can be fixed at a length in seconds, so a clip fits a
+  gap in the edit to the frame. See [Exact length](#exact-length).
 
 Docs:
 
@@ -98,7 +103,9 @@ doesn't re-route it; to re-route every sea leg on the current build, delete
 Air legs follow the great circle, bowed toward the nearer pole so even short
 flights curve (at least 15% of their length). The follow camera keeps the
 moving symbol in view, with its zoom, orientation and look-ahead set in the
-scene's camera. `import_gpx` turns a local GPX file into stops and via points.
+scene's camera. `import_gpx` turns a local GPX file into stops and via points,
+and `import_track` keeps a recorded log exactly (see
+[Recorded tracks](#recorded-tracks)).
 Land data credit: [Natural Earth](https://www.naturalearthdata.com/), see
 [data/README.md](data/README.md).
 
@@ -131,6 +138,56 @@ with hard cuts, joined without re-encoding, or writes one file per scene with
 `--each`. `--scenes 1,3` picks which ones. The studio shows a tab per scene.
 In Final Cut Pro, each scene is its own compound clip, and the clips sit back
 to back on one timeline.
+
+## Recorded tracks
+
+`import_track` reads a local `.gpx` or `.csv` log (columns `lng`, `lat` and
+`time`) and draws the line along the recorded points exactly, with no routing
+and no via points. A stop goes wherever the track stayed within 1 km for two
+hours (`minStayMinutes` changes that), plus the first and last points, and the
+result lists each stop's arrival and departure times so the agent can name them.
+On a log of more than 10,000 points, stays are found at a time step of the log's
+span over 5,000, so a stay only just over `minStayMinutes` can be missed.
+`stops: 'ends'` uses only the first and last points. A loop that ends where it
+began, such as a day out from a hotel, draws as one leg round the loop, unless
+the way out comes back within 2 km of the start before the end. The track is
+thinned to at most 10,000 points and every leg becomes a `track` leg. Use
+`import_gpx` instead when the file is a plan you want to reshape.
+
+Mapper reads the file you give it and fetches nothing. A track from a provider
+or an API is the agent's job to download and write out as a CSV first.
+
+Adding or removing a stop on a track keeps the legs on it: a new stop splits
+its leg, and removing one joins the two parts. A stop more than 2 km from the
+track gets a `track-stop-far` warning, and a track file that has gone missing
+is an error (`track-missing`) that stops the render. In the studio, track legs
+are read-only.
+
+### Exact length
+
+`timing.length` fixes a scene at a length in seconds, set with `update_project`'s
+`sceneSet`. A scene set to 8 s at 25 fps renders exactly 200 frames. Mapper
+works out the travel time from the length and the holds and pauses, so a pause
+can change without moving the end. A length shorter than the holds and pauses
+is refused, and `null` clears it.
+
+## The project folder
+
+```
+my-trip/
+├── mapper.json           The project
+├── tracks/<id>.json      Recorded tracks (source data)
+├── renders/<timestamp>/  One folder per render
+└── .mapper/              Cache: sea paths and preview frames
+```
+
+`tracks/` holds the thinned points of each imported track, named by a hash of
+their content, so importing the same track again reuses the file, and rewrites
+it if it has been damaged. It is source data, not cache. Unlike `.mapper/`, it
+isn't safe to delete: a leg that names a missing track is drawn as a straight
+line and the render refuses. Mapper never deletes a track file, because another
+scene may use it. Keep `tracks/` with `mapper.json` when you copy or back up a
+project.
 
 ## Final Cut Pro export (optional)
 

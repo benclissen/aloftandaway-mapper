@@ -53,6 +53,11 @@ export interface SeaPath {
   stopGapKm?: [number, number]
 }
 
+/**
+ * Each sea leg's path, keyed by `seaLegKey`. It also carries each recorded track the project uses, keyed by
+ * `trackKey` (`track:<id>`), as `{ status: 'ok', path: points, knots: [] }` with the points wrapped to ±180. A track
+ * whose file is missing or unreadable has no entry.
+ */
 export type SeaPaths = Record<string, SeaPath>
 
 /**

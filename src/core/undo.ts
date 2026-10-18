@@ -1,6 +1,6 @@
-import { applyPatch, isSceneOp, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
+import { applyPatch, isSceneOp, legChangesFor, patchSteps, ProjectPatchSchema, type PatchOp, type ProjectPatch } from './patch.js'
 import { resolveScene, sceneTitleOf } from './scenes.js'
-import { defaultModeFor, type Project } from './schema.js'
+import type { Project } from './schema.js'
 
 type Obj = Record<string, unknown>
 
@@ -53,10 +53,9 @@ function invertOp(project: Project, op: PatchOp, sceneId: string): PatchOp {
       return { op: 'update_stop', id: op.id, changes: oldValues(stop, op.changes) as never }
     }
     case 'update_leg': {
-      const { symbol, mode } = op.changes
-      // A symbol without a mode also sets the mode, so the inverse restores the mode as well.
-      const changes: Obj = symbol && !mode ? { ...op.changes, mode: defaultModeFor(symbol) } : { ...op.changes }
-      return { op: 'update_leg', index: op.index, changes: oldValues(scene!.legs[op.index]!, changes) as never }
+      // A symbol without a mode can also set the mode, and then the inverse restores the mode as well.
+      const leg = scene!.legs[op.index]!
+      return { op: 'update_leg', index: op.index, changes: oldValues(leg, legChangesFor(leg, op.changes)) as never }
     }
     case 'insert_via':
       return { op: 'remove_via', leg: op.leg, index: op.index }
@@ -86,7 +85,8 @@ function invertOp(project: Project, op: PatchOp, sceneId: string): PatchOp {
 }
 
 /**
- * The patch that undoes `patch` on `before`: applied to `applyPatch(before, patch)` it gives back `before`.
+ * The patch that undoes `patch` on `before`: applied to `applyPatch(before, patch)` it gives back `before`, including a
+ * `timing.travel` that setting a fixed length rewrote.
  * Supports `scene`, `sceneSet`, the stop, leg and via ops, and the scene ops. The inverse names the scene by id.
  * Throws on anything else, including `set`, `add_scene` without an `id` and `duplicate_scene` without a `newId`, and
  * on a patch that edits a scene (`sceneSet`, or stop, leg or via ops) and also removes it, because the inverse
@@ -113,15 +113,19 @@ export function invertPatch(before: Project, patch: ProjectPatch): ProjectPatch 
     // An old file can hold a blank scene name, and a patch refuses one. Undo restores the title it showed, `Scene N`.
     const name = inverse.sceneSet.name
     if (typeof name === 'string' && !name.trim()) inverse.sceneSet.name = sceneTitleOf(name, index)
+    // Setting a length rewrites `timing.travel` (see `fitLength`), and undo clears the length again, so it has to give
+    // the old travel back too. A scene that had a length gets its travel worked out again from the restored values.
+    const { travel, length } = scene.timing
+    const after = length === undefined ? applyPatch(before, patch).scenes.find((s) => s.id === sceneId) : undefined
+    if (after && after.timing.travel !== travel) {
+      const timing = isObj(inverse.sceneSet.timing) ? inverse.sceneSet.timing : {}
+      inverse.sceneSet.timing = { ...timing, travel }
+    }
   }
-  // Invert each op against the state it ran on, then undo them last to first.
-  let state = before
+  // Invert each op against the state applyPatch runs it on, after `sceneSet` and the ops before it, then undo them last
+  // to first. Those states aren't checked on their own: only the whole patch's result is.
   const inverted: PatchOp[] = []
-  for (const op of ops) {
-    inverted.push(invertOp(state, op, sceneId))
-    // A scene op doesn't need the chosen scene, which it may have removed.
-    state = applyPatch(state, isSceneOp(op) ? { ops: [op] } : { scene: sceneId, ops: [op] })
-  }
+  patchSteps(before, { ...patch, scene: sceneId }, (state, op) => inverted.push(invertOp(state, op, sceneId)))
   if (inverted.length) inverse.ops = inverted.reverse()
   return inverse
 }

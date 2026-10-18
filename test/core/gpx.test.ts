@@ -183,4 +183,31 @@ describe('gpx', () => {
     const out = gpxToStops(parseGpx(dense(200_000)), { stops: 'ends' })
     expect(out.via[0]!.length).toBeLessThanOrEqual(100)
   })
+
+  it('reads track point times', () => {
+    const wrap = (pts: string): string =>
+      `<gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>${pts}</trkseg></trk></gpx>`
+    const all = parseGpx(
+      wrap(
+        '<trkpt lat="50" lon="10"><time>2026-06-01T06:00:00Z</time></trkpt>' +
+          '<trkpt lat="" lon="10.05"><time>not a time</time></trkpt>' +
+          '<trkpt lat="50.1" lon="10.1"><ele>4</ele><time>2026-06-01T08:01:00.500+02:00</time></trkpt>' +
+          '<trkpt lat="50.2" lon="10.2"><time>2026-06-01T06:02:00</time></trkpt>',
+      ),
+    ).lines[0]!
+    expect(all.points).toEqual([
+      [10, 50],
+      [10.1, 50.1],
+      [10.2, 50.2],
+    ])
+    // GPX times are UTC, so one without a zone reads as UTC.
+    expect(all.times).toEqual([Date.UTC(2026, 5, 1, 6, 0), Date.UTC(2026, 5, 1, 6, 1, 0, 500), Date.UTC(2026, 5, 1, 6, 2)])
+    const some = parseGpx(
+      wrap('<trkpt lat="50" lon="10"><time>2026-06-01T06:00:00Z</time></trkpt><trkpt lat="50.1" lon="10.1"></trkpt>'),
+    ).lines[0]!
+    expect(some.points).toHaveLength(2)
+    expect(some.times).toBeUndefined()
+    expect('times' in some).toBe(false)
+    expect('times' in parseGpx(fixture('track.gpx')).lines[0]!).toBe(false)
+  })
 })

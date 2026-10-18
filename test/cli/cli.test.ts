@@ -84,6 +84,20 @@ test('mapper import-gpx --json works', async () => {
   expect(out.project.scenes[0].stops).toHaveLength(2)
 })
 
+test('mapper import-track --json works', async () => {
+  const folder = path.join(tmp, 'track-project')
+  const created = await mapper('create-project', '--json', JSON.stringify({ folder, name: 'Cruise' }))
+  expect(created.code, created.stderr).toBe(0)
+  const file = path.join(tmp, 'cruise.csv')
+  await writeFile(file, 'lng,lat\n10,50\n11,50.5\n12,51\n')
+  const imported = await mapper('import-track', '--json', JSON.stringify({ folder, path: file }))
+  expect(imported.code, imported.stderr).toBe(0)
+  expect(imported.stderr).toContain('Imported a recorded track: 3 points kept as')
+  const out = JSON.parse(imported.stdout)
+  expect(out.import.file).toBe(`tracks/${out.import.track}.json`)
+  expect(out.project.scenes[0].legs[0].mode).toBe('track')
+})
+
 test.each(['render-job', 'render-status', 'cancel-render', 'open-studio'])('%s is not a command', async (name) => {
   const { code, stderr } = await mapper(name)
   expect(code).toBe(2)

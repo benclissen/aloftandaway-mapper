@@ -305,10 +305,71 @@ function glideProgress(scene: Scene, timeline: Timeline, frame: number): number 
 }
 
 /**
+ * How far in from each side the default glide keeps the head, as a fraction of the frame. Less than the fitted shots'
+ * padding, so a head arriving at the route's edge doesn't nudge the camera as it settles on the whole route.
+ */
+const HEAD_PADDING = 0.08
+/** Roughly how many seconds the default glide takes to ease into an extra pull-out, and back out of it. */
+const PULL_OUT_SECONDS = 1
+
+const pullOuts = new WeakMap<Timeline, { key: string; extra: number[] }>()
+
+/** The highest zoom at which `at` sits inside the head padding on a view centred and turned like `shot`. */
+function zoomKeeping(shot: Shot, aspect: Aspect, at: LngLat): number {
+  const { width, height } = layoutSize(aspect)
+  const [x, y] = projectToLayout({ ...shot, zoom: 0 }, aspect, at)
+  const dx = Math.abs(x - width / 2)
+  const dy = Math.abs(y - height / 2)
+  const half = 0.5 - HEAD_PADDING
+  return Math.log2(Math.min(dx > 0 ? (width * half) / dx : Infinity, dy > 0 ? (height * half) / dy : Infinity))
+}
+
+/**
+ * Zoom steps the default glide pulls out beyond `glide` on each frame, so the head stays inside the head padding. A
+ * glide that opens close in on the first stop pulls out on its own timetable, which a vehicle heading away from the
+ * route's middle can outrun. The shortfall is widened by a running maximum over `2r` frames each side, then box-blurred
+ * twice over `r` frames each side. Every blurred value averages maxima whose reach covers the frame, so the result is
+ * smooth and never less than that frame's shortfall.
+ */
+function buildPullOut(glide: (frame: number) => Shot, aspect: Aspect, timeline: Timeline): number[] {
+  const n = timeline.totalFrames
+  const short = Array.from({ length: n }, (_, f) => {
+    const shot = glide(f)
+    return Math.max(0, shot.zoom - zoomKeeping(shot, aspect, timeline.stateAt(f).head.at))
+  })
+  if (short.every((d) => d === 0)) return short
+  const r = Math.max(1, Math.round((PULL_OUT_SECONDS * fpsValue(timeline.fps)) / 2))
+  const at = (xs: number[], i: number) => xs[clamp(i, 0, n - 1)]!
+  const widened = short.map((_, f) => {
+    let m = 0
+    for (let k = -2 * r; k <= 2 * r; k++) m = Math.max(m, at(short, f + k))
+    return m
+  })
+  const blur = (xs: number[]) =>
+    xs.map((_, f) => {
+      let sum = 0
+      for (let k = -r; k <= r; k++) sum += at(xs, f + k)
+      return sum / (2 * r + 1)
+    })
+  return blur(blur(widened))
+}
+
+/** The default glide's extra pull-out for `timeline`, built once per timeline and camera, aspect and theme. */
+function pullOut(scene: Scene, aspect: Aspect, timeline: Timeline, glide: (frame: number) => Shot): number[] {
+  const key = JSON.stringify([scene.camera, aspect, scene.look.theme])
+  const cached = pullOuts.get(timeline)
+  if (cached?.key === key) return cached.extra
+  const extra = buildPullOut(glide, aspect, timeline)
+  pullOuts.set(timeline, { key, extra })
+  return extra
+}
+
+/**
  * The map view on `frame`. `fixed` holds `start`. `glide` with a stored start flies from `start` to `end` across the
  * travel section with `camera.easing` applied once to the overall travel progress, holding at both ends. With a default
  * start it flies from frame 0, through the opening hold, to the end of the first leg's travel, then holds `end` (see
- * `glideProgress`). `follow` centres on the head
+ * `glideProgress`), pulling out further where needed to keep the head inside the head padding (see
+ * `buildPullOut`). That pull-out eases off over about a second, so it may run a little way into the hold. `follow` centres on the head
  * `lookAhead` seconds ahead, at most a quarter of the frame from the head, holding on travel's first and last frames,
  * smoothed without lag. A heading-up bearing smooths 3 times more slowly than the position.
  */
@@ -325,7 +386,12 @@ export function cameraAt(scene: Scene, aspect: Aspect, route: Route, timeline: T
     const [lng, lat] = start.center
     return { center: [lng, lat], zoom: start.zoom, bearing: normaliseBearing(start.bearing), pitch: start.pitch }
   }
-  return flyInterpolator(start, end, aspect)(ease(scene.camera.easing, glideProgress(scene, timeline, frame)))
+  const fly = flyInterpolator(start, end, aspect)
+  const glide = (f: number) => fly(ease(scene.camera.easing, glideProgress(scene, timeline, f)))
+  const shot = glide(frame)
+  if (scene.camera.start) return shot
+  const extra = pullOut(scene, aspect, timeline, glide)[clamp(Math.round(frame), 0, timeline.totalFrames - 1)]!
+  return extra > 0 ? { ...shot, zoom: Math.max(MIN_ZOOM, shot.zoom - extra) } : shot
 }
 
 /**

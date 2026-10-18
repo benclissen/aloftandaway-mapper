@@ -33,6 +33,16 @@ export function legSeconds(lengths: number[], travel: number): number[] {
   }
 }
 
+/**
+ * The seconds a scene spends travelling. With `timing.length` set, that is whatever is left of the length after the
+ * holds and pauses (so a stored `travel` that has gone stale is ignored); otherwise it is `timing.travel`.
+ */
+export function sceneTravel(scene: Scene): number {
+  const { length, holdStart, holdEnd, travel } = scene.timing
+  if (length === undefined) return travel
+  return Math.max(0, length - holdStart - holdEnd - scene.stops.reduce((sum, s) => sum + s.pause, 0))
+}
+
 export function ease(kind: Camera['easing'], t: number): number {
   return kind === 'smooth' ? t * t * (3 - 2 * t) : t
 }
@@ -68,12 +78,16 @@ export interface Timeline {
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi)
 
 export function buildTimeline(scene: Scene, fps: Fps, route: Route): Timeline {
-  const { holdStart, travel, holdEnd } = scene.timing
+  const { holdStart, holdEnd, length } = scene.timing
+  const travel = sceneTravel(scene)
   const { stops } = scene
-  const toFrame = (seconds: number) => Math.round((seconds * fps.num) / fps.den)
+  const rawFrame = (seconds: number) => Math.round((seconds * fps.num) / fps.den)
+  // A fixed length is exactly round(length × fps) frames, so nothing may land past its last frame.
+  const lastFrame = length === undefined ? Infinity : Math.max(1, rawFrame(length)) - 1
+  const toFrame = (seconds: number) => Math.min(rawFrame(seconds), lastFrame)
   const rate = fpsValue(fps)
 
-  const total = holdStart + travel + stops.reduce((sum, s) => sum + s.pause, 0) + holdEnd
+  const total = length ?? holdStart + travel + stops.reduce((sum, s) => sum + s.pause, 0) + holdEnd
 
   // Boundaries in seconds, accumulated in order and only then turned into frames.
   const lengths = route.legs.map((leg) => leg.length)
@@ -94,7 +108,8 @@ export function buildTimeline(scene: Scene, fps: Fps, route: Route): Timeline {
   const travelStartFrame = toFrame(holdStart)
   const travelEndFrame = toFrame(t)
   // With no end hold and no last pause, the last arrival would land one past the end. Keep it on the last frame.
-  const totalFrames = Math.max(toFrame(total), travelEndFrame + 1)
+  // (With a fixed length the frames above are already clamped to it, so the count is exact.)
+  const totalFrames = length === undefined ? Math.max(rawFrame(total), travelEndFrame + 1) : lastFrame + 1
 
   // Route distance at the start and end of each leg, summed in the order `buildRoute` sums them.
   const legStartDistance: number[] = []

@@ -8,14 +8,18 @@ import {
   buildTimeline,
   formatTimecode,
   frameSize,
+  chooseLine,
   GpxError,
   gpxToStops,
   importGpx,
+  importTrack,
   isSceneOp,
-  LegModeSchema,
+  InputLegModeSchema,
   MAP_CREDIT,
   OutputSchema,
   parseGpx,
+  parseTrackCsv,
+  recordedFromGpx,
   ProjectError,
   ProjectPatchSchema,
   resolveFollow,
@@ -28,6 +32,8 @@ import {
   setStops,
   StopInputSchema,
   SymbolKindSchema,
+  TrackError,
+  trackToStops,
   unwrapLng,
   validateProject,
   zodIssues,
@@ -38,6 +44,9 @@ import {
   type SceneRef,
   type SeaPaths,
   type GpxImport,
+  type LngLat,
+  type RecordedTrack,
+  type TrackImport,
   type Shot,
 } from '../core/index.js'
 import { contactSheet, PreviewAtSchema, previewFrame } from '../render/preview.js'
@@ -46,6 +55,7 @@ import type { RenderResult } from '../render/render.js'
 import { resolveSeaPaths } from '../server/paths.js'
 import { fixOf } from '../server/errors.js'
 import { getServer } from '../server/server.js'
+import { writeTrack } from '../server/tracks.js'
 import { assertAbsolute, createProject, loadProject, mutateProject } from '../server/store.js'
 
 /** An error the agent can act on. `fix` says what to do next. */
@@ -94,7 +104,7 @@ function validationLine(errors: Issue[], warnings: Issue[]): string {
 /** `shot` with its longitude wrapped to ±180, as the schema stores it. Fitted shots can lie beyond 180. */
 const wrapped = (shot: Shot): Shot => ({ ...shot, center: [unwrapLng(0, shot.center[0]), shot.center[1]] })
 
-/** One line for a leg that has a transport or via points; nothing for a plain leg. */
+/** One line for a leg that has a transport, via points or a recorded track; nothing for a plain leg. */
 function legLine(scene: Scene, i: number, route: Route): string | undefined {
   const leg = scene.legs[i]!
   const parts: string[] = []
@@ -104,6 +114,7 @@ function legLine(scene: Scene, i: number, route: Route): string | undefined {
   if (sharp) parts.push(`${sharp} sharp`)
   const drawn = route.legs[i]
   if (drawn?.drawnAs === 'air') parts.push('flight arc')
+  else if (drawn?.track) parts.push(drawn.track.status === 'ok' ? 'recorded track' : 'recorded track file missing')
   else if (drawn?.sea) {
     const { status, reason, crossesLand } = drawn.sea
     if (status === 'fallback') parts.push(`sea route failed: ${reason ?? 'no route found'}`)
@@ -138,7 +149,7 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
     }))
     blocks.push([
       ...(many ? [`${sceneLabel(project, index)} (id ${scene.id})`] : []),
-      `${many ? '' : `${project.name}: `}${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}), ${width}×${height}.`,
+      `${many ? '' : `${project.name}: `}${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}${scene.timing.length === undefined ? '' : ', fixed length'}), ${width}×${height}.`,
       `Style: ${scene.look.theme}, terrain ${scene.look.terrain ? 'on' : 'off'}.`,
       ...(scene.stops.length
         ? scene.stops.map((s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}${s.sharp ? ' · sharp' : ''}`)
@@ -204,14 +215,16 @@ function scenesLine(project: Project): string {
 
 // GPX
 
-const MAX_GPX_BYTES = 20 * 1024 * 1024
+const MAX_FILE_BYTES = 20 * 1024 * 1024
 
-async function readGpxFile(file: string): Promise<string> {
+/** The text of a local file the agent named: absolute, one of `exts`, and at most 20 MB. `kind` words the messages. */
+async function readLocalFile(file: string, kind: string, exts: string[], tooBigFix: string): Promise<string> {
   if (!path.isAbsolute(file)) {
-    throw new ToolError(`The GPX path '${file}' is not absolute.`, 'Pass the full path to the file, starting with /.')
+    throw new ToolError(`The ${kind} path '${file}' is not absolute.`, 'Pass the full path to the file, starting with /.')
   }
-  if (path.extname(file).toLowerCase() !== '.gpx') {
-    throw new ToolError(`'${path.basename(file)}' does not end in .gpx.`, 'Choose a GPX file, whose name ends in .gpx.')
+  if (!exts.includes(path.extname(file).toLowerCase())) {
+    const names = exts.join(' or ')
+    throw new ToolError(`'${path.basename(file)}' does not end in ${names}.`, `Choose a ${kind} file, whose name ends in ${names}.`)
   }
   let size: number
   try {
@@ -219,13 +232,10 @@ async function readGpxFile(file: string): Promise<string> {
     if (!info.isFile()) throw new Error('not a file')
     size = info.size
   } catch {
-    throw new ToolError(`There is no GPX file at ${file}.`, 'Check the path. It must be absolute and point to a file.')
+    throw new ToolError(`There is no ${kind} file at ${file}.`, 'Check the path. It must be absolute and point to a file.')
   }
-  if (size > MAX_GPX_BYTES) {
-    throw new ToolError(
-      `${path.basename(file)} is ${(size / 1024 / 1024).toFixed(1)} MB, more than the 20 MB limit.`,
-      'Trim the track in your GPS app or route planner, then export it again.',
-    )
+  if (size > MAX_FILE_BYTES) {
+    throw new ToolError(`${path.basename(file)} is ${(size / 1024 / 1024).toFixed(1)} MB, more than the 20 MB limit.`, tooBigFix)
   }
   try {
     return await readFile(file, 'utf8')
@@ -234,6 +244,12 @@ async function readGpxFile(file: string): Promise<string> {
   }
 }
 
+const readGpxFile = (file: string): Promise<string> =>
+  readLocalFile(file, 'GPX', ['.gpx'], 'Trim the track in your GPS app or route planner, then export it again.')
+
+const readTrackFile = (file: string): Promise<string> =>
+  readLocalFile(file, 'track', ['.gpx', '.csv'], 'Trim the track in your GPS app or logger, then export it again.')
+
 function importLine(imported: GpxImport): string {
   const { line, stops, skipped } = imported
   const source = line ? `${line.kind}${line.name ? ` "${line.name}"` : ''}` : 'waypoints'
@@ -241,6 +257,15 @@ function importLine(imported: GpxImport): string {
   if (!skipped.length) return `${head}.`
   const list = skipped.map((s) => `${s.name}, ${s.km.toFixed(1)} km`).join('; ')
   return `${head}; skipped ${plural(skipped.length, 'waypoint')} more than 2 km from the track (${list}).`
+}
+
+/**
+ * The summary line for `import_track`. `how` says where the stops came from: the stays found, the first and last
+ * points when `ends` was asked for, or why no stays were looked for when the track's times ruled them out.
+ */
+function trackLine(imported: TrackImport, how: string): string {
+  const { recorded, points, stops } = imported
+  return `Imported a recorded track: ${recorded} points kept as ${points.length}, ${stops.length} stops (${how}).`
 }
 
 // Errors
@@ -488,7 +513,7 @@ export const TOOLS: ToolDef<any>[] = [
       folder,
       scene: sceneInput,
       stops: z.array(StopInputSchema),
-      legMode: LegModeSchema.optional().describe("Mode of every new leg; a stop's own legMode wins"),
+      legMode: InputLegModeSchema.optional().describe("Mode of every new leg; a stop's own legMode wins"),
       replace: z.boolean().optional().describe('Default true; false appends to the existing stops'),
     }),
     async run({ folder, scene: ref, stops, legMode, replace }) {
@@ -507,7 +532,7 @@ export const TOOLS: ToolDef<any>[] = [
       path: z.string().describe('Absolute path of a .gpx file, at most 20 MB'),
       track: z.union([z.number().int().min(1), z.string()]).optional().describe('Track or route, by 1-based index or name'),
       stops: z.enum(['waypoints', 'ends']).optional().describe("Default 'ends'"),
-      legMode: LegModeSchema.optional().describe("Mode of every leg; default 'line'"),
+      legMode: InputLegModeSchema.optional().describe("Mode of every leg; default 'line'"),
       symbol: SymbolKindSchema.optional().describe('Symbol of every leg'),
     }),
     async run({ folder, scene: ref, path: file, track, stops, legMode, symbol }) {
@@ -529,9 +554,81 @@ export const TOOLS: ToolDef<any>[] = [
   }),
 
   tool({
+    name: 'import_track',
+    description:
+      "Read a recorded GPS or AIS track from a local .gpx or .csv (lng,lat,time columns) into the scene's stops, replacing them. Legs follow the recorded points exactly; the track is kept in tracks/ in the project folder. stops: 'stays' (default when every point has a time) puts a stop wherever the track stayed within 1 km for minStayMinutes (default 120); 'ends' uses the first and last points. Stops come back with arrival and departure times; rename them with update_project's update_stop op. symbol sets every leg. path and folder must be absolute.",
+    input: z.strictObject({
+      folder,
+      scene: sceneInput,
+      path: z.string().describe('Absolute path of a .gpx or .csv file, at most 20 MB'),
+      track: z.union([z.number().int().min(1), z.string()]).optional().describe('GPX only: track or route, by 1-based index or name'),
+      stops: z.enum(['stays', 'ends']).optional().describe("Default 'stays' when every point has a time, otherwise 'ends'"),
+      minStayMinutes: z.number().int().min(1).default(120).describe('Shortest stay that makes a stop, in minutes'),
+      symbol: SymbolKindSchema.optional().describe('Symbol of every leg'),
+    }),
+    async run({ folder, scene: ref, path: file, track, stops, minStayMinutes, symbol }) {
+      const text = await readTrackFile(file)
+      let recorded: RecordedTrack
+      let waypoints: { name: string; at: LngLat }[] | undefined
+      let skippedRows = 0
+      let imported: TrackImport
+      let mode: 'stays' | 'ends'
+      try {
+        if (path.extname(file).toLowerCase() === '.gpx') {
+          const gpx = parseGpx(text)
+          const line = chooseLine(gpx, track)
+          if (!line) throw new GpxError('This GPX file has no track or route.', 'Choose a file with a track, or use import_gpx for waypoints.')
+          recorded = recordedFromGpx(line)
+          waypoints = gpx.waypoints
+        } else {
+          if (track !== undefined) {
+            throw new ToolError('track picks a track in a GPX file only, and this is a CSV file.', 'Leave out track for a CSV file.')
+          }
+          const { skippedRows: skipped, ...csv } = parseTrackCsv(text)
+          recorded = csv
+          skippedRows = skipped
+        }
+        mode = stops ?? (recorded.times ? 'stays' : 'ends')
+        imported = trackToStops(recorded, { stops: mode, minStayMinutes, waypoints })
+      } catch (e) {
+        if (e instanceof GpxError || e instanceof TrackError) throw new ToolError(e.message, e.fix)
+        throw e
+      }
+      const how =
+        mode === 'stays'
+          ? `${imported.stays} stays of ${minStayMinutes} min or more`
+          : stops === 'ends'
+            ? 'first and last points'
+            : `no stays looked for: ${recorded.badTimes ? `${recorded.badTimes} of the track's times can't be read` : 'not every point has a time'}`
+      // The folder and scene are checked before anything is written, so a bad call leaves no tracks/ folder behind.
+      assertAbsolute(folder)
+      resolveScene(await loadProject(folder), ref)
+      // The track file goes down first, so the project never names a file that isn't there.
+      const id = await writeTrack(folder, { name: recorded.name, points: imported.points })
+      const project = await mutateProject(folder, (p) => importTrack(p, { scene: ref, stops: imported.stops.map(({ name, at }) => ({ name, at })), track: id, symbol }))
+      const result = await withChange(folder, project, resolveScene(project, ref).scene.id, { note: trackLine(imported, how) })
+      return {
+        summary: result.summary,
+        data: {
+          ...result.data,
+          import: {
+            track: id,
+            file: `tracks/${id}.json`,
+            recorded: imported.recorded,
+            points: imported.points.length,
+            skippedRows,
+            ...(recorded.badTimes ? { badTimes: recorded.badTimes } : {}),
+            stops: imported.stops,
+          },
+        },
+      }
+    },
+  }),
+
+  tool({
     name: 'update_project',
     description:
-      "Change a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. scene (an id, or a 1-based position; default the first) picks the scene that sceneSet and the stop, leg and via ops change. 'sceneSet' patches its name, timing, look and camera; null removes a key. look.theme: aloftandaway, aloftandaway-warm, paper, light, dark, nautical, atlas, outdoor, satellite, monochrome, blank. look.terrain: true adds hill shading and 3D elevation. look.symbolStyle: badge, badge-line, icon. follow.pitch is 0 to 60. 'ops' edits stops, legs and via points, and scenes: add_scene { index?, name?, copyLookFrom? } appends unless index is given; duplicate_scene, remove_scene and move_scene { id, index } take a scene id. Op indexes are 0-based; copyLookFrom is an id or 1-based position. A leg symbol alone sets its usual mode. Coordinates are [lng, lat]. The folder must be absolute.",
+      "Edit a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. scene (id or 1-based position; default first) picks the scene. 'sceneSet' patches its name, timing, look and camera; null removes a key. timing.length fixes the length in seconds; travel follows. look.theme: aloftandaway, aloftandaway-warm, paper, light, dark, nautical, atlas, outdoor, satellite, monochrome, blank. look.terrain: true adds hill shading and 3D relief. look.symbolStyle: badge, badge-line, icon. follow.pitch is 0-60. 'ops' edits stops, legs, via points and scenes: add_scene { index?, name?, copyLookFrom? } appends unless index is set; duplicate_scene, remove_scene, move_scene { id, index } take a scene id. Op indexes are 0-based; copyLookFrom is an id or 1-based position. A leg symbol alone sets its mode, unless it's a track leg. Coordinates are [lng, lat]. The folder must be absolute.",
     input: z.strictObject({ folder, ...ProjectPatchSchema.shape }),
     async run({ folder, set, scene: ref, sceneSet, ops }) {
       // The scene is found before the patch runs, so a scene op that moves it can't change which scene the result names.

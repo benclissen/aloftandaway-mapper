@@ -168,6 +168,45 @@ describe('resolveShots', () => {
     }
   })
 
+  test('the default glide pulls out further when the head would outrun it', () => {
+    // A loop whose first leg is nearly the whole route and heads south first, as a cruise from Miami does through the
+    // Florida Straits. The glide opens close in on the first stop, so pulling out on its own timetable lost the head.
+    for (const via of [[[0.5, -7]], [[1, -5], [4, -8]], [[3, -6]]] as LngLat[][]) {
+      const p = stopsAt([[0, 0], [17, -8], [15, -7.5], [2, 0], [0, 0]])
+      const scene = sceneOf(p)
+      scene.legs[0] = { ...scene.legs[0]!, via: via.map((at) => ({ at, sharp: true })) }
+      const route = buildRoute(scene)
+      const tl = buildTimeline(scene, p.output.fps, route)
+      const { start, end } = resolveShots(scene, '16:9', route)
+      expect(start.zoom).toBeCloseTo(end.zoom + 2)
+      const { width, height } = layoutSize('16:9')
+      const at = (f: number) => cameraAt(scene, '16:9', route, tl, f)
+      const zooms: number[] = []
+      for (let f = 0; f < tl.totalFrames; f++) {
+        const shot = at(f)
+        zooms.push(shot.zoom)
+        // At least 8% of the frame in from each side.
+        const [x, y] = projectToLayout(shot, '16:9', tl.stateAt(f).head.at)
+        expect(x).toBeGreaterThanOrEqual(0.08 * width - 1e-6)
+        expect(x).toBeLessThanOrEqual(0.92 * width + 1e-6)
+        expect(y).toBeGreaterThanOrEqual(0.08 * height - 1e-6)
+        expect(y).toBeLessThanOrEqual(0.92 * height + 1e-6)
+      }
+      // Still opens on the start shot and holds the whole route once the first leg is done. The pull-out eases in and
+      // out, so it may start a hair early and settle into the hold within 2 seconds.
+      expectShotClose({ ...at(0), zoom: start.zoom }, start)
+      expect(Math.abs(at(0).zoom - start.zoom)).toBeLessThan(1e-3)
+      const legEnd = tl.legFrames[0]!.end
+      for (let f = legEnd; f < tl.totalFrames; f++) {
+        expectShotClose({ ...at(f), zoom: end.zoom }, end)
+        expect(at(f).zoom).toBeLessThanOrEqual(end.zoom + 1e-9)
+        if (f >= legEnd + 50) expect(Math.abs(at(f).zoom - end.zoom)).toBeLessThan(1e-9)
+      }
+      // No jolt: the zoom's rate of change moves by little from one frame to the next.
+      for (let f = 1; f < zooms.length - 1; f++) expect(Math.abs(zooms[f + 1]! - 2 * zooms[f]! + zooms[f - 1]!)).toBeLessThan(0.01)
+    }
+  })
+
   test('a short first hop starts no closer than the theme allows', () => {
     const p = stopsAt([[25, 37], [25.01, 37], [27, 37]], { look: { ...sceneOf(greekIslands()).look, theme: 'paper' } })
     const route = buildRoute(sceneOf(p))

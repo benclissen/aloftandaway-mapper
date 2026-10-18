@@ -42,9 +42,10 @@ task one tier up.
   themes, icons, sign artwork, UI text or project file format. Don't download
   its bundle or demo files into this repo. Describe behaviour in your own
   words and build it from scratch.
-- **No data-source connectors.** Mapper takes stops through `set_stops` or a
-  local GPX file through `import_gpx`. Fetching trip data from any API is the
-  calling agent's job, outside this repo.
+- **No data-source connectors.** Mapper takes stops through `set_stops`, a
+  local GPX file through `import_gpx`, or a local recorded track through
+  `import_track`. Fetching trip data from any API is the calling agent's job,
+  outside this repo.
 - **Map licences.** Every render must carry the map credit (OpenStreetMap
   contributors, OpenMapTiles, OpenFreeMap), burned in or in the description.
   For satellite, use only EOxCloudless **2016** (CC BY 4.0). Later years are
@@ -75,6 +76,7 @@ npm test                          # unit tests
 npm run test:e2e                  # build, then end-to-end tests
 npm run typecheck                 # type-check the server, bench and studio code
 npm run bench:render              # render speed benchmark
+npm run bench:core                # per-frame cost of a recorded track in core
 npm run bench:pipeline            # build, then pipeline benchmark
 node dist/cli/main.js doctor      # check Chrome, ffmpeg, WebGL and disk space
 npm link                          # put `mapper` on PATH

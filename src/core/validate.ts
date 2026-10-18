@@ -3,8 +3,9 @@ import { haversineKm } from './geo.js'
 import { buildRoute } from './route.js'
 import { THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
 import { NO_LAND_DATA, STOP_FAR_KM, STRAIGHT_LINE, UNVERIFIED_CAUSE, type SeaPaths } from './sea.js'
+import { SAME_PLACE_KM, TRACK_NEAR_KM } from './track.js'
 import { signBox, signLift, signText } from './signs.js'
-import { buildTimeline, formatTimecode, legSeconds, SIGN_FADE_SECONDS } from './timeline.js'
+import { buildTimeline, formatTimecode, legSeconds, sceneTravel, SIGN_FADE_SECONDS } from './timeline.js'
 
 export interface Issue {
   code: string
@@ -15,13 +16,12 @@ export interface Issue {
 
 /** A leg that lasts less than this many seconds is a warning. */
 const MIN_LEG_SECONDS = 1
-/** Consecutive stops closer than this many km are reported as the same place. */
-const SAME_PLACE_KM = 0.5
 
 /**
  * Checks a project for what blocks a render (errors) and what an agent should fix or explain (warnings). Every scene
  * is checked. Every issue carries a `path` into the project, starting `['scenes', i]`, and a `fix` sentence for the
- * agent. Sea legs are measured along their paths in `opts.seaPaths`, and as lines where they have none.
+ * agent. Sea legs are measured along their paths in `opts.seaPaths`, and as lines where they have none. Track legs
+ * follow their tracks in `opts.seaPaths` too; the sea and track checks run only when it's passed.
  */
 export function validateProject(
   project: Project,
@@ -137,7 +137,8 @@ function validateScene(
 
     for (let i = 1; i < stops.length; i++) {
       const km = haversineKm(stops[i - 1]!.at, stops[i]!.at)
-      if (km < SAME_PLACE_KM) {
+      // Two stops at one place with a recorded track between them are a loop, and merging them would lose its leg.
+      if (km < SAME_PLACE_KM && route.legs[i - 1]?.drawnAs !== 'track') {
         warnings.push({
           code: 'same-place',
           message: `${nameOf(i - 1)} and ${nameOf(i)} are ${km.toFixed(2)} km apart`,
@@ -149,7 +150,7 @@ function validateScene(
 
     const seconds = legSeconds(
       route.legs.map((leg) => leg.length),
-      timing.travel,
+      sceneTravel(scene),
     )
     seconds.forEach((s, i) => {
       if (s < MIN_LEG_SECONDS) {
@@ -157,7 +158,7 @@ function validateScene(
           code: 'short-leg',
           message: `${legName(i)} lasts ${+s.toFixed(2)} s`,
           path: ['legs', i],
-          fix: `Raise timing.travel with update_project sceneSet, or merge ${nameOf(i)} and ${nameOf(i + 1)} into one stop.`,
+          fix: `Raise ${timing.length === undefined ? 'timing.travel' : 'timing.length'} with update_project sceneSet, or merge ${nameOf(i)} and ${nameOf(i + 1)} into one stop.`,
         })
       }
     })
@@ -262,6 +263,34 @@ function validateScene(
           message: `${nameOf(stop)} is ${km.toFixed(1)} km from the water its sea route ${end} in, so the line crosses land to reach it.`,
           path: ['stops', stop],
           fix: 'Move the stop to the quay with update_stop, or add a via point at the harbour mouth with insert_via.',
+        })
+      }
+      route.legs.forEach((leg, i) => {
+        if (leg.track?.status !== 'missing') return
+        const { id } = leg.track
+        errors.push({
+          code: 'track-missing',
+          message: `${legName(i)} uses the recorded track ${id}, but tracks/${id}.json is missing or unreadable.`,
+          path: ['legs', i],
+          fix: 'Put the file back, or run import_track again.',
+        })
+      })
+      // A stop can end one track leg and start the next: it is warned once, for the worse gap. Two legs on one track
+      // share the cut there, so their gaps are equal, and the leg arriving at the stop is named.
+      const offTrack = new Map<number, { km: number; leg: number }>()
+      route.legs.forEach((leg, i) => {
+        const gaps = leg.track?.stopGapKm
+        if (!gaps) return
+        ;([[i, gaps[0]], [i + 1, gaps[1]]] as const).forEach(([stop, km]) => {
+          if (km > TRACK_NEAR_KM && km > (offTrack.get(stop)?.km ?? 0)) offTrack.set(stop, { km, leg: i })
+        })
+      })
+      for (const [stop, { km, leg }] of [...offTrack].sort((a, b) => a[0] - b[0])) {
+        warnings.push({
+          code: 'track-stop-far',
+          message: `${nameOf(stop)} is ${km.toFixed(1)} km from the recorded track of ${legName(leg)}, so the line jumps to it.`,
+          path: ['stops', stop],
+          fix: 'Move the stop onto the track, or check the stops are in travel order.',
         })
       }
     }

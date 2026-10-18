@@ -187,7 +187,7 @@ test('an agent edit to another scene clears history and keeps the tab', async ()
   }
 }, 60_000)
 
-test('a version 1 file opens in the studio and is saved as version 2', async () => {
+test('a version 1 file opens in the studio and is saved as version 3', async () => {
   const folder = path.join(tmp, 'legacy')
   await mkdir(folder, { recursive: true })
   const file = path.join(folder, 'mapper.json')
@@ -228,7 +228,7 @@ test('a version 1 file opens in the studio and is saved as version 2', async () 
     expect(JSON.parse(await readFile(file, 'utf8')).schemaVersion).toBe(1)
 
     await page.getByTestId('leg-symbol-1').selectOption('ferry')
-    await expect.poll(async () => JSON.parse(await readFile(file, 'utf8')).schemaVersion, { timeout: 3000 }).toBe(2)
+    await expect.poll(async () => JSON.parse(await readFile(file, 'utf8')).schemaVersion, { timeout: 3000 }).toBe(3)
     const saved = JSON.parse(await readFile(file, 'utf8'))
     expect(saved.scenes[0].legs[0].via).toEqual([{ at: [24.4, 37.9] }])
     expect(saved.scenes[0].legs[0].symbol).toBe('cruise-ship')

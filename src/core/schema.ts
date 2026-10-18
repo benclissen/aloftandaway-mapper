@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { ProjectV1Schema, upgradeV1 } from './migrate.js'
+import { ProjectV1Schema, upgradeV1, upgradeV2 } from './migrate.js'
 
 // Constants
 
@@ -78,7 +78,13 @@ export type Output = z.infer<typeof OutputSchema>
 
 const seconds = z.number().min(0)
 
-export const TimingSchema = z.strictObject({ holdStart: seconds, travel: seconds, holdEnd: seconds })
+export const TimingSchema = z.strictObject({
+  holdStart: seconds,
+  travel: seconds,
+  holdEnd: seconds,
+  /** A fixed scene length in seconds. While set, travel is whatever is left after the holds and pauses. */
+  length: z.number().positive().optional(),
+})
 export type Timing = z.infer<typeof TimingSchema>
 
 const SignVisibilitySchema = z.enum(['always', 'on-arrival', 'none'])
@@ -98,8 +104,15 @@ export const StopSchema = z.strictObject({
 })
 export type Stop = z.infer<typeof StopSchema>
 
-export const LegModeSchema = z.enum(['sea', 'air', 'land', 'line'])
+export const LegModeSchema = z.enum(['sea', 'air', 'land', 'line', 'track'])
 export type LegMode = z.infer<typeof LegModeSchema>
+
+/** The modes an agent can ask for. `track` comes only from a recorded track, never from `set_stops` or `import_gpx`. */
+export const InputLegModeSchema = LegModeSchema.exclude(['track'])
+export type InputLegMode = z.infer<typeof InputLegModeSchema>
+
+/** A recorded track's id: the first 12 hex characters of the SHA-256 of its file. */
+export const TRACK_ID = /^[0-9a-f]{12}$/
 
 /** Every transport symbol, in the order the studio lists them. */
 export const SYMBOLS = [
@@ -154,6 +167,8 @@ export const LegSchema = z.strictObject({
   via: z.array(ViaPointSchema),
   /** Overrides `look.symbol` for this leg. */
   symbol: SymbolKindSchema.optional(),
+  /** The recorded track this leg follows (`tracks/<id>.json`). Required when `mode` is `track`; may stay on other modes. */
+  track: z.string().regex(TRACK_ID, 'a track id is 12 lowercase hex characters').optional(),
 })
 export type Leg = z.infer<typeof LegSchema>
 
@@ -217,7 +232,7 @@ export type Scene = z.infer<typeof SceneSchema>
 
 export const ProjectSchema = z
   .strictObject({
-    schemaVersion: z.literal(2),
+    schemaVersion: z.literal(3),
     id: z.uuid(),
     name: z.string(),
     createdAt: z.iso.datetime({ offset: true }),
@@ -243,6 +258,33 @@ export const ProjectSchema = z
           message: `expected ${expectedLegs} legs for ${scene.stops.length} stops, got ${scene.legs.length}`,
         })
       }
+      if (scene.timing.length !== undefined) {
+        const fixed = scene.timing.holdStart + scene.timing.holdEnd + scene.stops.reduce((sum, s) => sum + s.pause, 0)
+        if (fixed > scene.timing.length + 1e-9) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['scenes', i, 'timing', 'length'],
+            message: `the holds and pauses add up to ${+fixed.toFixed(3)} s, more than the length of ${+scene.timing.length.toFixed(3)} s. Shorten them, or clear timing.length with null`,
+          })
+        }
+      }
+      scene.legs.forEach((leg, j) => {
+        if (leg.mode !== 'track') return
+        if (leg.track === undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['scenes', i, 'legs', j, 'track'],
+            message: 'a recorded track leg needs a track; import one with import_track',
+          })
+        }
+        if (leg.via.length > 0) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['scenes', i, 'legs', j, 'via'],
+            message: "a recorded track leg can't have via points; remove them or change the mode",
+          })
+        }
+      })
       const stopIds = new Set<string>()
       scene.stops.forEach((stop, j) => {
         if (stopIds.has(stop.id)) {
@@ -266,7 +308,7 @@ export const StopInputSchema = z.strictObject({
   ref: z.string().optional(),
   /** Sets the symbol of the leg leaving this stop; unless `legMode` is given, also its mode. */
   symbol: SymbolKindSchema.optional(),
-  legMode: LegModeSchema.optional(),
+  legMode: InputLegModeSchema.optional(),
 })
 export type StopInput = z.infer<typeof StopInputSchema>
 
@@ -298,7 +340,7 @@ export function zodIssues(error: z.ZodError): ProjectIssue[] {
 }
 
 /** The schema version this build of Mapper writes. */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 function parseWith<T>(schema: z.ZodType<T>, json: unknown): T {
   const result = schema.safeParse(json)
@@ -308,12 +350,12 @@ function parseWith<T>(schema: z.ZodType<T>, json: unknown): T {
 
 /**
  * Parses a project file of any version this build reads. A version 1 file is checked against the version 1 schema,
- * so its issues carry version 1 paths, and is then upgraded in memory to version 2. It is written as version 2 only
- * on the next save.
+ * so its issues carry version 1 paths, and is upgraded in memory to version 2 and then 3. A version 2 file only has
+ * its version changed. Both are written as version 3 on the next save.
  */
 export function parseProject(json: unknown): Project {
   const version = typeof json === 'object' && json !== null ? (json as { schemaVersion?: unknown }).schemaVersion : undefined
-  if (version === 1) return parseWith(ProjectSchema, upgradeV1(parseWith(ProjectV1Schema, json)))
+  if (version === 1) return parseWith(ProjectSchema, upgradeV2(upgradeV1(parseWith(ProjectV1Schema, json))))
   if (typeof version === 'number' && version > SCHEMA_VERSION) {
     throw new ProjectError([
       {
@@ -322,6 +364,7 @@ export function parseProject(json: unknown): Project {
       },
     ])
   }
+  if (version === 2) return parseWith(ProjectSchema, upgradeV2(json))
   return parseWith(ProjectSchema, json)
 }
 
@@ -336,7 +379,7 @@ export function defaultProject(args: {
   sceneId?: string
 }): Project {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: args.id,
     name: args.name,
     createdAt: args.now,

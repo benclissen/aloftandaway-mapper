@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import { applyPatch, invertPatch, ProjectPatchSchema, type Project, type ProjectPatch } from '../../src/core/index.js'
-import { greekIslands, projectWithScenes, sceneOf } from '../fixtures/projects.js'
+import { applyPatch, importTrack, invertPatch, ProjectPatchSchema, type Project, type ProjectPatch } from '../../src/core/index.js'
+import { greekIslands, projectWithScenes, sceneOf, stopsAt } from '../fixtures/projects.js'
 
 function roundTrip(p: Project, patch: ProjectPatch): void {
   const inverse = invertPatch(p, patch)
@@ -30,6 +30,18 @@ describe('invertPatch', () => {
       op: 'update_leg',
       changes: { symbol: null, mode: sceneOf(p).legs[0]!.mode },
     })
+  })
+
+  test('undo of a symbol change on a track leg', () => {
+    const p = importTrack(greekIslands(), {
+      stops: [{ name: 'A', at: [23.6, 37.9] }, { name: 'B', at: [25.3, 37.4] }],
+      track: '0123456789ab',
+      symbol: 'cruise-ship',
+    })
+    const patch: ProjectPatch = { ops: [{ op: 'update_leg', index: 0, changes: { symbol: 'ferry' } }] }
+    expect(sceneOf(applyPatch(p, patch)).legs[0]!.mode).toBe('track')
+    roundTrip(p, patch)
+    expect(invertPatch(p, patch).ops?.[0]).toEqual({ op: 'update_leg', index: 0, changes: { symbol: 'cruise-ship' } })
   })
 
   test('update_leg symbol null', () => {
@@ -194,6 +206,50 @@ describe('invertPatch', () => {
       'invertPatch does not support insert_stop',
     )
     expect(() => invertPatch(p, { set: { name: 'x' } })).toThrow('invertPatch does not support set')
+  })
+})
+
+describe('invertPatch with a fixed length', () => {
+  // No pauses, so with a length set travel is the length less the two holds.
+  const free = (): Project => stopsAt([[0, 0], [10, 0], [20, 0]], { timing: { holdStart: 1, travel: 10, holdEnd: 2 } })
+  const timing = (p: Project) => sceneOf(p).timing
+
+  test('undo of setting a length gives back the travel it replaced', () => {
+    const p = free()
+    const patch: ProjectPatch = { sceneSet: { timing: { length: 8 } } }
+    expect(timing(applyPatch(p, patch))).toEqual({ holdStart: 1, travel: 5, holdEnd: 2, length: 8 })
+    roundTrip(p, patch)
+    expect(timing(applyPatch(applyPatch(p, patch), invertPatch(p, patch)))).toEqual({ holdStart: 1, travel: 10, holdEnd: 2 })
+  })
+
+  test('undo of changing or clearing a length', () => {
+    const p = applyPatch(free(), { sceneSet: { timing: { length: 8 } } })
+    roundTrip(p, { sceneSet: { timing: { length: 12 } } })
+    roundTrip(p, { sceneSet: { timing: { length: null } } })
+    roundTrip(p, { sceneSet: { timing: { length: null, travel: 20 } } })
+  })
+
+  test('undo of a length set alongside a pause or a hold', () => {
+    const p = free()
+    roundTrip(p, { sceneSet: { timing: { length: 9, holdEnd: 1 } }, ops: [{ op: 'update_stop', id: id(p, 1), changes: { pause: 2 } }] })
+  })
+
+  test('undo of a longer length and a pause that only fits it', () => {
+    // The pause fits only the new length, so the ops are inverted against the scene with the length already set, as
+    // applyPatch runs them.
+    const p = applyPatch(free(), { sceneSet: { timing: { length: 8 } } })
+    expect(timing(p)).toEqual({ holdStart: 1, travel: 5, holdEnd: 2, length: 8 })
+    const patch: ProjectPatch = { sceneSet: { timing: { length: 12 } }, ops: [{ op: 'update_stop', id: id(p, 1), changes: { pause: 6 } }] }
+    expect(timing(applyPatch(p, patch))).toEqual({ holdStart: 1, travel: 3, holdEnd: 2, length: 12 })
+    roundTrip(p, patch)
+  })
+
+  test('undo of a pause change on a fixed-length scene', () => {
+    const p = applyPatch(free(), { sceneSet: { timing: { length: 8 } } })
+    const patch: ProjectPatch = { ops: [{ op: 'update_stop', id: id(p, 1), changes: { pause: 2 } }] }
+    expect(timing(applyPatch(p, patch)).travel).toBe(3)
+    roundTrip(p, patch)
+    roundTrip(p, { sceneSet: { timing: { holdStart: 2 } } })
   })
 })
 

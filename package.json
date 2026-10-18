@@ -16,6 +16,7 @@
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.bench.json && tsc -p tsconfig.studio.json && tsc -p tsconfig.test.json",
     "build:land": "tsx scripts/build-land.ts",
     "bench:render": "tsx bench/render-speed.ts",
+    "bench:core": "tsx bench/frame-core.ts",
     "bench:sea": "tsx bench/sea-route.ts",
     "bench:pipeline": "npm run build && tsx bench/pipeline.ts",
     "bench:capture": "npm run build && tsx bench/capture-stress.ts",

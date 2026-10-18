@@ -7,9 +7,11 @@ import {
   SceneOpSchema,
   isSceneOp,
   applyPatch,
+  importTrack,
   mergePatch,
   newStopId,
   setStops,
+  buildTimeline,
   type LngLat,
   type Project,
   type StopInput,
@@ -580,5 +582,155 @@ describe('scene ops', () => {
     for (const name of ['insert_stop', 'update_stop', 'remove_stop', 'update_leg', 'insert_via', 'remove_via', 'scene_note']) {
       expect(isSceneOp({ op: name })).toBe(false)
     }
+  })
+})
+
+describe('a fixed length', () => {
+  // Holds 1 and 2, pauses 1.5 and 1.5, a length of 8 s: travel is 2 s.
+  const fixed = (length: number | undefined = 8): Project => {
+    const p = stopsAt([[0, 0], [10, 0], [20, 0]], { timing: { holdStart: 1, travel: 99, holdEnd: 2, ...(length ? { length } : {}) } })
+    sceneOf(p).stops[0]!.pause = 1.5
+    sceneOf(p).stops[1]!.pause = 1.5
+    return p
+  }
+  const frames = (p: Project) => buildTimeline(sceneOf(p), p.output.fps, buildRoute(sceneOf(p))).totalFrames
+
+  test('length holds when a pause changes', () => {
+    const start = applyPatch(fixed(), { sceneSet: { timing: { length: 8 } } })
+    expect(sceneOf(start).timing.travel).toBe(2)
+    const id = sceneOf(start).stops[1]!.id
+    const p = applyPatch(start, { ops: [{ op: 'update_stop', id, changes: { pause: 3 } }] })
+    expect(sceneOf(p).timing.travel).toBe(0.5)
+    expect(sceneOf(p).timing.length).toBe(8)
+    expect(frames(p)).toBe(200)
+  })
+
+  test('a pause that overruns the length is refused', () => {
+    const p = stopsAt([[0, 0], [10, 0]], { timing: { holdStart: 1, travel: 1, holdEnd: 2, length: 4 } })
+    const id = sceneOf(p).stops[0]!.id
+    const e = failure(() => applyPatch(p, { ops: [{ op: 'update_stop', id, changes: { pause: 2 } }] }))
+    expect(e.issues).toEqual([
+      {
+        path: ['scenes', 0, 'timing', 'length'],
+        message: 'the holds and pauses add up to 5 s, more than the length of 4 s. Shorten them, or clear timing.length with null',
+      },
+    ])
+  })
+
+  test('null clears the length, and travel keeps its last value', () => {
+    const start = applyPatch(fixed(), { sceneSet: { timing: { length: 8 } } })
+    const p = applyPatch(start, { sceneSet: { timing: { length: null } } })
+    expect(sceneOf(p).timing).toEqual({ holdStart: 1, travel: 2, holdEnd: 2 })
+    expect(sceneOf(p).timing).not.toHaveProperty('length')
+  })
+
+  test('setStops refits the length', () => {
+    const start = applyPatch(fixed(), { sceneSet: { timing: { length: 8 } } })
+    const p = setStops(start, { stops: [{ name: 'A', at: [0, 0], pause: 2 }, { name: 'B', at: [5, 0] }, { name: 'C', at: [9, 0], pause: 1 }] })
+    expect(sceneOf(p).timing.travel).toBe(2)
+    expect(frames(p)).toBe(200)
+  })
+
+  test('travel is rounded to 1e-6', () => {
+    const p = applyPatch(fixed(), { sceneSet: { timing: { length: 8.1234567 } } })
+    expect(sceneOf(p).timing.travel).toBe(2.123457)
+  })
+})
+
+describe('track legs', () => {
+  const TRACK = '0123456789ab'
+  const four = [s('A', [0, 0]), s('B', [1, 0]), s('C', [2, 0]), s('D', [3, 0])]
+  const imported = () => importTrack(emptyProject(), { stops: four, track: TRACK, symbol: 'cruise-ship' })
+  const onTrack = { mode: 'track', track: TRACK, via: [], symbol: 'cruise-ship' }
+
+  test('importTrack puts every leg on the track', () => {
+    const p = imported()
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['A', 'B', 'C', 'D'])
+    expect(sceneOf(p).legs).toEqual([onTrack, onTrack, onTrack])
+    const bare = importTrack(emptyProject(), { stops: four.slice(0, 2), track: TRACK })
+    expect(sceneOf(bare).legs).toEqual([{ mode: 'track', track: TRACK, via: [] }])
+  })
+
+  test('importTrack replaces the chosen scene and refits its length', () => {
+    const base = applyPatch(projectWithScenes(2), { scene: 2, sceneSet: { timing: { length: 20 } } })
+    const p = importTrack(base, { scene: 2, stops: [{ ...s('A', [0, 0]), pause: 3 }, s('B', [1, 0])], track: TRACK })
+    expect(p.scenes[0]).toEqual(base.scenes[0])
+    expect(p.scenes[1]!.stops.map((x) => x.name)).toEqual(['A', 'B'])
+    expect(p.scenes[1]!.timing.travel).toBe(20 - p.scenes[1]!.timing.holdStart - p.scenes[1]!.timing.holdEnd - 3)
+  })
+
+  test('importTrack refuses a bad track id', () => {
+    const e = failure(() => importTrack(emptyProject(), { stops: four, track: 'nope' }))
+    expect(e.issues[0]?.path).toEqual(['track'])
+  })
+
+  test('remove then insert keeps every leg on the track', () => {
+    let p = imported()
+    p = applyPatch(p, { ops: [{ op: 'remove_stop', id: sceneOf(p).stops[1]!.id }] })
+    expect(sceneOf(p).legs).toEqual([onTrack, onTrack])
+    p = applyPatch(p, { ops: [{ op: 'insert_stop', index: 1, stop: s('Missed', [1.5, 0]) }] })
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['A', 'Missed', 'C', 'D'])
+    expect(sceneOf(p).legs).toEqual([onTrack, onTrack, onTrack])
+  })
+
+  test('a new leg joining two track legs only shares a symbol they both have', () => {
+    let p = imported()
+    p = applyPatch(p, { ops: [{ op: 'update_leg', index: 1, changes: { symbol: 'ferry' } }] })
+    p = applyPatch(p, { ops: [{ op: 'remove_stop', id: sceneOf(p).stops[1]!.id }] })
+    expect(sceneOf(p).legs[0]).toEqual({ mode: 'track', track: TRACK, via: [] })
+  })
+
+  test('a new leg joining two different tracks is a line', () => {
+    const p = imported()
+    const scene = sceneOf(p)
+    scene.legs[1] = { mode: 'track', track: 'ba9876543210', via: [] }
+    const out = applyPatch(p, { ops: [{ op: 'remove_stop', id: scene.stops[1]!.id }] })
+    expect(sceneOf(out).legs[0]).toEqual({ mode: 'line', via: [] })
+  })
+
+  test('a new leg next to a track leg of another kind is a line', () => {
+    const p = imported()
+    const scene = sceneOf(p)
+    scene.legs[1] = { mode: 'sea', via: [] }
+    const out = applyPatch(p, { ops: [{ op: 'remove_stop', id: scene.stops[1]!.id }] })
+    expect(sceneOf(out).legs[0]).toEqual({ mode: 'line', via: [] })
+  })
+
+  test("an inserted stop's legMode wins over the track", () => {
+    const three = importTrack(emptyProject(), { stops: four.slice(0, 3), track: TRACK })
+    const p = applyPatch(three, { ops: [{ op: 'insert_stop', index: 1, stop: { ...s('X', [0.5, 0]), legMode: 'air', symbol: 'plane' } }] })
+    expect(sceneOf(p).stops.map((x) => x.name)).toEqual(['A', 'X', 'B', 'C'])
+    expect(sceneOf(p).legs[0]).toEqual({ mode: 'track', track: TRACK, via: [] })
+    expect(sceneOf(p).legs[1]).toEqual({ mode: 'air', via: [], symbol: 'plane' })
+    expect(sceneOf(p).legs[2]).toEqual(sceneOf(three).legs[1])
+  })
+
+  test('move_stop on a track project never makes a track leg without a track', () => {
+    const p = imported()
+    const ids = sceneOf(p).stops.map((x) => x.id)
+    for (const id of ids) {
+      for (let index = 0; index < ids.length; index++) {
+        const moved = applyPatch(p, { ops: [{ op: 'move_stop', id, index }] })
+        for (const leg of sceneOf(moved).legs) {
+          if (leg.mode === 'track') expect(leg).toMatchObject({ track: TRACK, via: [] })
+        }
+      }
+    }
+    // Moving the first stop to the end makes D → A, which no old leg joins, so it is a line.
+    const last = applyPatch(p, { ops: [{ op: 'move_stop', id: ids[0]!, index: 3 }] })
+    expect(sceneOf(last).legs.at(-1)).toEqual({ mode: 'line', via: [] })
+  })
+
+  test('set_stops replace:false after a track leaves the new legs off the track', () => {
+    const p = setStops(imported(), { stops: [s('E', [4, 0]), s('F', [5, 0])], replace: false })
+    expect(sceneOf(p).legs.slice(0, 3)).toEqual([onTrack, onTrack, onTrack])
+    expect(sceneOf(p).legs.slice(3)).toEqual([{ mode: 'line', via: [] }, { mode: 'line', via: [] }])
+  })
+
+  test('a symbol alone keeps a track leg on its track', () => {
+    const p = applyPatch(imported(), { ops: [{ op: 'update_leg', index: 0, changes: { symbol: 'ferry' } }] })
+    expect(sceneOf(p).legs[0]).toEqual({ mode: 'track', track: TRACK, via: [], symbol: 'ferry' })
+    const off = applyPatch(imported(), { ops: [{ op: 'update_leg', index: 0, changes: { symbol: 'plane', mode: 'air' } }] })
+    expect(sceneOf(off).legs[0]).toEqual({ mode: 'air', track: TRACK, via: [], symbol: 'plane' })
   })
 })

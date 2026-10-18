@@ -216,3 +216,77 @@ Rounds cost little on top of that, since each round fetches only the tiles the n
 
 **Memory.** A decoded tile is about 49 KB (32 KB of pixel bits and 17 KB of block sums). `SeaWater` keeps at most
 1,500 of them, so its tile memory tops out at about 73 MB.
+
+## Recorded track (Stage 10)
+
+`npm run bench:render -- --track` times the page's frame loop with a route of 256 points on a straight line (the plain
+line the Task 1 benchmark uses) against one of 10,000 points, each moved up to 100 m off the line: the most a
+recorded track can carry (`MAX_TRACK_POINTS`), at the sweep's zoom of 6 to 8 and at a fixed zoom 11. Both draw the
+way the studio does, by slicing the path to the head and calling `setData` on every frame. Each pass is a warm 100 frame settle (jump the camera, set the route, wait for
+idle) over the same Piraeus to Rhodes sweep, taken after a warm-up pass and a first pass of that route. The routes
+alternate, so a slow moment on the machine hits both. Needs the network, for the map style.
+
+- Date: 2026-10-17
+- Machine: Apple M6
+- Frames per pass: 100
+
+| Size | Route | Run | Median | Mean | p95 | Max | Route slice + setData (mean) |
+|---|---|---|---|---|---|---|---|
+| 1920×1080 | plain line | 1 | 16.0 ms | 17.5 ms | 32.6 ms | 33.1 ms | 0.00 ms |
+| 1920×1080 | plain line | 2 | 15.9 ms | 17.5 ms | 33.4 ms | 34.4 ms | 0.01 ms |
+| 1920×1080 | track-10k | 1 | 16.2 ms | 17.7 ms | 32.6 ms | 33.4 ms | 0.01 ms |
+| 1920×1080 | track-10k | 2 | 16.1 ms | 17.7 ms | 32.7 ms | 35.0 ms | 0.01 ms |
+| 1920×1080 | plain line, zoom 11 | 1 | 16.2 ms | 28.4 ms | 49.6 ms | 115.9 ms | 0.02 ms |
+| 1920×1080 | plain line, zoom 11 | 2 | 16.2 ms | 28.3 ms | 49.6 ms | 131.9 ms | 0.01 ms |
+| 1920×1080 | track-10k, zoom 11 | 1 | 16.2 ms | 28.2 ms | 49.5 ms | 116.0 ms | 0.01 ms |
+| 1920×1080 | track-10k, zoom 11 | 2 | 16.3 ms | 28.2 ms | 49.7 ms | 115.8 ms | 0.01 ms |
+| 1920×1080 | stress-100k | 1 | 32.7 ms | 30.3 ms | 49.5 ms | 49.7 ms | 0.02 ms |
+| 1920×1080 | stress-100k | 2 | 32.5 ms | 31.2 ms | 49.8 ms | 64.1 ms | 0.03 ms |
+| 3840×2160 | plain line | 1 | 15.9 ms | 17.4 ms | 32.5 ms | 34.9 ms | 0.02 ms |
+| 3840×2160 | plain line | 2 | 16.1 ms | 17.7 ms | 32.6 ms | 33.0 ms | 0.01 ms |
+| 3840×2160 | track-10k | 1 | 16.1 ms | 17.7 ms | 32.5 ms | 32.9 ms | 0.02 ms |
+| 3840×2160 | track-10k | 2 | 16.1 ms | 17.7 ms | 32.4 ms | 34.3 ms | 0.01 ms |
+| 3840×2160 | plain line, zoom 11 | 1 | 16.7 ms | 28.4 ms | 50.1 ms | 132.1 ms | 0.01 ms |
+| 3840×2160 | plain line, zoom 11 | 2 | 16.2 ms | 28.3 ms | 49.6 ms | 131.2 ms | 0.01 ms |
+| 3840×2160 | track-10k, zoom 11 | 1 | 16.9 ms | 28.0 ms | 50.0 ms | 147.3 ms | 0.02 ms |
+| 3840×2160 | track-10k, zoom 11 | 2 | 16.2 ms | 28.0 ms | 49.5 ms | 116.0 ms | 0.01 ms |
+| 3840×2160 | stress-100k | 1 | 31.9 ms | 31.8 ms | 50.3 ms | 51.4 ms | 0.04 ms |
+| 3840×2160 | stress-100k | 2 | 32.6 ms | 32.0 ms | 51.3 ms | 66.0 ms | 0.02 ms |
+
+- 1920×1080, track-10k: 1.3% by median (16.1 ms against 16.0 ms) and 1.2% by mean (17.7 ms against 17.5 ms)
+- 1920×1080, track-10k, zoom 11: 0.3% by median (16.3 ms against 16.2 ms) and -0.4% by mean (28.2 ms against 28.3 ms)
+- 3840×2160, track-10k: 0.6% by median (16.1 ms against 16.0 ms) and 1.0% by mean (17.7 ms against 17.5 ms)
+- 3840×2160, track-10k, zoom 11: 0.6% by median (16.5 ms against 16.5 ms) and -1.3% by mean (28.0 ms against 28.4 ms)
+
+This bench only resolves whole display ticks. Frames settle on the display's 60 Hz tick, so at the sweep's zoom the
+medians sit near 16 ms and the means near 17.7 ms whatever the route, and a cost under a tick can't show. At zoom 11
+both routes' means are higher (about 28 ms), from loading tiles. The `stress-100k` rows, a route of 100,000 points,
+are there to prove the bench can see a cost: they land on the next tick. For the cost of Mapper's own per-frame work
+at a finer grain, see the next section.
+No pair is over the 10% limit.
+
+## Recorded track, core cost per frame (Stage 10)
+
+`npm run bench:core` times, in Node with no browser, what Mapper does for each frame of a 13 s scene at 25 fps (325
+frames): `timeline.stateAt`, `cameraAt`, `slicePath` and two `pointAt` calls (the head and the look-ahead point the
+overlay's angle uses). The scene is Piraeus to Rhodes on one leg: a plain line leg, a track leg of 256 points on a
+straight line, and a track leg of 10,000 points each moved up to 100 m off it. Setup is `buildRoute`, `buildTimeline`
+and the first `cameraAt`, which builds the follow camera's path for the whole scene, and is paid once. The map's own
+work, tiling and drawing the line, is not in these numbers.
+
+- Date: 2026-10-17
+- Node v26.11.1, 40 timed passes over all frames after one warm-up pass
+- Limit: 1600 µs a frame, a tenth of a 16 ms display tick
+
+| Leg | Camera | Frames | Setup, once | Per frame, median | Per frame, best |
+|---|---|---|---|---|---|
+| line leg | glide | 325 | 0.5 ms | 1.2 µs | 1.0 µs |
+| track leg, 256 points | glide | 325 | 0.2 ms | 3.3 µs | 3.0 µs |
+| track leg, 10,000 points | glide | 325 | 1.9 ms | 79.1 µs | 77.1 µs |
+| line leg | follow | 325 | 0.6 ms | 0.5 µs | 0.5 µs |
+| track leg, 256 points | follow | 325 | 0.4 ms | 2.0 µs | 2.0 µs |
+| track leg, 10,000 points | follow | 325 | 2.3 ms | 57.9 µs | 57.1 µs |
+
+- glide camera: the 10,000-point leg costs 79.1 µs a frame, 75.8 µs more than 256 points
+- follow camera: the 10,000-point leg costs 57.9 µs a frame, 55.9 µs more than 256 points
+

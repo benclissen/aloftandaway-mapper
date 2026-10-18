@@ -108,7 +108,7 @@ describe('tools', () => {
       'cancel_render',
     ])
     // update_project carries the patch format and the scene ops, so it gets more room.
-    for (const tool of TOOLS) expect(tool.description.length, tool.name).toBeLessThan(tool.name === 'update_project' ? 900 : 600)
+    for (const tool of TOOLS) expect(tool.description.length, tool.name).toBeLessThan(tool.name === 'update_project' ? 1250 : 650)
     expect(tools.find((t) => t.name === 'render')!.description).toContain('Look at a contact sheet before rendering.')
   })
 
@@ -1207,5 +1207,130 @@ describe('render summaries', () => {
       expect(second.import.track).toBe(first.import.track)
       expect(await readdir(path.join(folder, TRACKS_DIR))).toEqual([`${first.import.track}.json`])
     })
+  })
+})
+
+describe('camera keys and route context', () => {
+  interface ContextResult {
+    project: { scenes: { id: string; context?: { from: string; stops: { name: string }[]; legs: unknown[] }; camera: { keys?: unknown[] } }[] }
+    scenes: { camera: { keys?: { at: number }[]; resolvedContext?: { center: [number, number]; zoom: number } } }[]
+  }
+
+  async function projectWith(name: string, stops = STOPS): Promise<string> {
+    const folder = path.join(tmp, name)
+    await call('create_project', { folder, name })
+    const set = await call('set_stops', { folder, stops, legMode: 'line' })
+    expect(set.isError, text(set)).toBeFalsy()
+    return folder
+  }
+
+  test('copy_context copies a scene of another project and reports the context', async () => {
+    const cruise = await projectWith('cruise')
+    const dive = await projectWith('dive', STOPS.slice(0, 2))
+    const result = await call('update_project', { folder: dive, ops: [{ op: 'copy_context', folder: cruise }] })
+    expect(result.isError, text(result)).toBeFalsy()
+    const data = result.structuredContent as unknown as ContextResult
+    const context = data.project.scenes[0]!.context!
+    expect(context.from).toBe('cruise · cruise')
+    expect(context.stops.map((s) => s.name)).toEqual(['Piraeus', 'Mykonos', 'Santorini', 'Rhodes'])
+    expect(context.legs.length).toBe(3)
+    expect(text(result)).toContain('Context: cruise · cruise, 4 stops.')
+    // The shot fits the whole cruise, not the two stops of the scene.
+    const fit = data.scenes[0]!.camera.resolvedContext!
+    expect(fit.center[0]).toBeGreaterThan(24)
+    expect(fit.center[0]).toBeLessThan(27)
+    expect(fit.zoom).toBeLessThan(8)
+
+    // The source is only read.
+    const source = JSON.parse(await readFile(path.join(cruise, 'mapper.json'), 'utf8')) as ContextResult['project']
+    expect(source.scenes[0]!.context).toBeUndefined()
+
+    const got = await call('get_project', { folder: dive })
+    expect((got.structuredContent as unknown as ContextResult).scenes[0]!.camera.resolvedContext).toEqual(fit)
+
+    const cleared = await call('update_project', { folder: dive, sceneSet: { context: null } })
+    expect(cleared.isError, text(cleared)).toBeFalsy()
+    expect((cleared.structuredContent as unknown as ContextResult).project.scenes[0]!.context).toBeUndefined()
+    expect((cleared.structuredContent as unknown as ContextResult).scenes[0]!.camera).not.toHaveProperty('resolvedContext')
+    expect(text(cleared)).not.toContain('Context:')
+  })
+
+  test('copy_context loads each folder once and accepts the folder given with a trailing slash', async () => {
+    const cruise = await projectWith('cruise')
+    const dive = await projectWith('dive', STOPS.slice(0, 2))
+    await call('update_project', { folder: cruise, ops: [{ op: 'add_scene', name: 'Second' }] })
+    await call('set_stops', { folder: cruise, scene: 2, stops: STOPS.slice(1, 3) })
+    const result = await call('update_project', {
+      folder: dive,
+      ops: [{ op: 'copy_context', folder: cruise }, { op: 'copy_context', folder: `${cruise}/`, scene: 2 }],
+    })
+    expect(result.isError, text(result)).toBeFalsy()
+    expect((result.structuredContent as unknown as ContextResult).project.scenes[0]!.context!.stops.map((s) => s.name)).toEqual(['Mykonos', 'Santorini'])
+  })
+
+  test("a copy_context naming the project's own folder copies from this project", async () => {
+    const folder = await projectWith('own')
+    await call('update_project', { folder, ops: [{ op: 'add_scene', name: 'Other' }] })
+    await call('set_stops', { folder, scene: 2, stops: STOPS.slice(0, 2) })
+
+    // Naming the scene itself is refused by core, as it is without a folder.
+    const self = await call('update_project', { folder, scene: 1, ops: [{ op: 'copy_context', folder, scene: 1 }] })
+    expect(self.isError).toBe(true)
+    expect(text(self)).toContain("a scene can't be its own context")
+
+    const result = await call('update_project', { folder: `${folder}/`, scene: 1, ops: [{ op: 'copy_context', folder, scene: 2 }] })
+    expect(result.isError, text(result)).toBeFalsy()
+    const data = result.structuredContent as unknown as ContextResult
+    expect(data.project.scenes[0]!.context!.from).toBe('own · Other')
+    expect(data.project.scenes[0]!.context!.stops.map((s) => s.name)).toEqual(['Piraeus', 'Mykonos'])
+  })
+
+  test('copy_context from a folder with no project is an error with a fix, and changes nothing', async () => {
+    const folder = await projectWith('target')
+    const file = path.join(folder, 'mapper.json')
+    const before = await readFile(file)
+    const result = await call('update_project', { folder, ops: [{ op: 'copy_context', folder: path.join(tmp, 'nothing') }] })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('No project found')
+    expect(text(result)).toContain('absolute path of another Mapper project folder')
+    expect((await readFile(file)).equals(before)).toBe(true)
+  })
+
+  test('copy_context from a relative folder is an error', async () => {
+    const folder = await projectWith('target')
+    const result = await call('update_project', { folder, ops: [{ op: 'copy_context', folder: 'cruise' }] })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('absolute')
+    expect(text(result)).toContain('Fix: ')
+  })
+
+  test('camera keys show in the result and the summary, and null clears them', async () => {
+    const folder = await projectWith('keys')
+    const keys = [
+      { at: 0, shot: { center: [25, 37], zoom: 5, bearing: 0, pitch: 0 } },
+      { at: 1.5, shot: { center: [25.3, 37.4], zoom: 9, bearing: 0, pitch: 0 } },
+    ]
+    const result = await call('update_project', { folder, sceneSet: { camera: { keys } } })
+    expect(result.isError, text(result)).toBeFalsy()
+    const data = result.structuredContent as unknown as ContextResult
+    expect(data.scenes[0]!.camera.keys).toEqual(keys)
+    expect(data.project.scenes[0]!.camera.keys).toEqual(keys)
+    expect(text(result)).toContain('Camera keys: 0 s, 1.5 s.')
+    // The first and last keys stand in for start and end.
+    const shots = data.scenes[0]!.camera as unknown as { resolvedStart: { zoom: number }; resolvedEnd: { zoom: number } }
+    expect([shots.resolvedStart.zoom, shots.resolvedEnd.zoom]).toEqual([5, 9])
+
+    const cleared = await call('update_project', { folder, sceneSet: { camera: { keys: null } } })
+    expect(cleared.isError, text(cleared)).toBeFalsy()
+    expect((cleared.structuredContent as unknown as ContextResult).scenes[0]!.camera).not.toHaveProperty('keys')
+    expect(text(cleared)).not.toContain('Camera keys')
+  })
+
+  test('descriptions cover keys, copy_context and resolvedContext', () => {
+    const update = TOOLS.find((t) => t.name === 'update_project')!.description
+    expect(update).toContain('camera.keys')
+    expect(update).toContain('copy_context')
+    expect(update).toContain('context: null')
+    expect(TOOLS.find((t) => t.name === 'get_project')!.description).toContain('resolvedContext')
   })
 })

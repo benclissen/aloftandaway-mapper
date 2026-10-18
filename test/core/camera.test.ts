@@ -764,4 +764,14 @@ describe('contextShot', () => {
     expect(contextShot(scene, '16:9')).toEqual(fitShot(buildRoute(greek).bounds, '16:9'))
     expect(contextShot(scene, '9:16')).toEqual(fitShot(buildRoute(greek).bounds, '9:16'))
   })
+
+  test('sits on the turn of longitude the scene is drawn on', () => {
+    const cross = sceneOf(stopsAt([[170, -15], [-170, -15]]))
+    const context = { from: 'Pacific · Scene 1', stops: cross.stops.map(({ name, at }) => ({ name, at })), legs: cross.legs }
+    const east = { ...sceneOf(stopsAt([[175, -15], [178, -15]])), context }
+    const west = { ...sceneOf(stopsAt([[-175, -15], [-172, -15]])), context }
+    // The context route unwraps to 170 … 190, so its middle is 180; the scene's own turn decides which side that is.
+    expect(contextShot(east, '16:9')!.center[0]).toBeCloseTo(180, 6)
+    expect(contextShot(west, '16:9')!.center[0]).toBeCloseTo(-180, 6)
+  })
 })

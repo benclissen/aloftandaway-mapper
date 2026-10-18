@@ -1,5 +1,5 @@
 import { headingDeg, toLngLat, toXY, unwrapLng, type XY } from './geo.js'
-import { buildContextRoute, type Route } from './route.js'
+import { buildContextRoute, routeNear, type Route } from './route.js'
 import {
   fpsValue,
   layoutSize,
@@ -57,10 +57,15 @@ export function fitShot(bounds: [LngLat, LngLat], aspect: Aspect, padding: numbe
   return { center, zoom, bearing: 0, pitch: 0 }
 }
 
-/** The shot that frames the whole of `scene`'s context route in `aspect`, or `undefined` when it has no context. */
+/**
+ * The shot that frames the whole of `scene`'s context route in `aspect`, or `undefined` when it has no context. The
+ * route is moved to lie nearest the scene's first stop, as the stage draws it, so the shot sits on the drawn context.
+ */
 export function contextShot(scene: Scene, aspect: Aspect, seaPaths?: SeaPaths): Shot | undefined {
-  const route = buildContextRoute(scene, seaPaths)
-  return route && fitShot(route.bounds, aspect)
+  const built = buildContextRoute(scene, seaPaths)
+  if (!built) return undefined
+  const route = scene.stops[0] ? routeNear(built, scene.stops[0].at[0]) : built
+  return fitShot(route.bounds, aspect)
 }
 
 /** South-west and north-east corners of `path`, whose longitudes are already unwrapped. */

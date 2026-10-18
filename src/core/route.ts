@@ -252,6 +252,23 @@ export function buildContextRoute(scene: Scene, seaPaths?: SeaPaths): Route | un
   return buildRoute({ ...scene, stops, legs: context.legs }, seaPaths)
 }
 
+/**
+ * `route` moved by whole turns of longitude so the middle of its bounds lies nearest `lng`. A context route unwraps from
+ * its own first stop and the scene's route from the scene's, so the two can sit a turn apart until one is moved.
+ */
+export function routeNear(route: Route, lng: number): Route {
+  const [[west], [east]] = route.bounds
+  const turns = Math.round((lng - (west + east) / 2) / 360)
+  if (turns === 0) return route
+  const move = ([x, y]: LngLat): LngLat => [x + turns * 360, y]
+  return {
+    ...route,
+    // One turn is one unit of x.
+    legs: route.legs.map((leg) => ({ ...leg, path: leg.path.map(move), xy: leg.xy.map(([x, y]): XY => [x + turns, y]) })),
+    bounds: [move(route.bounds[0]), move(route.bounds[1])],
+  }
+}
+
 /** `lng` shifted by whole turns into [-180, 180). */
 function wrapLng(lng: number): number {
   return ((((lng + 180) % 360) + 360) % 360) - 180

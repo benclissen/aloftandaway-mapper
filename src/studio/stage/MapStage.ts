@@ -4,12 +4,14 @@ import { GeoJSONSource, Map as MapLibreMap, setWorkerUrl } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
 import {
+  buildContextRoute,
   buildRoute,
   buildTimeline,
   cameraAt,
   legFlipped,
   layoutSize,
   pointAt,
+  routeNear,
   sceneCredit,
   screenAngle,
   joinCredit,
@@ -56,6 +58,7 @@ export interface MapStageOptions {
 }
 
 const ROUTE_SOURCE = 'mapper-route'
+const CONTEXT_SOURCE = 'mapper-context'
 const EDIT_SOURCE = 'mapper-edit'
 /** The layer the studio queries for clicks on the route. */
 export const EDIT_ROUTE_LAYER = 'mapper-edit-route'
@@ -120,6 +123,18 @@ function editLayers(look: Look, selected: number | undefined): LayerSpecificatio
   ]
 }
 
+/** The scene's context, drawn faintly under its own route. */
+function contextLayer(look: Look): LayerSpecification {
+  const { color, width } = look.line
+  return {
+    id: 'mapper-context-line',
+    type: 'line',
+    source: CONTEXT_SOURCE,
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': color, 'line-width': width * 0.6, 'line-opacity': 0.35 },
+  }
+}
+
 /** Route line, outline and glow layers for a look, bottom to top. */
 function routeLayers(look: Look): LayerSpecification[] {
   const { color, width, dash, outline, glow } = look.line
@@ -172,6 +187,7 @@ export class MapStage {
   private loaded: Loaded | undefined
   private styleKey: string | undefined
   private baseVisibility = new Map<string, NonNullable<NonNullable<LayerSpecification['layout']>['visibility']>>()
+  /** The context line and the route's own layers: everything on the route layer. */
   private routeLayerIds: string[] = []
   private editLayerIds: string[] = []
   private selectedLeg: number | undefined
@@ -248,6 +264,9 @@ export class MapStage {
       const scene = sceneId === undefined ? project.scenes[0]! : project.scenes.find((s) => s.id === sceneId)
       if (!scene) throw new Error(`No scene ${sceneId} in this project.`)
       const route = buildRoute(scene, seaPaths)
+      // Onto the same side of the antimeridian as the scene's own route, which unwraps from its first stop.
+      const built = buildContextRoute(scene, seaPaths)
+      const context = built && scene.stops[0] ? routeNear(built, scene.stops[0].at[0]) : built
       const timeline = buildTimeline(scene, project.output.fps, route)
       const { width, height } = layoutSize(project.output.aspect)
       if (this.container.clientWidth !== width || this.container.clientHeight !== height) {
@@ -269,12 +288,17 @@ export class MapStage {
           this.map.getStyle().layers.map((layer) => [layer.id, layer.layout?.visibility ?? 'visible']),
         )
         this.styleKey = styleKey
+        this.map.addSource(CONTEXT_SOURCE, { type: 'geojson', data: emptyCollection() })
         this.map.addSource(ROUTE_SOURCE, { type: 'geojson', data: emptyCollection() })
         if (this.opts.editing) this.map.addSource(EDIT_SOURCE, { type: 'geojson', data: emptyCollection() })
         this.routeLayerIds = []
         this.editLayerIds = []
       }
       for (const id of [...this.editLayerIds, ...this.routeLayerIds]) this.map.removeLayer(id)
+      // One line for the whole context, so its faint legs don't darken where they meet.
+      this.source(CONTEXT_SOURCE).setData(context ? lineFeature(slicePath(context, context.length)) : emptyCollection())
+      const under = contextLayer(scene.look)
+      this.map.addLayer(under)
       if (this.opts.editing) {
         this.source(EDIT_SOURCE).setData(legsCollection(route))
         const edit = editLayers(scene.look, this.selectedLeg)
@@ -283,7 +307,7 @@ export class MapStage {
       }
       const layers = routeLayers(scene.look)
       for (const layer of layers) this.map.addLayer(layer)
-      this.routeLayerIds = layers.map((l) => l.id)
+      this.routeLayerIds = [under.id, ...layers.map((l) => l.id)]
       this.applyLayerVisibility()
 
       await this.loadFonts(scene)

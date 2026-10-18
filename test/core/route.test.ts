@@ -17,6 +17,7 @@ import {
   nearestOnLeg,
   parseTrackCsv,
   pointAt,
+  routeNear,
   routeSea,
   seaLegKey,
   slicePath,
@@ -927,5 +928,30 @@ describe('buildContextRoute', () => {
     expect(leg.drawnAs).toBe('sea')
     expect(leg.path).toHaveLength(cached.path.length)
     expect(leg.sea?.status).toBe('ok')
+  })
+})
+
+describe('routeNear', () => {
+  test('moves a route a whole turn onto the side of the antimeridian given', () => {
+    // Unwrapped from 179, the route runs on to 181. The scene's own route, from -179, sits a turn west.
+    const route = buildRoute(sceneOf(stopsAt([[179, 0], [-179, 1]])))
+    expect(route.bounds[1][0]).toBeCloseTo(181, 9)
+    const moved = routeNear(route, -179)
+    expect(moved.bounds[0][0]).toBeCloseTo(-181, 9)
+    expect(moved.bounds[1][0]).toBeCloseTo(-179, 9)
+    expect(moved.length).toBe(route.length)
+    const leg = moved.legs[0]!
+    expect(leg.path[0]).toEqual([-181, 0])
+    expect(leg.path.at(-1)).toEqual([-179, 1])
+    leg.xy.forEach((xy, i) => {
+      expect(xy[0]).toBeCloseTo(toXY(leg.path[i]!)[0], 12)
+      expect(xy[1]).toBe(route.legs[0]!.xy[i]![1])
+    })
+  })
+
+  test('leaves a route that already lies nearest alone', () => {
+    const route = buildRoute(sceneOf(greekIslands()))
+    expect(routeNear(route, 25)).toBe(route)
+    expect(routeNear(route, 25 + 360).bounds[0][0]).toBeCloseTo(route.bounds[0][0] + 360, 9)
   })
 })

@@ -12,6 +12,7 @@ import {
   SceneSchema,
   parseProject,
   zodIssues,
+  type Context,
   type InputLegMode,
   type Leg,
   type LngLat,
@@ -24,7 +25,7 @@ import {
   type StopInput,
 } from './schema.js'
 import { sceneTravel } from './timeline.js'
-import { BLANK_SCENE_NAME, SceneRefSchema, applySceneOp, resolveScene, type SceneRef } from './scenes.js'
+import { BLANK_SCENE_NAME, SceneRefSchema, applySceneOp, resolveScene, sceneTitle, type SceneRef } from './scenes.js'
 
 // Ops and patches
 
@@ -99,7 +100,17 @@ export const SceneOpSchema = z.discriminatedUnion('op', [
 /** The ops that add, duplicate, remove, move and restore scenes. */
 export type SceneOp = z.infer<typeof SceneOpSchema>
 
-const PatchOpSchema = z.discriminatedUnion('op', [StopOpSchema, SceneOpSchema])
+const CopyContextOpSchema = z.strictObject({
+  op: z.literal('copy_context'),
+  /** The absolute path of another project's folder. Without it, the scene is copied from this project. */
+  folder: z.string().min(1).optional(),
+  /** The scene to copy: its id, or its 1-based position. Defaults to the first scene. */
+  scene: SceneRefSchema.optional(),
+})
+/** Copies another scene's route into the chosen scene as its context. */
+export type CopyContextOp = z.infer<typeof CopyContextOpSchema>
+
+const PatchOpSchema = z.discriminatedUnion('op', [StopOpSchema, SceneOpSchema, CopyContextOpSchema])
 export type PatchOp = z.infer<typeof PatchOpSchema>
 
 /** The names of the ops that add, duplicate, remove, move and restore scenes. The tests check it against `SceneOpSchema`. */
@@ -117,11 +128,11 @@ export const ProjectPatchSchema = z.strictObject({
   set: z.record(z.string(), z.unknown()).optional(),
   /** The scene `sceneSet` and `ops` act on: its id, or its 1-based position. Defaults to the first scene. */
   scene: SceneRefSchema.optional(),
-  /** JSON Merge Patch over the chosen scene's name, timing, look and camera. */
+  /** JSON Merge Patch over the chosen scene's name, timing, look, camera and context. `context: null` removes the context. */
   sceneSet: z.record(z.string(), z.unknown()).optional(),
   /**
-   * Edits applied in order after `set` and `sceneSet`: to the chosen scene's stops and legs, and to the list of scenes
-   * itself (add, duplicate, remove, move, restore).
+   * Edits applied in order after `set` and `sceneSet`: to the chosen scene's stops and legs, its context
+   * (`copy_context`), and to the list of scenes itself (add, duplicate, remove, move, restore).
    */
   ops: z.array(PatchOpSchema).optional(),
 })
@@ -401,6 +412,42 @@ function applyOp(scene: Scene, op: StopOp, at: number): Scene {
   }
 }
 
+/** The projects `copy_context` may copy from besides the one being patched, keyed by the folder they were loaded from. */
+export interface PatchOptions {
+  sources?: ReadonlyMap<string, Project>
+}
+
+/** `scene` with the route of a scene of `op.folder` (or of `project`) as its context. */
+function copyContext(project: Project, scene: Scene, op: CopyContextOp, at: number, sources: ReadonlyMap<string, Project>): Scene {
+  let source = project
+  if (op.folder !== undefined) {
+    const loaded = sources.get(op.folder)
+    if (!loaded) fail(['ops', at, 'folder'], `the project in '${op.folder}' wasn't loaded, so its scenes can't be copied`)
+    source = loaded
+  }
+  let found: ReturnType<typeof resolveScene>
+  try {
+    found = resolveScene(source, op.scene)
+  } catch (e) {
+    if (e instanceof ProjectError) fail(['ops', at, 'scene'], e.issues[0]!.message)
+    throw e
+  }
+  const from = found.scene
+  if (op.folder === undefined && from.id === scene.id) {
+    fail(['ops', at, 'scene'], "a scene can't be its own context; copy another scene")
+  }
+  if (from.stops.length < 2) {
+    fail(['ops', at, 'scene'], `scene '${sceneTitle(source, found.index)}' has ${from.stops.length} ${from.stops.length === 1 ? 'stop' : 'stops'}; it needs at least 2 to be a context`)
+  }
+  const context: Context = {
+    from: `${source.name} · ${sceneTitle(source, found.index)}`,
+    stops: from.stops.map((s) => ({ name: s.name, at: [...s.at] })),
+    // A context keeps no recorded tracks, so a track leg is copied as a plain line between its stops.
+    legs: from.legs.map((l) => ({ mode: l.mode === 'track' ? 'line' : l.mode, via: structuredClone(l.via) })),
+  }
+  return { ...scene, context }
+}
+
 function checkKeys(patch: Record<string, unknown>, forbidden: Map<string, string>, name: string): void {
   for (const key of Object.keys(patch)) {
     const message = forbidden.get(key)
@@ -410,19 +457,26 @@ function checkKeys(patch: Record<string, unknown>, forbidden: Map<string, string
 
 /**
  * Applies `set` (a merge patch over the project), then `sceneSet` (a merge patch over the chosen scene), then `ops`
- * (stop, leg and via ops on the chosen scene, and scene ops on the project), in order. Pure and all or nothing: the input is never modified, and any failure throws a
- * `ProjectError`.
+ * (stop, leg and via ops and `copy_context` on the chosen scene, and scene ops on the project), in order. `copy_context`
+ * with a `folder` reads that folder's project from `opts.sources`, which the caller loads; those projects are not modified.
+ * Pure and all or nothing: the input is never modified, and any failure throws a `ProjectError`.
  */
-export function applyPatch(project: Project, patch: ProjectPatch): Project {
-  return fitLength(parseProject(patchSteps(project, patch)))
+export function applyPatch(project: Project, patch: ProjectPatch, opts: PatchOptions = {}): Project {
+  return fitLength(parseProject(patchSteps(project, patch, undefined, opts)))
 }
 
 /**
  * `applyPatch` before the result is checked: `set`, then `sceneSet`, then each op, in order, with no check in between,
  * since the patch is all or nothing. `visit` is called with the state each op runs on, before it runs, and must not
- * keep or change it. `invertPatch` uses it to invert each op against what applyPatch would run it on.
+ * keep or change it. `invertPatch` uses it to invert each op against what applyPatch would run it on. `opts` is as for
+ * `applyPatch`.
  */
-export function patchSteps(project: Project, patch: ProjectPatch, visit?: (state: Project, op: PatchOp) => void): Project {
+export function patchSteps(
+  project: Project,
+  patch: ProjectPatch,
+  visit?: (state: Project, op: PatchOp) => void,
+  opts: PatchOptions = {},
+): Project {
   const { ops, scene: ref } = parseOrThrow(ProjectPatchSchema, patch)
   // Read `set` and `sceneSet` from the caller's object: Zod's copy silently drops a `__proto__` key, and we want it
   // rejected.
@@ -451,6 +505,7 @@ export function patchSteps(project: Project, patch: ProjectPatch, visit?: (state
   ops?.forEach((op, i) => {
     visit?.(work, op)
     if (isSceneOp(op)) work = applySceneOp(work, op, i, newStopId)
+    else if (op.op === 'copy_context') edit((scene) => copyContext(work, scene, op, i, opts.sources ?? new Map()), i)
     else edit((scene) => applyOp(scene, op, i), i)
   })
   return work

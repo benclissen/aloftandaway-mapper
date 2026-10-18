@@ -734,3 +734,135 @@ describe('track legs', () => {
     expect(sceneOf(off).legs[0]).toEqual({ mode: 'air', track: TRACK, via: [], symbol: 'plane' })
   })
 })
+
+describe('copy_context', () => {
+  const twoSceneProject = (): Project => {
+    const project = projectWithScenes(2, ['Sail', 'Dock'])
+    sceneOf(project).legs = sceneOf(project).legs.map((l, i) => (i === 0 ? { ...l, mode: 'sea' as const, via: [{ at: [24.5, 37.8] as LngLat, sharp: true }] } : l))
+    // The second scene is a one-leg close-up.
+    const dock = project.scenes[1]!
+    dock.stops = dock.stops.slice(0, 2).map((st) => ({ ...st, id: `d_${st.id}` }))
+    dock.legs = [{ mode: 'line', via: [] }]
+    return project
+  }
+
+  test('copies a scene of this project into the chosen scene', () => {
+    const project = twoSceneProject()
+    const out = applyPatch(project, { scene: 2, ops: [{ op: 'copy_context', scene: 1 }] })
+    const source = sceneOf(project)
+    expect(out.scenes[1]!.context).toEqual({
+      from: 'Greek Islands · Sail',
+      stops: source.stops.map(({ name, at }) => ({ name, at })),
+      legs: [
+        { mode: 'sea', via: [{ at: [24.5, 37.8], sharp: true }] },
+        { mode: 'line', via: [] },
+        { mode: 'line', via: [] },
+      ],
+    })
+    // The source scene is untouched, and the copy is a snapshot rather than a reference.
+    expect(out.scenes[0]).toEqual(source)
+    expect(out.scenes[1]!.stops).toEqual(project.scenes[1]!.stops)
+    out.scenes[0]!.legs[0]!.via[0]!.at[0] = 0
+    expect(out.scenes[1]!.context!.legs[0]!.via[0]!.at[0]).toBe(24.5)
+  })
+
+  test('drops a leg symbol and stop details, keeping name and position', () => {
+    const project = twoSceneProject()
+    sceneOf(project).legs[1] = { mode: 'sea', via: [], symbol: 'cruise-ship' }
+    sceneOf(project).stops[1]!.label = 'Windy'
+    const context = applyPatch(project, { scene: 2, ops: [{ op: 'copy_context', scene: 1 }] }).scenes[1]!.context!
+    expect(context.legs[1]).toEqual({ mode: 'sea', via: [] })
+    expect(context.stops[1]).toEqual({ name: 'Mykonos', at: [25.3289, 37.4467] })
+  })
+
+  test('the scene to copy defaults to the first', () => {
+    const project = projectWithScenes(2)
+    project.scenes[1]!.stops = project.scenes[1]!.stops.map((st) => ({ ...st, id: `b_${st.id}` }))
+    const out = applyPatch(project, { scene: 2, ops: [{ op: 'copy_context' }] })
+    expect(out.scenes[1]!.context!.from).toBe('Greek Islands · Scene 1')
+    expect(out.scenes[0]!.context).toBeUndefined()
+  })
+
+  test('copies from a loaded source project, labelled with its name', () => {
+    const source = greekIslands()
+    source.name = 'Cruise'
+    sceneOf(source).name = ''
+    const sources = new Map([['/trips/cruise', source]])
+    const out = applyPatch(pacific(), { ops: [{ op: 'copy_context', folder: '/trips/cruise' }] }, { sources })
+    expect(sceneOf(out).context!.from).toBe('Cruise · Scene 1')
+    expect(sceneOf(out).context!.stops.map((st) => st.name)).toEqual(['Piraeus', 'Mykonos', 'Santorini', 'Rhodes'])
+    expect(sceneOf(source).context).toBeUndefined()
+  })
+
+  test('a scene of a source project with the same ids (a copied folder) is not this scene', () => {
+    const source = structuredClone(twoSceneProject())
+    const out = applyPatch(twoSceneProject(), { scene: 2, ops: [{ op: 'copy_context', folder: '/other', scene: 2 }] }, { sources: new Map([['/other', source]]) })
+    expect(out.scenes[1]!.context!.stops).toHaveLength(2)
+  })
+
+  test('a folder that was not loaded is an error at the op', () => {
+    const e = failure(() => applyPatch(pacific(), { ops: [{ op: 'copy_context', folder: '/nowhere' }] }))
+    expect(e.issues).toEqual([{ path: ['ops', 0, 'folder'], message: expect.stringContaining("wasn't loaded") }])
+    const other = failure(() => applyPatch(pacific(), { ops: [{ op: 'copy_context', folder: '/nowhere' }] }, { sources: new Map([['/elsewhere', greekIslands()]]) }))
+    expect(other.issues[0]!.path).toEqual(['ops', 0, 'folder'])
+  })
+
+  test('no such scene is an error at the op', () => {
+    const e = failure(() => applyPatch(twoSceneProject(), { ops: [{ op: 'copy_context', scene: 9 }] }))
+    expect(e.issues[0]!.path).toEqual(['ops', 0, 'scene'])
+    expect(e.issues[0]!.message).toContain('no scene 9')
+  })
+
+  test("a scene can't be its own context", () => {
+    const project = twoSceneProject()
+    for (const scene of [1, project.scenes[0]!.id]) {
+      const e = failure(() => applyPatch(project, { ops: [{ op: 'copy_context', scene }] }))
+      expect(e.issues).toEqual([{ path: ['ops', 0, 'scene'], message: expect.stringContaining('its own context') }])
+    }
+    const second = failure(() => applyPatch(project, { scene: 2, ops: [{ op: 'copy_context', scene: 2 }] }))
+    expect(second.issues[0]!.path).toEqual(['ops', 0, 'scene'])
+  })
+
+  test('a source scene with fewer than 2 stops is an error', () => {
+    const e = failure(() => applyPatch(twoSceneProject(), { scene: 2, ops: [{ op: 'copy_context', folder: '/empty', scene: 1 }] }, { sources: new Map([['/empty', emptyProject()]]) }))
+    expect(e.issues).toEqual([{ path: ['ops', 0, 'scene'], message: expect.stringContaining('at least 2') }])
+    const one = failure(() => applyPatch(stopsAt([[0, 0]]), { ops: [{ op: 'copy_context', folder: '/one', scene: 1 }] }, { sources: new Map([['/one', stopsAt([[0, 0]])]]) }))
+    expect(one.issues[0]!.message).toContain('1 stop;')
+  })
+
+  test('is a scene edit, not a scene-list op, and runs in order with the others', () => {
+    expect(isSceneOp({ op: 'copy_context' })).toBe(false)
+    const out = applyPatch(twoSceneProject(), {
+      scene: 2,
+      ops: [{ op: 'copy_context', scene: 1 }, { op: 'add_scene', id: '00000000-0000-4000-8000-0000000000bb' }, { op: 'update_leg', index: 0, changes: { mode: 'air' } }],
+    })
+    expect(out.scenes[1]!.context).toBeDefined()
+    expect(out.scenes[1]!.legs[0]!.mode).toBe('air')
+  })
+
+  test('sceneSet context: null removes it, and context can be written directly', () => {
+    const copied = applyPatch(twoSceneProject(), { scene: 2, ops: [{ op: 'copy_context', scene: 1 }] })
+    expect(applyPatch(copied, { scene: 2, sceneSet: { context: null } }).scenes[1]!.context).toBeUndefined()
+    const written = { from: 'By hand', stops: [{ name: 'A', at: [0, 0] }, { name: 'B', at: [1, 1] }], legs: [{ mode: 'line', via: [] }] }
+    expect(applyPatch(twoSceneProject(), { scene: 2, sceneSet: { context: written } }).scenes[1]!.context).toEqual(written)
+    const bad = failure(() => applyPatch(twoSceneProject(), { scene: 2, sceneSet: { context: { ...written, legs: [] } } }))
+    expect(bad.issues[0]!.path).toEqual(['scenes', 1, 'context', 'legs'])
+  })
+
+  test('copies a recorded track leg as a line, and a context refuses a track leg', () => {
+    const at = (name: string, lng: number) => ({ name, at: [lng, 0] as LngLat })
+    const track = importTrack(emptyProject(), { stops: [at('A', 0), at('B', 1), at('C', 2)], track: '0123456789ab' })
+    const out = applyPatch(twoSceneProject(), { scene: 2, ops: [{ op: 'copy_context', folder: '/tracked' }] }, { sources: new Map([['/tracked', track]]) })
+    expect(out.scenes[1]!.context!.legs).toEqual([
+      { mode: 'line', via: [] },
+      { mode: 'line', via: [] },
+    ])
+    const written = { from: 'By hand', stops: [at('A', 0), at('B', 1)], legs: [{ mode: 'track', via: [] }] }
+    const bad = failure(() => applyPatch(twoSceneProject(), { scene: 2, sceneSet: { context: written } }))
+    expect(bad.issues[0]!.path).toEqual(['scenes', 1, 'context', 'legs', 0, 'mode'])
+  })
+
+  test('rejects unknown keys on the op', () => {
+    expect(() => applyPatch(twoSceneProject(), { ops: [{ op: 'copy_context', name: 'x' } as never] })).toThrow(ProjectError)
+  })
+})

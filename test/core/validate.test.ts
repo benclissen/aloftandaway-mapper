@@ -737,3 +737,38 @@ describe('validateProject', () => {
     })
   })
 })
+
+describe('context warnings', () => {
+  const contextProject = () => {
+    const project = stopsAt([[0, 0], [1, 1]])
+    const greek = sceneOf(greekIslands())
+    sceneOf(project).context = {
+      from: 'Greek Islands · Scene 1',
+      stops: greek.stops.map(({ name, at }) => ({ name, at })),
+      legs: greek.legs.map((l, i) => (i === 0 ? { ...l, mode: 'sea' as const } : l)),
+    }
+    return { project, key: seaLegKey(greek.stops[0]!.at, greek.stops[1]!.at, []) }
+  }
+
+  test('warns when a context sea leg falls back', () => {
+    const { project, key } = contextProject()
+    const seaPaths: SeaPaths = { [key]: { status: 'fallback', reason: 'no water near Piraeus', path: [], knots: [] } }
+    const { errors, warnings } = validateProject(project, { seaPaths })
+    expect(errors).toEqual([])
+    expect(warnings).toEqual([
+      {
+        code: 'context-sea-fallback',
+        message: 'Context leg 1 (Piraeus → Mykonos) has no sea route: no water near Piraeus',
+        path: ['scenes', 0, 'context', 'legs', 0, 'mode'],
+        fix: expect.stringContaining('copy_context'),
+      },
+    ])
+  })
+
+  test('says nothing before the sea legs are routed, or when they are', () => {
+    const { project, key } = contextProject()
+    expect(validateProject(project).warnings).toEqual([])
+    const seaPaths: SeaPaths = { [key]: { status: 'ok', path: [[23.6466, 37.942], [25.3289, 37.4467]], knots: [0, 1] } }
+    expect(validateProject(project, { seaPaths }).warnings).toEqual([])
+  })
+})

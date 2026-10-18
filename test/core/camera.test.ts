@@ -3,6 +3,7 @@ import {
   buildRoute,
   buildTimeline,
   cameraAt,
+  contextShot,
   ease,
   fitShot,
   flyInterpolator,
@@ -746,5 +747,21 @@ describe('projectToLayout', () => {
     const [wx] = projectToLayout(shot([179.9, 0], 6), '16:9', [-179.9, 0])
     expect(wx).toBeGreaterThan(width / 2)
     expect(wx).toBeLessThan(width / 2 + 200)
+  })
+})
+
+describe('contextShot', () => {
+  test('is undefined without context', () => {
+    expect(contextShot(sceneOf(greekIslands()), '16:9')).toBeUndefined()
+  })
+
+  test('fits the context route, not the scene', () => {
+    const greek = sceneOf(greekIslands())
+    const scene = {
+      ...sceneOf(stopsAt([[0, 0], [0.1, 0.1]])),
+      context: { from: 'Greek Islands · Scene 1', stops: greek.stops.map(({ name, at }) => ({ name, at })), legs: greek.legs },
+    }
+    expect(contextShot(scene, '16:9')).toEqual(fitShot(buildRoute(greek).bounds, '16:9'))
+    expect(contextShot(scene, '9:16')).toEqual(fitShot(buildRoute(greek).bounds, '9:16'))
   })
 })

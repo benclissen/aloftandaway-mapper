@@ -353,3 +353,47 @@ describe('symbols', () => {
     for (const symbol of SYMBOLS) expect(['sea', 'air', 'land', 'line']).toContain(defaultModeFor(symbol))
   })
 })
+
+describe('scene context', () => {
+  const context = () => ({
+    from: 'Greek Islands · Scene 1',
+    stops: [
+      { name: 'Piraeus', at: [23.6466, 37.942] as [number, number] },
+      { name: 'Mykonos', at: [25.3289, 37.4467] as [number, number] },
+    ],
+    legs: [{ mode: 'sea' as const, via: [{ at: [24.5, 37.8] as [number, number], sharp: true }] }],
+  })
+
+  test('a project without context still loads, and one with context round-trips', () => {
+    expect(sceneOf(parseProject(greekIslands())).context).toBeUndefined()
+    const p = stopsAt([[0, 0], [1, 1]])
+    sceneOf(p).context = context()
+    expect(parseProject(JSON.parse(JSON.stringify(p)))).toEqual(p)
+  })
+
+  test('needs at least 2 stops', () => {
+    const p = stopsAt([[0, 0], [1, 1]])
+    sceneOf(p).context = { from: 'x', stops: [context().stops[0]!], legs: [] }
+    expect(() => parseProject(p)).toThrow(/scenes\.0\.context\.stops/)
+  })
+
+  test('rejects context legs out of step with its stops', () => {
+    const p = stopsAt([[0, 0], [1, 1]])
+    sceneOf(p).context = { ...context(), legs: [] }
+    let error: ProjectError | undefined
+    try {
+      parseProject(p)
+    } catch (e) {
+      error = e as ProjectError
+    }
+    expect(error?.issues).toEqual([{ path: ['scenes', 0, 'context', 'legs'], message: 'expected 1 legs for 2 stops, got 0' }])
+  })
+
+  test('rejects unknown keys on a context stop and leg', () => {
+    const p = stopsAt([[0, 0], [1, 1]])
+    sceneOf(p).context = { ...context(), stops: [{ ...context().stops[0]!, id: 'x' } as never, context().stops[1]!] }
+    expect(() => parseProject(p)).toThrow(/scenes\.0\.context\.stops\.0\.id/)
+    sceneOf(p).context = { ...context(), legs: [{ ...context().legs[0]!, symbol: 'ferry' } as never] }
+    expect(() => parseProject(p)).toThrow(/scenes\.0\.context\.legs\.0\.symbol/)
+  })
+})

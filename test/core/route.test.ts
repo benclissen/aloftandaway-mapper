@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 import {
   AIR_SAMPLES,
   applyPatch,
+  buildContextRoute,
   buildRoute,
   clampLat,
   decodeLand,
@@ -893,5 +894,38 @@ describe('track legs', () => {
     expect(r.legs[0]!.path.at(-1)![0]).toBeCloseTo(182, 9)
     expect(r.legs[1]!.path[0]).toEqual(r.legs[0]!.path.at(-1))
     expect(r.legs[1]!.path.at(-1)![0]).toBeCloseTo(183, 9)
+  })
+})
+
+describe('buildContextRoute', () => {
+  const withContext = (scene: Scene, legs: Scene['legs'] = scene.legs): Scene => ({
+    ...scene,
+    context: { from: 'Greek Islands · Scene 1', stops: scene.stops.map(({ name, at }) => ({ name, at })), legs },
+  })
+
+  test('is undefined when the scene has no context', () => {
+    expect(buildContextRoute(sceneOf(greekIslands()))).toBeUndefined()
+  })
+
+  test('routes the context like a scene of its own, whatever the scene itself holds', () => {
+    const greek = sceneOf(greekIslands())
+    const scene = { ...sceneOf(stopsAt([[0, 0], [1, 1]])), context: withContext(greek).context }
+    const route = buildContextRoute(scene)!
+    const own = buildRoute(greek)
+    expect(route.legs).toHaveLength(3)
+    expect(route.length).toBeCloseTo(own.length, 12)
+    expect(route.bounds).toEqual(own.bounds)
+    expect(route.bounds).not.toEqual(buildRoute(scene).bounds)
+  })
+
+  test('a context sea leg takes its path from seaPaths, and is pending without one', () => {
+    const { scene: greek, cached, seaPaths } = greekSea()
+    const scene = withContext(sceneOf(stopsAt([[0, 0], [1, 1]])), [])
+    scene.context = withContext(greek).context
+    expect(buildContextRoute(scene)!.legs[0]!.sea).toEqual({ status: 'pending' })
+    const leg = buildContextRoute(scene, seaPaths)!.legs[0]!
+    expect(leg.drawnAs).toBe('sea')
+    expect(leg.path).toHaveLength(cached.path.length)
+    expect(leg.sea?.status).toBe('ok')
   })
 })

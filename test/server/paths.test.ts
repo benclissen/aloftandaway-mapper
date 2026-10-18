@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { decodeLand, defaultProject, encodeLand, landIndex, ROUTER_VERSION, routeSea, seaLegKey, trackKey, type LandSource, type LngLat, type Project, type ViaPoint } from '../../src/core/index.js'
-import { CACHE_VERSION, PATHS_FILE, resolveSeaPaths } from '../../src/server/paths.js'
+import { CACHE_VERSION, PATHS_FILE, resolveSeaPaths, seaLegsOf } from '../../src/server/paths.js'
 import { createSeaWater, SEA_BUDGET_TILES, SEA_WATER_VERSION, type SeaBudget, type SeaWater, type WaterNote } from '../../src/server/sea-water.js'
 import type { TileStore } from '../../src/server/tiles.js'
 import { writeTrack } from '../../src/server/tracks.js'
@@ -509,4 +509,26 @@ test('a project with sea and track legs gets both', async () => {
   p.scenes[0]!.legs[1] = { mode: 'track', via: [], track: id } as never
   const paths = await resolveSeaPaths(folder, p, { land: island(), water: undefined })
   expect(Object.keys(paths).sort()).toEqual([seaLegKey(A, B, []), trackKey(id)].sort())
+})
+
+test('seaLegsOf lists the sea legs of every scene and of their contexts', () => {
+  const p = projectWith([{ from: A, to: B }])
+  const scene = p.scenes[0]!
+  const C: LngLat = [12, 51]
+  const D: LngLat = [13, 51]
+  scene.context = {
+    from: 'x',
+    stops: [{ name: 'C', at: C }, { name: 'D', at: D }, { name: 'B', at: B }],
+    legs: [{ mode: 'sea', via: [{ at: [12.5, 51.5] }] }, { mode: 'air', via: [] }],
+  }
+  const legs = seaLegsOf(p)
+  expect([...legs.keys()].sort()).toEqual([seaLegKey(A, B, []), seaLegKey(C, D, [{ at: [12.5, 51.5] }])].sort())
+  expect(legs.get(seaLegKey(C, D, [{ at: [12.5, 51.5] }]))).toEqual([C, D, [{ at: [12.5, 51.5] }]])
+})
+
+test('seaLegsOf counts a leg that a scene and its context share once', () => {
+  const p = projectWith([{ from: A, to: B }])
+  const scene = p.scenes[0]!
+  scene.context = { from: 'x', stops: [{ name: 'A', at: A }, { name: 'B', at: B }], legs: [{ mode: 'sea', via: [] }] }
+  expect(seaLegsOf(p).size).toBe(1)
 })

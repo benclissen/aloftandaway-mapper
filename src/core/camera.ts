@@ -1,5 +1,5 @@
 import { headingDeg, toLngLat, toXY, unwrapLng, type XY } from './geo.js'
-import type { Route } from './route.js'
+import { buildContextRoute, type Route } from './route.js'
 import {
   fpsValue,
   layoutSize,
@@ -11,6 +11,7 @@ import {
   type Scene,
   type Shot,
 } from './schema.js'
+import type { SeaPaths } from './sea.js'
 import { ease, type Timeline } from './timeline.js'
 
 /** Tile size in layout px. The world is `TILE_SIZE · 2^zoom` layout px across at `zoom`. */
@@ -54,6 +55,12 @@ export function fitShot(bounds: [LngLat, LngLat], aspect: Aspect, padding: numbe
   const worldPx = Math.min(...fits)
   const zoom = worldPx === Infinity ? POINT_ZOOM : clamp(Math.log2(worldPx / TILE_SIZE), FIT_MIN_ZOOM, FIT_MAX_ZOOM)
   return { center, zoom, bearing: 0, pitch: 0 }
+}
+
+/** The shot that frames the whole of `scene`'s context route in `aspect`, or `undefined` when it has no context. */
+export function contextShot(scene: Scene, aspect: Aspect, seaPaths?: SeaPaths): Shot | undefined {
+  const route = buildContextRoute(scene, seaPaths)
+  return route && fitShot(route.bounds, aspect)
 }
 
 /** South-west and north-east corners of `path`, whose longitudes are already unwrapped. */

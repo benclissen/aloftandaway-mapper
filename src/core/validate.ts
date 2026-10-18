@@ -1,6 +1,6 @@
 import { cameraAt, projectToLayout, resolveShots } from './camera.js'
 import { haversineKm } from './geo.js'
-import { buildRoute } from './route.js'
+import { buildContextRoute, buildRoute } from './route.js'
 import { fpsValue, THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
 import { NO_LAND_DATA, STOP_FAR_KM, STRAIGHT_LINE, UNVERIFIED_CAUSE, type SeaPaths } from './sea.js'
 import { SAME_PLACE_KM, TRACK_NEAR_KM } from './track.js'
@@ -103,11 +103,14 @@ const UNVERIFIED_FIX = {
  * What to do about a sea leg that fell back. One the network or the budget left unverified is routed again by itself
  * once the tiles can be had, so it only needs waiting for, not an edit.
  */
-function fallbackFix(sea: { reason?: string; unverified?: keyof typeof UNVERIFIED_FIX }): string {
+function fallbackFix(sea: { reason?: string; unverified?: keyof typeof UNVERIFIED_FIX }, context = false): string {
   if (sea.reason === NO_LAND_DATA) {
     return 'Reinstall Mapper, or run npm run build:land in its folder, then reopen the project. The leg is drawn as a straight line until then.'
   }
   if (sea.unverified === 'offline' || sea.unverified === 'budget') return `${UNVERIFIED_FIX[sea.unverified]} It is drawn as a straight line until then.`
+  if (context) {
+    return "Fix the leg in the scene it was copied from (add via points over open water, or set its mode to 'line'), then run copy_context again. It is drawn as a straight line until then."
+  }
   return "Add via points over open water with insert_via to guide it, move the stop nearer the coast, or set the leg's mode to 'line' with update_leg. It is drawn as a straight line until then."
 }
 
@@ -356,6 +359,20 @@ function validateScene(
       }
     }
     warnings.push(...signOverlaps(scene, aspect, fps, route, nameOf))
+  }
+
+  const context = seaPaths && scene.context ? buildContextRoute(scene, seaPaths) : undefined
+  if (scene.context && context) {
+    const contextName = (i: number) => scene.context!.stops[i]?.name || `Stop ${i + 1}`
+    context.legs.forEach((leg, i) => {
+      if (leg.sea?.status !== 'fallback') return
+      warnings.push({
+        code: 'context-sea-fallback',
+        message: `Context leg ${i + 1} (${contextName(i)} → ${contextName(i + 1)}) has no sea route: ${leg.sea.reason ?? 'routing failed'}`,
+        path: ['context', 'legs', i, 'mode'],
+        fix: fallbackFix(leg.sea, true),
+      })
+    })
   }
 
   return { errors, warnings }

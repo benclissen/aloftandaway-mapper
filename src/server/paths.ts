@@ -164,16 +164,20 @@ function inOrder<T>(folder: string, task: () => Promise<T>): Promise<T> {
   return run
 }
 
-/** Every sea leg in `project`, keyed by `seaLegKey`. */
+/** Every sea leg in `project`, keyed by `seaLegKey`: each scene's own, and those of its context. */
 export function seaLegsOf(project: Project): Map<string, [LngLat, LngLat, ViaPoint[]]> {
   const legs = new Map<string, [LngLat, LngLat, ViaPoint[]]>()
-  for (const scene of project.scenes) {
-    scene.legs.forEach((leg, i) => {
-      const from = scene.stops[i]
-      const to = scene.stops[i + 1]
+  const add = (stops: { at: LngLat }[], list: { mode: string; via: ViaPoint[] }[]): void => {
+    list.forEach((leg, i) => {
+      const from = stops[i]
+      const to = stops[i + 1]
       if (leg.mode !== 'sea' || !from || !to) return
       legs.set(seaLegKey(from.at, to.at, leg.via), [from.at, to.at, leg.via])
     })
+  }
+  for (const scene of project.scenes) {
+    add(scene.stops, scene.legs)
+    if (scene.context) add(scene.context.stops, scene.context.legs)
   }
   return legs
 }

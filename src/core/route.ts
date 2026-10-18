@@ -1,7 +1,7 @@
 import { airPath } from './air.js'
 import { dist, lerp, sampleChain, type Control } from './curve.js'
 import { toLngLat, toXY, unwrapLng, headingDeg, type XY } from './geo.js'
-import type { LegMode, LngLat, Scene, SymbolKind } from './schema.js'
+import type { LegMode, LngLat, Scene, Stop, SymbolKind } from './schema.js'
 import { seaLegKey, type SeaPath, type SeaPaths } from './sea.js'
 import { cutTrack, trackKey, type TrackCut } from './track.js'
 
@@ -239,6 +239,17 @@ export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
     }
   }
   return { legs, length, bounds: [[west, south], [east, north]] }
+}
+
+/**
+ * The routed line of a scene's context, or `undefined` when it has none. Built like the scene's own route, from stand-in
+ * stops that don't pause and show no sign. A context sea leg takes its path from `seaPaths` like any other.
+ */
+export function buildContextRoute(scene: Scene, seaPaths?: SeaPaths): Route | undefined {
+  const { context } = scene
+  if (!context) return undefined
+  const stops = context.stops.map((s, i): Stop => ({ id: `context-${i}`, name: s.name, at: s.at, pause: 0, sign: 'none' }))
+  return buildRoute({ ...scene, stops, legs: context.legs }, seaPaths)
 }
 
 /** `lng` shifted by whole turns into [-180, 180). */

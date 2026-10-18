@@ -12,9 +12,9 @@ interface ShotPanelProps {
   onUseEnd(): void
   onFit(): void
   onAddKey(): void
-  /** Scrub to the key at `index`. */
-  onGoToKey(index: number): void
-  onRemoveKey(index: number): void
+  /** Scrub to the key at `at` seconds. */
+  onGoToKey(at: number): void
+  onRemoveKey(at: number): void
   onClearKeys(): void
 }
 
@@ -76,9 +76,15 @@ export function ShotPanel({
         </button>
       )}
       {keyed &&
-        keys.map((key, i) => (
+        keys.map((key) => (
           <span className="camera-key" key={key.at}>
-            <button type="button" data-testid="camera-key" title={`Go to the camera key at ${keyTime(key.at)}`} onClick={() => onGoToKey(i)}>
+            <button
+              type="button"
+              data-testid="camera-key"
+              aria-label={`Go to camera key at ${keyTime(key.at)}`}
+              title={`Go to the camera key at ${keyTime(key.at)}`}
+              onClick={() => onGoToKey(key.at)}
+            >
               {keyTime(key.at)}
             </button>
             <button
@@ -86,7 +92,7 @@ export function ShotPanel({
               data-testid="remove-key"
               aria-label={`Remove the camera key at ${keyTime(key.at)}`}
               title="Remove this camera key"
-              onClick={() => onRemoveKey(i)}
+              onClick={() => onRemoveKey(key.at)}
             >
               ×
             </button>

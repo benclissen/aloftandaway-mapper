@@ -51,6 +51,9 @@ function legIndex(scene: Scene | undefined, pair: LegPair | undefined): number |
   return i < 0 ? undefined : i
 }
 
+/** An edit built against the project it is applied to: gets the project and the scene it was made on. */
+type SceneEdit = (base: Project, scene: string) => ProjectPatch | undefined
+
 const MODE_NAMES = { fixed: 'Fixed', glide: 'Glide', follow: 'Follow' } as const
 
 /** Whether a key press belongs to a form field, where Cmd-Z means the field's own undo. */
@@ -298,13 +301,19 @@ export function App() {
    * they change by id and are always applied.
    */
   const edit = useCallback(
-    (input: ProjectPatch, label: string, opts: { saved?: string; seen?: string } = {}): Promise<boolean> => {
+    (input: ProjectPatch | SceneEdit, label: string, opts: { saved?: string; seen?: string } = {}): Promise<boolean> => {
       const { saved, seen = current.current?.updatedAt } = opts
+      // A function builds its patch against the project the queue applies it to, so it can't drop what an edit ahead of
+      // it, or a write from outside, has just changed. It edits the scene on screen when it was made and returns no
+      // patch when there is nothing left to do.
+      const build = typeof input === 'function' ? input : undefined
+      const scene = activeRef.current
+      const fixed: ProjectPatch = build ? {} : (input as ProjectPatch)
       // An edit to a scene's contents names the scene it was made on, even if the tab changes before it is sent.
-      const editsStops = input.ops?.some((op) => !isSceneOp(op)) ?? false
-      const touchesScene = input.sceneSet !== undefined || editsStops
-      const body: ProjectPatch =
-        touchesScene && input.scene === undefined && activeRef.current !== undefined ? { ...input, scene: activeRef.current } : input
+      const editsStops = fixed.ops?.some((op) => !isSceneOp(op)) ?? false
+      const touchesScene = fixed.sceneSet !== undefined || editsStops
+      let body: ProjectPatch =
+        touchesScene && fixed.scene === undefined && activeRef.current !== undefined ? { ...fixed, scene: activeRef.current } : fixed
       // Undo comes back to the scene the edit was made on: the one a stop, leg or via edit names, else the one on screen.
       const madeOn = editsStops && typeof body.scene === 'string' ? body.scene : activeRef.current!
       const conditional = body.ops?.some((op) => INDEX_OPS.has(op.op)) ?? false
@@ -314,8 +323,17 @@ export function App() {
       let around: { sceneBefore: string; sceneAfter: string } | undefined
       let problem = ''
       let stale = false
+      let nothing = false
       const make = (base: Project): ProjectPatch | undefined => {
         held = base.updatedAt
+        if (build) {
+          const made = scene === undefined ? undefined : build(base, scene)
+          if (!made) {
+            nothing = true
+            return undefined
+          }
+          body = { ...made, scene }
+        }
         sentIn = generation.current
         if (conditional && seen !== undefined && outside.since(seen)) {
           stale = true
@@ -334,6 +352,7 @@ export function App() {
       }
       return queue.run(make, () => current.current!, { conditional }).then(
         (response) => {
+          if (!response && nothing) return false
           if (!response && stale) {
             setNotice({ kind: 'error', text: ROUTE_CHANGED })
             return false
@@ -481,30 +500,46 @@ export function App() {
 
   const keys = scene.camera.keys ?? []
   const keyRate = fpsValue(project.output.fps)
-  const keyEdit = (next: CameraKey[], label: string, saved: string) =>
-    void edit({ sceneSet: { camera: { keys: next.length > 0 ? next : null } } }, label, { saved })
+
+  // A key is known by its frame, the same whichever copy of the keys it is looked up in.
+  const frameOf = (at: number, rate = keyRate) => Math.round(at * rate)
+  const keysOf = (base: Project, sceneId: string): CameraKey[] => base.scenes.find((s) => s.id === sceneId)?.camera.keys ?? []
+  const setKeys = (next: CameraKey[]): ProjectPatch => ({ sceneSet: { camera: { keys: next.length > 0 ? next : null } } })
 
   // The view now becomes a key at the scrubber's frame, in seconds to the millisecond so it lands back on that frame.
   const addKey = () => {
     const shot = stage.current?.shot()
     if (!shot) return
     const at = Math.round((shown / keyRate) * 1000) / 1000
-    const others = keys.filter((k) => Math.round(k.at * keyRate) !== shown)
-    const next = [...others, { at, shot }].sort((a, b) => a.at - b.at)
-    keyEdit(next, `Add camera key at ${keyTime(at)}`, 'Camera key saved')
+    void edit(
+      (base, id) => {
+        const rate = fpsValue(base.output.fps)
+        const others = keysOf(base, id).filter((k) => frameOf(k.at, rate) !== shown)
+        return setKeys([...others, { at, shot }].sort((a, b) => a.at - b.at))
+      },
+      `Add camera key at ${keyTime(at)}`,
+      { saved: 'Camera key saved' },
+    )
   }
 
-  const goToKey = (index: number) => {
-    const key = keys[index]
-    if (!key) return
+  const goToKey = (at: number) => {
     setPlaying(false)
     setFreeView(false)
-    setFrame(Math.min(Math.round(key.at * keyRate), last))
+    setFrame(Math.min(frameOf(at), last))
   }
 
-  const removeKey = (index: number) => {
-    const key = keys[index]
-    if (key) keyEdit(keys.filter((_, i) => i !== index), `Remove camera key at ${keyTime(key.at)}`, 'Camera key removed')
+  const removeKey = (at: number) => {
+    const frame = frameOf(at)
+    void edit(
+      (base, id) => {
+        const rate = fpsValue(base.output.fps)
+        const keys = keysOf(base, id)
+        const rest = keys.filter((k) => frameOf(k.at, rate) !== frame)
+        return rest.length < keys.length ? setKeys(rest) : undefined
+      },
+      `Remove camera key at ${keyTime(at)}`,
+      { saved: 'Camera key removed' },
+    )
   }
 
   return (

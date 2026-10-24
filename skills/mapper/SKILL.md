@@ -33,9 +33,10 @@ page.
    scenes, check each scene (see "Scenes").
 6. Tweak with `update_project`, then check the contact sheet again. `set`
    changes the project's name, output and credit. `sceneSet` changes the
-   scene's name, timing, look and camera (for example `look.theme`,
+   scene's name, timing, look, camera and context (for example `look.theme`,
    `look.terrain` or `look.symbolStyle`). `ops` edits stops, legs and via
-   points, and adds, duplicates, removes or moves scenes. Passing `null`
+   points, copies a route in as context (`copy_context`), and adds, duplicates,
+   removes or moves scenes. Passing `null`
    removes a key.
 7. `open_studio` and give the user the link. They can scrub the preview, drag
    stops, set start and end shots, and reshape routes: click a leg to select
@@ -303,6 +304,74 @@ picker. Pick by what the film needs:
 - Signs: `tag` is the only sign style. Its font is the same in every style.
 - Camera: a glide with no `start` opens on the first leg and pulls out to the
   whole route. A `fixed` camera with no `start` shows the whole route.
+- Camera keys: `camera.keys` is a list of `{ "at": seconds, "shot": {...} }`,
+  glide mode only. `at` counts from the scene's first frame. The camera holds
+  the first key's shot until its time, flies from key to key (`camera.easing`
+  applies to each flight), and holds the last shot. The ship's timing doesn't
+  change. While keys are set, `start` and `end` are ignored, and validation says
+  so (`camera-start-end-ignored`). Keys must be in ascending `at` order, with no
+  two at the same time, or validation reports an error
+  (`camera-keys-order`) and blocks a render. Keys on a fixed or follow camera
+  are ignored (`camera-keys-ignored`). A key after the scene's last frame
+  gets `camera-key-late`, and a key zoomed past the theme's maximum gets
+  `zoom-above-max`. Send the whole list in `sceneSet`, for example
+  `{ "camera": { "keys": [ { "at": 0, "shot": {...} }, { "at": 3, "shot": {...} } ] } }`.
+  `null` clears it. `get_project` shows `keys` as stored, and `resolvedStart`
+  and `resolvedEnd` are the first and last key's shots. In the studio's glide
+  mode: Add key, click a key chip to scrub to it, × on a chip removes it, and
+  Clear keys removes them all. Fit to route clears keys, and Use as start / end
+  is hidden while keys exist. `duplicate_scene` copies keys. `add_scene` doesn't.
+- Route context: `scene.context` is a faint copy of another route, drawn under
+  the scene's own. Use it when a scene shows one leg of a longer trip and the
+  viewer should still see where it sits. The `copy_context { folder?, scene? }`
+  op in `update_project`'s `ops` fills it. The scene that receives the context
+  is the patch's own `scene`. The op's `scene` is the one to copy from (an id or
+  1-based position, default the first). `folder` is the absolute path of another
+  project (leave it out to copy from this one). A scene can't be its own
+  context. It copies
+  the stops (name and position) and the legs (mode and via points). A
+  recorded track leg comes over as a plain `line` leg, because a context keeps
+  no tracks. It's a snapshot, so if the main route changes, run `copy_context` again. The source
+  project is only read. `sceneSet: { "context": null }` removes it. Context
+  shows as a thin line in the line colour at about a third opacity, plus a
+  faint dot at each of its stops, with no name tags. In a layered export it is
+  on the `route` layer. Context sea legs are routed like any sea leg, so the first update after
+  `copy_context` may take a while on a long cruise, and a context sea leg that
+  falls back to a straight line is a warning.
+  `get_project` gives each scene's `resolvedContext`: a shot that fits the
+  whole context route in the output frame. That's your wide shot for key 0.
+
+### Subclip of one leg
+
+Say a trip has several islands, and the film wants a clip of just the sail from
+one to the next. Make it a one-leg scene with the full trip as context.
+
+1. Make a project, or add a scene, with the two ports as its only stops. Set the
+   leg's mode to `sea` and its symbol (`cruise-ship` or `ferry`). A symbol
+   alone also sets the mode.
+2. `update_project` with `ops: [{ "op": "copy_context", "folder": "<abs path of the full trip project>", "scene": 1 }]`.
+   (`scene` is the trip's scene to copy from.) The full route now shows faintly
+   under the leg.
+3. `get_project` and take `resolvedContext` from the scene's `camera`. That's
+   the whole trip in frame.
+4. Set `timing.holdStart` so the ship leaves after the zoom, say 3 s. Then read
+   the departure time (the first stop's) and the arrival time (the second
+   stop's) from the scene's `timeline` in the tool result. The ship leaves at
+   `holdStart` plus the first stop's `pause`, which is 0 unless you set it.
+5. Set `camera.keys` with `sceneSet`, in this order:
+   - `at: 0`, the `resolvedContext` shot, so the clip opens on the whole trip.
+   - `at: 1`, a close shot of the first port.
+   - `at: <departure time>`, the same close shot again, so the camera holds
+     there until the ship sets off.
+   - `at: <arrival time>`, a close shot of the next port.
+6. `preview_contact_sheet`, and look at it. Check that the whole trip shows
+   first, the camera is close on the first port by about a second in, and it has
+   flown to the next port by the time the ship arrives. Also check that the
+   ship stays in frame between the keys: the camera starts slower than the
+   ship, so with very close port shots (around zoom 13 on a leg of about 200 km)
+   it can leave the frame mid-leg. Pick port shots loose enough that the ship
+   stays in frame (zoom 9 to 12 does for a leg like that), or add a key
+   mid-leg. Nudge the key times and zooms, then check again.
 
 ## Rules
 
@@ -417,6 +486,9 @@ Projects made before stage 5 still load, with these intended differences:
 - A project with `terrain: true` now renders in 3D. It used to render flat.
 - A symbol other than `dot` now draws its icon in place of the dot.
 - Sign text uses Plus Jakarta Sans.
+
+Camera keys and route context are new fields, so older projects have neither
+and look exactly as before. Add them where a scene needs them.
 
 Projects made before stage 6 still load. Their one scene keeps its stops and
 settings. The layer folder is now named after the scene (`01-<scene-slug>`, not

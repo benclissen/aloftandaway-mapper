@@ -1,6 +1,17 @@
 import { headingDeg, toLngLat, toXY, unwrapLng, type XY } from './geo.js'
-import type { Route } from './route.js'
-import { fpsValue, layoutSize, THEME_MAX_ZOOM, type Aspect, type LngLat, type Scene, type Shot } from './schema.js'
+import { buildContextRoute, routeNear, type Route } from './route.js'
+import {
+  fpsValue,
+  layoutSize,
+  THEME_MAX_ZOOM,
+  type Aspect,
+  type Camera,
+  type CameraKey,
+  type LngLat,
+  type Scene,
+  type Shot,
+} from './schema.js'
+import type { SeaPaths } from './sea.js'
 import { ease, type Timeline } from './timeline.js'
 
 /** Tile size in layout px. The world is `TILE_SIZE · 2^zoom` layout px across at `zoom`. */
@@ -46,6 +57,17 @@ export function fitShot(bounds: [LngLat, LngLat], aspect: Aspect, padding: numbe
   return { center, zoom, bearing: 0, pitch: 0 }
 }
 
+/**
+ * The shot that frames the whole of `scene`'s context route in `aspect`, or `undefined` when it has no context. The
+ * route is moved to lie nearest the scene's first stop, as the stage draws it, so the shot sits on the drawn context.
+ */
+export function contextShot(scene: Scene, aspect: Aspect, seaPaths?: SeaPaths): Shot | undefined {
+  const built = buildContextRoute(scene, seaPaths)
+  if (!built) return undefined
+  const route = scene.stops[0] ? routeNear(built, scene.stops[0].at[0]) : built
+  return fitShot(route.bounds, aspect)
+}
+
 /** South-west and north-east corners of `path`, whose longitudes are already unwrapped. */
 function pathBounds(path: LngLat[]): [LngLat, LngLat] {
   let [west, south, east, north] = [Infinity, Infinity, -Infinity, -Infinity]
@@ -78,13 +100,20 @@ function defaultStart(scene: Scene, aspect: Aspect, route: Route, whole: Shot): 
   return { center: [lng, lat], zoom: Math.min(whole.zoom + FIRST_STOP_ZOOM_IN, max), bearing: 0, pitch: 0 }
 }
 
+/** A copy of `keys` in time order. Keys at the same time keep their stored order. */
+const byTime = (keys: CameraKey[]): CameraKey[] => [...keys].sort((a, b) => a.at - b.at)
+
 /**
- * The scene camera's start and end shots, in the output aspect. A missing end is fitted to the whole route. A missing
- * start is the first leg, so a default glide pulls out from the first leg to the whole route (see `defaultStart` and
- * `cameraAt`).
+ * The scene camera's start and end shots, in the output aspect. A glide with keys starts on its first key and ends on
+ * its last, in time order. Otherwise a missing end is fitted to the whole route, and a missing start is the first leg,
+ * so a default glide pulls out from the first leg to the whole route (see `defaultStart` and `cameraAt`).
  */
 export function resolveShots(scene: Scene, aspect: Aspect, route: Route): { start: Shot; end: Shot } {
-  const { start, end } = scene.camera
+  const { start, end, keys } = scene.camera
+  if (scene.camera.mode === 'glide' && keys?.length) {
+    const sorted = byTime(keys)
+    return { start: sorted[0]!.shot, end: sorted[sorted.length - 1]!.shot }
+  }
   const whole = fitShot(route.bounds, aspect)
   return { start: start ?? defaultStart(scene, aspect, route, whole), end: end ?? whole }
 }
@@ -294,6 +323,27 @@ function followTrack(scene: Scene, aspect: Aspect, route: Route, timeline: Timel
   return track
 }
 
+/** `shot` held still: a fresh copy with its bearing in (-180, 180]. */
+function held(shot: Shot): Shot {
+  const [lng, lat] = shot.center
+  return { center: [lng, lat], zoom: shot.zoom, bearing: normaliseBearing(shot.bearing), pitch: shot.pitch }
+}
+
+/**
+ * The keyed glide's view `seconds` from the scene's first frame. It holds the first key's shot until that key's time,
+ * flies from each key to the next with `easing` applied per segment, and holds the last key's shot after it. `keys`
+ * needn't be in order and must not be empty.
+ */
+export function keyedShot(keys: CameraKey[], aspect: Aspect, easing: Camera['easing'], seconds: number): Shot {
+  const sorted = byTime(keys)
+  let k = 0
+  while (k + 1 < sorted.length && sorted[k + 1]!.at <= seconds) k++
+  const a = sorted[k]!
+  const b = sorted[k + 1]
+  if (!b || seconds <= a.at) return held(a.shot)
+  return flyInterpolator(a.shot, b.shot, aspect)(ease(easing, (seconds - a.at) / (b.at - a.at)))
+}
+
 /**
  * How far along the glide `frame` is, 0 to 1, before easing. A stored start glides across the travel section. A default
  * start (the first leg) pulls out from frame 0 to the end of the first leg's travel, then holds the end shot.
@@ -365,7 +415,8 @@ function pullOut(scene: Scene, aspect: Aspect, timeline: Timeline, glide: (frame
 }
 
 /**
- * The map view on `frame`. `fixed` holds `start`. `glide` with a stored start flies from `start` to `end` across the
+ * The map view on `frame`. `fixed` holds `start`. `glide` with keys follows them on the scene's clock (see `keyedShot`)
+ * and ignores `start` and `end`. Otherwise `glide` with a stored start flies from `start` to `end` across the
  * travel section with `camera.easing` applied once to the overall travel progress, holding at both ends. With a default
  * start it flies from frame 0, through the opening hold, to the end of the first leg's travel, then holds `end` (see
  * `glideProgress`), pulling out further where needed to keep the head inside the head padding (see
@@ -381,11 +432,12 @@ export function cameraAt(scene: Scene, aspect: Aspect, route: Route, timeline: T
     const [lng, lat] = track.centers[f]!
     return { center: [lng, lat], zoom: follow.zoom, bearing: track.bearings[f]!, pitch: follow.pitch }
   }
-  const { start, end } = resolveShots(scene, aspect, route)
-  if (scene.camera.mode === 'fixed') {
-    const [lng, lat] = start.center
-    return { center: [lng, lat], zoom: start.zoom, bearing: normaliseBearing(start.bearing), pitch: start.pitch }
+  const { keys } = scene.camera
+  if (scene.camera.mode === 'glide' && keys?.length) {
+    return keyedShot(keys, aspect, scene.camera.easing, frame / fpsValue(timeline.fps))
   }
+  const { start, end } = resolveShots(scene, aspect, route)
+  if (scene.camera.mode === 'fixed') return held(start)
   const fly = flyInterpolator(start, end, aspect)
   const glide = (f: number) => fly(ease(scene.camera.easing, glideProgress(scene, timeline, f)))
   const shot = glide(frame)

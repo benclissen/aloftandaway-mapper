@@ -6,9 +6,11 @@ import type { Page } from 'playwright'
 import { PNG } from 'pngjs'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import {
+  buildContextRoute,
   buildRoute,
   buildTimeline,
   cameraAt,
+  contextShot,
   pointAt,
   layoutSize,
   SIGN_TAG,
@@ -257,6 +259,59 @@ describe('the vehicle at the route head', () => {
     expect(navyAt(8)).toBe(true)
     expect(navyAt(-8)).toBe(false)
     await close()
+  })
+})
+
+describe('route context', () => {
+  /** Mykonos to Santorini, with the whole Greek Islands route as its context, framed whole and still on the context. */
+  function oneLegOfTheCruise(): Project {
+    const whole = sceneOf(greekIslands())
+    const project = greekIslands({
+      stops: whole.stops.slice(1, 3),
+      legs: [whole.legs[1]!],
+      context: { from: 'Greek Islands · Scene 1', stops: whole.stops.map(({ name, at }) => ({ name, at })), legs: whole.legs },
+    })
+    const scene = sceneOf(project)
+    scene.camera = { mode: 'fixed', easing: 'smooth', start: contextShot(scene, project.output.aspect)! }
+    return project
+  }
+
+  /** The pixels within 3 device px of (x, y). */
+  function around(png: Buffer, x: number, y: number): [number, number, number, number][] {
+    const out: [number, number, number, number][] = []
+    for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) out.push(pixel(png, x + dx, y + dy))
+    return out
+  }
+
+  test('draws the context faintly away from the scene route, on the route layer only', async () => {
+    const project = oneLegOfTheCruise()
+    // Halfway from Santorini to Rhodes: on the context, well clear of the scene's own leg.
+    const context = buildContextRoute(sceneOf(project))!
+    const [toMykonos, toSantorini, toRhodes] = context.legs.map((l) => l.length)
+    const at = pointAt(context, toMykonos! + toSantorini! + toRhodes! / 2).at
+    const [x, y] = layoutPx(project, 0, at)
+    // Layout px are device px at pixel ratio 1.
+    expect(x > 10 && x < 1910 && y > 10 && y < 1070).toBe(true)
+
+    const all = await openRenderPage(project, 1)
+    const map = await openRenderPage(project, 1, { layer: 'map' })
+    const route = await openRenderPage(project, 1, { layer: 'route' })
+    try {
+      // The route colour, #d9472b, at 35 % over the background: about (227, 173, 157). The full colour has green 71.
+      const [r, g, b] = around(await snapshot(all.page, 0), x, y).reduce((a, p) => (p[1] < a[1] ? p : a))
+      expect(r).toBeGreaterThan(215)
+      expect(g).toBeGreaterThan(140)
+      expect(g).toBeLessThan(205)
+      expect(b).toBeLessThan(g)
+      for (const p of around(await snapshot(map.page, 0), x, y)) expect(p).toEqual([0xe9, 0xe4, 0xda, 255])
+      const alpha = Math.max(...around(await snapshot(route.page, 0), x, y).map((p) => p[3]))
+      expect(alpha).toBeGreaterThan(60)
+      expect(alpha).toBeLessThan(130)
+    } finally {
+      await all.close()
+      await map.close()
+      await route.close()
+    }
   })
 })
 

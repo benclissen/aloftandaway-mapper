@@ -210,6 +210,123 @@ test('use this view as start shot saves the camera', async () => {
   }
 })
 
+test('camera keys: add, remove, clear and undo', async () => {
+  const studio = await openStudioPage(greekIslands({ camera: { mode: 'glide', easing: 'smooth' } }), VIEWPORT)
+  const { page, folder, project, close } = studio
+  try {
+    await page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
+    const rate = project.output.fps
+    const fps = typeof rate === 'number' ? rate : rate.num / rate.den
+    const keysOf = async () => sceneOf(await loadProject(folder)).camera.keys
+    const saved = (want: (keys: ReturnType<typeof sceneOf>['camera']['keys']) => boolean) =>
+      expect.poll(async () => want(await keysOf()), { timeout: 3000, interval: 100 }).toBe(true)
+
+    // A glide without keys offers Add key and the start and end shots, and no Clear keys.
+    expect(await page.getByTestId('add-key').count()).toBe(1)
+    expect(await page.getByTestId('clear-keys').count()).toBe(0)
+    expect(await page.getByTestId('use-start').count()).toBe(1)
+
+    // A key at the scrubber's time, holding the view on screen.
+    const frame = Math.round(fps) // 1.0 s in
+    await page.getByTestId('scrubber').fill(String(frame))
+    await page.waitForSelector(`[data-testid="stage"][data-shown-frame="${frame}"]`)
+    await page.getByTestId('add-key').click()
+    await saved((keys) => keys?.length === 1)
+    const first = (await keysOf())![0]!
+    expect(first.at).toBe(Math.round((frame / fps) * 1000) / 1000)
+    expect(Math.round(first.at * fps)).toBe(frame)
+    await expect.poll(() => page.getByTestId('camera-key').textContent()).toBe('1.0 s')
+
+    // Keys win, so the start and end buttons go.
+    expect(await page.getByTestId('use-start').count()).toBe(0)
+    expect(await page.getByTestId('use-end').count()).toBe(0)
+
+    // A second key at an earlier time sorts first; one at the same frame replaces the key there.
+    await page.getByTestId('scrubber').fill('10')
+    await page.waitForSelector('[data-testid="stage"][data-shown-frame="10"]')
+    await page.getByTestId('add-key').click()
+    await saved((keys) => keys?.length === 2)
+    expect((await keysOf())!.map((k) => k.at)).toEqual([10, frame].map((f) => Math.round((f / fps) * 1000) / 1000))
+    await page.getByTestId('add-key').click()
+    await page.waitForTimeout(300)
+    expect(await keysOf()).toHaveLength(2)
+    await expect.poll(() => page.getByTestId('camera-key').count()).toBe(2)
+
+    // A chip scrubs to its key.
+    await page.getByTestId('camera-key').nth(1).click()
+    await page.waitForSelector(`[data-testid="stage"][data-shown-frame="${frame}"]`)
+    expect(await page.getByTestId('scrubber').inputValue()).toBe(String(frame))
+
+    // Removing one key leaves the other; removing the last takes keys out of the file, and the buttons return.
+    await page.getByTestId('remove-key').nth(0).click()
+    await saved((keys) => keys?.length === 1 && keys[0]!.at === first.at)
+    await page.getByTestId('remove-key').click()
+    await saved((keys) => keys === undefined)
+    await page.getByTestId('use-start').waitFor()
+    expect(await page.getByTestId('use-end').count()).toBe(1)
+    expect(await page.getByTestId('clear-keys').count()).toBe(0)
+
+    // Undo brings the key back, one step at a time.
+    await page.getByTestId('undo').click()
+    await saved((keys) => keys?.length === 1)
+    expect(await page.getByTestId('use-start').count()).toBe(0)
+
+    // Clear keys removes both at once, and one undo restores both.
+    await page.getByTestId('undo').click()
+    await saved((keys) => keys?.length === 2)
+    await page.getByTestId('clear-keys').click()
+    await saved((keys) => keys === undefined)
+    await page.getByTestId('undo').click()
+    await saved((keys) => keys?.length === 2)
+
+    // Fit to route clears keys too.
+    await page.getByTestId('fit-shots').click()
+    await saved((keys) => keys === undefined)
+
+    // A fixed camera has no key controls.
+    await page.getByTestId('camera-mode').getByRole('button', { name: 'Fixed' }).click()
+    await expect.poll(() => page.getByTestId('add-key').count()).toBe(0)
+    expect(await page.locator('.notice-error').count()).toBe(0)
+  } finally {
+    await close()
+  }
+})
+
+test('two quick camera keys at different times both save', async () => {
+  const { page, folder, project, close } = await (async () => {
+    const studio = await openStudioPage(greekIslands({ camera: { mode: 'glide', easing: 'smooth' } }), VIEWPORT)
+    await studio.page.waitForSelector('[data-testid="stage"][data-shown-frame="0"]')
+    return studio
+  })()
+  try {
+    const rate = project.output.fps
+    const fps = typeof rate === 'number' ? rate : rate.num / rate.den
+    // The first save is held back, so the second click comes before it has settled and the studio's keys are still empty.
+    let held = false
+    await page.route('**/patch', async (route) => {
+      if (!held) {
+        held = true
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+      }
+      await route.continue()
+    })
+    await page.getByTestId('scrubber').fill('10')
+    await page.waitForSelector('[data-testid="stage"][data-shown-frame="10"]')
+    await page.getByTestId('add-key').click()
+    await page.getByTestId('scrubber').fill('30')
+    await page.waitForSelector('[data-testid="stage"][data-shown-frame="30"]')
+    await page.getByTestId('add-key').click()
+    const want = [10, 30].map((f) => Math.round((f / fps) * 1000) / 1000)
+    await expect
+      .poll(async () => (sceneOf(await loadProject(folder)).camera.keys ?? []).map((k) => k.at), { timeout: 3000, interval: 100 })
+      .toEqual(want)
+    await expect.poll(() => page.getByTestId('camera-key').count()).toBe(2)
+    expect(await page.locator('.notice-error').count()).toBe(0)
+  } finally {
+    await close()
+  }
+})
+
 test('a start shot saved fully zoomed out is inside the schema', async () => {
   const { page, folder, close } = await openStudio()
   try {

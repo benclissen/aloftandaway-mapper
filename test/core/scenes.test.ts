@@ -110,7 +110,7 @@ function distinct(): Project {
   project.scenes[0]!.camera = { mode: 'follow', easing: 'linear', follow: { zoom: 9 }, start: { center: [1, 1], zoom: 3, bearing: 0, pitch: 0 } }
   project.scenes[1]!.look.theme = 'blank'
   project.scenes[1]!.timing = { holdStart: 0, travel: 20, holdEnd: 0 }
-  project.scenes[1]!.camera = { mode: 'glide', easing: 'smooth' }
+  project.scenes[1]!.camera = { mode: 'glide', easing: 'smooth', keys: [{ at: 1, shot: { center: [2, 2], zoom: 5, bearing: 0, pitch: 0 } }] }
   return project
 }
 
@@ -161,6 +161,7 @@ describe('scene ops', () => {
   test('duplicate_scene gives fresh scene and stop ids', () => {
     const base = projectWithScenes(2, ['Drive', 'Sail'])
     const original = base.scenes[0]!
+    original.camera = { mode: 'glide', easing: 'linear', keys: [{ at: 0.5, shot: { center: [2, 2], zoom: 5, bearing: 0, pitch: 0 } }] }
     const p = applyPatch(base, { ops: [{ op: 'duplicate_scene', id: original.id }] })
     expect(p.scenes.map((s) => s.name)).toEqual(['Drive', 'Drive copy', 'Sail'])
     const copy = p.scenes[1]!
@@ -171,6 +172,7 @@ describe('scene ops', () => {
     expect(new Set(copy.stops.map((s) => s.id)).size).toBe(copy.stops.length)
     expect(copy.legs).toEqual(original.legs)
     expect(copy.look).toEqual(original.look)
+    expect(copy.camera).toEqual(original.camera)
     const id = newSceneId()
     expect(applyPatch(base, { ops: [{ op: 'duplicate_scene', id: original.id, newId: id }] }).scenes[1]!.id).toBe(id)
     const e = failure(() => applyPatch(base, { ops: [{ op: 'duplicate_scene', id: 'nope' }] }))

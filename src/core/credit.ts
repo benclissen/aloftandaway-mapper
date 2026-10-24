@@ -52,17 +52,21 @@ export type CreditForm = 'burned' | 'written'
 export const CREDIT_SEPARATOR = ' · '
 
 /**
- * Whether the scene has a sea leg between two of its stops. Its route is drawn from OpenStreetMap data (the basemap's
- * water), a produced work under the ODbL, so the scene needs the map credit even where no map is shown.
+ * Whether the scene draws a sea leg: one between two of its stops, or one in its route context. A sea route is drawn
+ * from OpenStreetMap data (the basemap's water), a produced work under the ODbL, so the scene needs the map credit
+ * even where no map is shown.
  */
-export function hasSeaLeg(scene: Pick<Scene, 'stops' | 'legs'>): boolean {
-  return scene.legs.some((leg, i) => leg.mode === 'sea' && i + 1 < scene.stops.length)
+export function hasSeaLeg(scene: Pick<Scene, 'stops' | 'legs' | 'context'>): boolean {
+  return (
+    scene.legs.some((leg, i) => leg.mode === 'sea' && i + 1 < scene.stops.length) ||
+    (scene.context?.legs.some((leg, i) => leg.mode === 'sea' && i + 1 < scene.context!.stops.length) ?? false)
+  )
 }
 
 /**
  * The credit lines a scene needs, in order. The map credit comes first, also for satellite (its labels are
- * OpenStreetMap data). `blank` shows no map data, so it needs the map credit only when a sea leg's route is
- * drawn from the basemap's water, and otherwise only what elevation data asks for.
+ * OpenStreetMap data). `blank` shows no map data, so it needs the map credit only when a sea leg's route (the
+ * scene's own or its context's) is drawn from the basemap's water, and otherwise only what elevation data asks for.
  */
 export function sceneCredit(scene: Scene, form: CreditForm = 'burned'): string[] {
   const { theme } = scene.look

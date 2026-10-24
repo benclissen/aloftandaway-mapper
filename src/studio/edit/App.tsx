@@ -9,6 +9,7 @@ import {
   newSceneId,
   sceneTitle,
   sceneTitleOf,
+  type CameraKey,
   type PatchResponse,
   type SeaPaths,
   type Project,
@@ -22,7 +23,7 @@ import { PointMenu } from './PointMenu.js'
 import { isSharp, removeViaEdit, sharpEdit, type PointMenuTarget } from './RouteEditor.js'
 import { SceneTabs, type SceneSummary } from './SceneTabs.js'
 import { Scrubber, type Tick } from './Scrubber.js'
-import { ShotPanel } from './ShotPanel.js'
+import { keyTime, ShotPanel } from './ShotPanel.js'
 import { StylePicker } from './StylePicker.js'
 import { Stage, type StageHandle } from './Stage.js'
 import './edit.css'
@@ -49,6 +50,9 @@ function legIndex(scene: Scene | undefined, pair: LegPair | undefined): number |
   const i = scene.stops.findIndex((s, i) => s.id === pair.from && scene.stops[i + 1]?.id === pair.to)
   return i < 0 ? undefined : i
 }
+
+/** An edit built against the project it is applied to: gets the project and the scene it was made on. */
+type SceneEdit = (base: Project, scene: string) => ProjectPatch | undefined
 
 const MODE_NAMES = { fixed: 'Fixed', glide: 'Glide', follow: 'Follow' } as const
 
@@ -297,13 +301,19 @@ export function App() {
    * they change by id and are always applied.
    */
   const edit = useCallback(
-    (input: ProjectPatch, label: string, opts: { saved?: string; seen?: string } = {}): Promise<boolean> => {
+    (input: ProjectPatch | SceneEdit, label: string, opts: { saved?: string; seen?: string } = {}): Promise<boolean> => {
       const { saved, seen = current.current?.updatedAt } = opts
+      // A function builds its patch against the project the queue applies it to, so it can't drop what an edit ahead of
+      // it, or a write from outside, has just changed. It edits the scene on screen when it was made and returns no
+      // patch when there is nothing left to do.
+      const build = typeof input === 'function' ? input : undefined
+      const scene = activeRef.current
+      const fixed: ProjectPatch = build ? {} : (input as ProjectPatch)
       // An edit to a scene's contents names the scene it was made on, even if the tab changes before it is sent.
-      const editsStops = input.ops?.some((op) => !isSceneOp(op)) ?? false
-      const touchesScene = input.sceneSet !== undefined || editsStops
-      const body: ProjectPatch =
-        touchesScene && input.scene === undefined && activeRef.current !== undefined ? { ...input, scene: activeRef.current } : input
+      const editsStops = fixed.ops?.some((op) => !isSceneOp(op)) ?? false
+      const touchesScene = fixed.sceneSet !== undefined || editsStops
+      let body: ProjectPatch =
+        touchesScene && fixed.scene === undefined && activeRef.current !== undefined ? { ...fixed, scene: activeRef.current } : fixed
       // Undo comes back to the scene the edit was made on: the one a stop, leg or via edit names, else the one on screen.
       const madeOn = editsStops && typeof body.scene === 'string' ? body.scene : activeRef.current!
       const conditional = body.ops?.some((op) => INDEX_OPS.has(op.op)) ?? false
@@ -313,8 +323,17 @@ export function App() {
       let around: { sceneBefore: string; sceneAfter: string } | undefined
       let problem = ''
       let stale = false
+      let nothing = false
       const make = (base: Project): ProjectPatch | undefined => {
         held = base.updatedAt
+        if (build) {
+          const made = scene === undefined ? undefined : build(base, scene)
+          if (!made) {
+            nothing = true
+            return undefined
+          }
+          body = { ...made, scene }
+        }
         sentIn = generation.current
         if (conditional && seen !== undefined && outside.since(seen)) {
           stale = true
@@ -333,6 +352,7 @@ export function App() {
       }
       return queue.run(make, () => current.current!, { conditional }).then(
         (response) => {
+          if (!response && nothing) return false
           if (!response && stale) {
             setNotice({ kind: 'error', text: ROUTE_CHANGED })
             return false
@@ -478,6 +498,50 @@ export function App() {
     else void edit({ sceneSet: { camera: { end: shot } } }, 'Set the end shot', { saved: 'End shot saved' })
   }
 
+  const keys = scene.camera.keys ?? []
+  const keyRate = fpsValue(project.output.fps)
+
+  // A key is known by its frame, the same whichever copy of the keys it is looked up in.
+  const frameOf = (at: number, rate = keyRate) => Math.round(at * rate)
+  const keysOf = (base: Project, sceneId: string): CameraKey[] => base.scenes.find((s) => s.id === sceneId)?.camera.keys ?? []
+  const setKeys = (next: CameraKey[]): ProjectPatch => ({ sceneSet: { camera: { keys: next.length > 0 ? next : null } } })
+
+  // The view now becomes a key at the scrubber's frame, in seconds to the millisecond so it lands back on that frame.
+  const addKey = () => {
+    const shot = stage.current?.shot()
+    if (!shot) return
+    const at = Math.round((shown / keyRate) * 1000) / 1000
+    void edit(
+      (base, id) => {
+        const rate = fpsValue(base.output.fps)
+        const others = keysOf(base, id).filter((k) => frameOf(k.at, rate) !== shown)
+        return setKeys([...others, { at, shot }].sort((a, b) => a.at - b.at))
+      },
+      `Add camera key at ${keyTime(at)}`,
+      { saved: 'Camera key saved' },
+    )
+  }
+
+  const goToKey = (at: number) => {
+    setPlaying(false)
+    setFreeView(false)
+    setFrame(Math.min(frameOf(at), last))
+  }
+
+  const removeKey = (at: number) => {
+    const frame = frameOf(at)
+    void edit(
+      (base, id) => {
+        const rate = fpsValue(base.output.fps)
+        const keys = keysOf(base, id)
+        const rest = keys.filter((k) => frameOf(k.at, rate) !== frame)
+        return rest.length < keys.length ? setKeys(rest) : undefined
+      },
+      `Remove camera key at ${keyTime(at)}`,
+      { saved: 'Camera key removed' },
+    )
+  }
+
   return (
     <div className="studio">
       <SceneTabs
@@ -566,6 +630,7 @@ export function App() {
           <ShotPanel
             mode={scene.camera.mode}
             freeView={freeView}
+            keys={[...keys].sort((a, b) => a.at - b.at)}
             onMode={(mode) => {
               setFreeView(false)
               void edit({ sceneSet: { camera: { mode } } }, `Camera mode: ${MODE_NAMES[mode]}`)
@@ -574,8 +639,14 @@ export function App() {
             onUseEnd={() => saveShot('end')}
             onFit={() => {
               setFreeView(false)
-              void edit({ sceneSet: { camera: { start: null, end: null } } }, 'Fit to route', { saved: 'Camera fits the route' })
+              void edit({ sceneSet: { camera: { start: null, end: null, keys: null } } }, 'Fit to route', {
+                saved: 'Camera fits the route',
+              })
             }}
+            onAddKey={addKey}
+            onGoToKey={goToKey}
+            onRemoveKey={removeKey}
+            onClearKeys={() => void edit({ sceneSet: { camera: { keys: null } } }, 'Clear camera keys', { saved: 'Camera keys cleared' })}
           />
           <StylePicker theme={scene.look.theme} terrain={scene.look.terrain} onEdit={onEdit} />
           {notice && (

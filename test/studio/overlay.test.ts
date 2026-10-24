@@ -237,3 +237,49 @@ describe('sign', () => {
     expect(boxBottom(sign({ symbol: 'dot' }))).toBe(200 - 16)
   })
 })
+
+describe('context dots', () => {
+  /** The centre, radius and opacity of each filled circle, in drawing order. */
+  function dots(layer: 'route' | 'signs' | 'map' | 'all') {
+    const scene = structuredClone(sceneOf(stopsAt([[1, 1], [2, 2]])))
+    scene.context = {
+      from: 'Scene 1',
+      stops: [{ name: 'A', at: [10, 10] }, { name: 'B', at: [20, 20] }, { name: 'C', at: [30, 30] }],
+      legs: [{ mode: 'line', via: [] }, { mode: 'line', via: [] }],
+    }
+    const out: { x: number; y: number; r: number; alpha: number }[] = []
+    let arc: { x: number; y: number; r: number } | undefined
+    const ctx = new Proxy({ canvas: { width: 960, height: 540 }, globalAlpha: 1 } as Record<string, unknown>, {
+      get(target, key: string) {
+        if (key === 'arc') return (x: number, y: number, r: number) => (arc = { x, y, r })
+        if (key === 'fill') return () => arc && out.push({ ...arc, alpha: Number(target.globalAlpha) })
+        if (key === 'save') return () => (target.saved = target.globalAlpha)
+        if (key === 'restore') return () => (target.globalAlpha = target.saved)
+        return key in target ? target[key] : () => undefined
+      },
+      set: (target, key: string, value) => ((target[key] = value), true),
+    }) as unknown as CanvasRenderingContext2D
+    // No head, so only stop dots are drawn.
+    const state = { signs: [] } as unknown as FrameState
+    drawOverlay(ctx, { layer, scene, credit: 'description', state, project2px: ([lng, lat]) => [lng, lat], pixelRatio: 1 })
+    return out
+  }
+
+  test('a faint dot at each context stop, the normal size, under the scene’s own stop dots', () => {
+    const all = dots('all')
+    expect(all.map(({ x, y, alpha }) => [x, y, alpha])).toEqual([
+      [10, 10, 0.5],
+      [20, 20, 0.5],
+      [30, 30, 0.5],
+      [1, 1, 1],
+      [2, 2, 1],
+    ])
+    expect(new Set(all.map((d) => d.r)).size).toBe(1)
+  })
+
+  test('belong to the route layer', () => {
+    expect(dots('route')).toHaveLength(5)
+    expect(dots('map')).toEqual([])
+    expect(dots('signs')).toEqual([])
+  })
+})

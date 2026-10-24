@@ -3,10 +3,12 @@ import {
   buildRoute,
   buildTimeline,
   cameraAt,
+  contextShot,
   ease,
   fitShot,
   flyInterpolator,
   haversineKm,
+  keyedShot,
   layoutSize,
   projectToLayout,
   resolveFollow,
@@ -15,6 +17,7 @@ import {
   TILE_SIZE,
   toXY,
   type Aspect,
+  type CameraKey,
   type FollowSettings,
   type LngLat,
   type Project,
@@ -361,6 +364,87 @@ describe('cameraAt', () => {
   })
 })
 
+describe('camera keys', () => {
+  const k0: CameraKey = { at: 1, shot: shot([20, 30], 4, 10, 0) }
+  const k1: CameraKey = { at: 3, shot: shot([23.6466, 37.942], 9, -20, 30) }
+  const k2: CameraKey = { at: 6, shot: shot([25.3289, 37.4467], 8, 0, 0) }
+  const keyed = (keys: CameraKey[], over: Partial<Project['scenes'][number]['camera']> = {}) =>
+    greekIslands({ camera: { mode: 'glide', easing: 'smooth', keys, ...over } })
+  const camOf = (p: Project) => {
+    const { route, tl } = timelineOf(p)
+    return { route, tl, at: (f: number) => cameraAt(sceneOf(p), p.output.aspect, route, tl, f) }
+  }
+
+  test('holds the first key, hits each key on its frame, eases between and holds the last', () => {
+    const { tl, at } = camOf(keyed([k0, k1, k2]))
+    expect(tl.fps).toEqual({ num: 25, den: 1 })
+    for (let f = 0; f <= 25; f++) expect(at(f)).toEqual(k0.shot)
+    expect(at(75)).toEqual(k1.shot)
+    expect(at(150)).toEqual(k2.shot)
+    for (let f = 150; f < tl.totalFrames; f++) expect(at(f)).toEqual(k2.shot)
+    const first = flyInterpolator(k0.shot, k1.shot, '16:9')
+    for (const f of [26, 40, 50, 74]) expect(at(f)).toEqual(first(ease('smooth', (f / 25 - 1) / 2)))
+    const second = flyInterpolator(k1.shot, k2.shot, '16:9')
+    for (const f of [76, 100, 149]) expect(at(f)).toEqual(second(ease('smooth', (f / 25 - 3) / 3)))
+    // The camera moves on the keys' clock, not the ship's: it is already flying during the opening hold.
+    expect(tl.travelStartFrame).toBe(25)
+    expect(at(50)).not.toEqual(at(25))
+  })
+
+  test('applies the easing per segment', () => {
+    const { at } = camOf(keyed([k0, k1], { easing: 'linear' }))
+    const fly = flyInterpolator(k0.shot, k1.shot, '16:9')
+    for (const f of [30, 50, 70]) expect(at(f)).toEqual(fly((f / 25 - 1) / 2))
+  })
+
+  test('unsorted keys behave as sorted', () => {
+    const sorted = camOf(keyed([k0, k1, k2]))
+    const shuffled = camOf(keyed([k2, k0, k1]))
+    for (let f = 0; f < sorted.tl.totalFrames; f++) expect(shuffled.at(f)).toEqual(sorted.at(f))
+  })
+
+  test('a single key holds on every frame', () => {
+    const { tl, at } = camOf(keyed([k1]))
+    for (const f of [0, 75, tl.totalFrames - 1]) expect(at(f)).toEqual(k1.shot)
+  })
+
+  test('keys at the same time never divide by zero', () => {
+    const twin: CameraKey = { at: 3, shot: shot([26, 37], 7) }
+    for (const s of [0, 2, 3, 3.5, 10]) {
+      const out = keyedShot([k0, k1, twin, k2], '16:9', 'smooth', s)
+      for (const v of [...out.center, out.zoom, out.bearing, out.pitch]) expect(Number.isFinite(v)).toBe(true)
+    }
+    expect(keyedShot([k0, k1, twin, k2], '16:9', 'smooth', 3)).toEqual(twin.shot)
+  })
+
+  test("leave the ship's timing alone", () => {
+    const plain = greekIslands({ camera: { mode: 'glide', easing: 'smooth', start: k0.shot, end: k2.shot } })
+    const a = timelineOf(plain).tl
+    const b = timelineOf(keyed([k0, k1, k2], { start: k0.shot, end: k2.shot })).tl
+    expect(b.totalFrames).toBe(a.totalFrames)
+    expect(b.legFrames).toEqual(a.legFrames)
+    for (let f = 0; f < a.totalFrames; f++) expect(b.stateAt(f)).toEqual(a.stateAt(f))
+  })
+
+  test('resolveShots gives the first and last keys in time order, and ignores start and end', () => {
+    const p = keyed([k2, k0, k1], { start: shot([0, 0], 2), end: shot([1, 1], 3) })
+    const { route } = timelineOf(p)
+    expect(resolveShots(sceneOf(p), '16:9', route)).toEqual({ start: k0.shot, end: k2.shot })
+  })
+
+  test('fixed and follow cameras ignore keys', () => {
+    const start = shot([25, 37], 7, 15, 10)
+    const fixed = greekIslands({ camera: { mode: 'fixed', easing: 'smooth', start, keys: [k0, k1] } })
+    const { route, tl, at } = camOf(fixed)
+    expect(resolveShots(sceneOf(fixed), '16:9', route).start).toEqual(start)
+    for (const f of [0, 75, tl.totalFrames - 1]) expect(at(f)).toEqual(start)
+    const follow = { zoom: 10, orient: 'north' as const, lookAhead: 1, smoothing: 0.5, pitch: 0 }
+    const withKeys = camOf(greekIslands({ camera: { mode: 'follow', easing: 'linear', follow, keys: [k0, k1] } }))
+    const without = camOf(greekIslands({ camera: { mode: 'follow', easing: 'linear', follow } }))
+    for (const f of [0, 75, 200]) expect(withKeys.at(f)).toEqual(without.at(f))
+  })
+})
+
 describe('follow camera', () => {
   const followCamera = (follow?: FollowSettings) => ({ mode: 'follow' as const, easing: 'linear' as const, ...(follow ? { follow } : {}) })
   const settings = (over: Partial<FollowSettings> = {}): FollowSettings => ({ zoom: 10, orient: 'north', lookAhead: 1, smoothing: 0.5, pitch: 0, ...over })
@@ -663,5 +747,31 @@ describe('projectToLayout', () => {
     const [wx] = projectToLayout(shot([179.9, 0], 6), '16:9', [-179.9, 0])
     expect(wx).toBeGreaterThan(width / 2)
     expect(wx).toBeLessThan(width / 2 + 200)
+  })
+})
+
+describe('contextShot', () => {
+  test('is undefined without context', () => {
+    expect(contextShot(sceneOf(greekIslands()), '16:9')).toBeUndefined()
+  })
+
+  test('fits the context route, not the scene', () => {
+    const greek = sceneOf(greekIslands())
+    const scene = {
+      ...sceneOf(stopsAt([[0, 0], [0.1, 0.1]])),
+      context: { from: 'Greek Islands · Scene 1', stops: greek.stops.map(({ name, at }) => ({ name, at })), legs: greek.legs },
+    }
+    expect(contextShot(scene, '16:9')).toEqual(fitShot(buildRoute(greek).bounds, '16:9'))
+    expect(contextShot(scene, '9:16')).toEqual(fitShot(buildRoute(greek).bounds, '9:16'))
+  })
+
+  test('sits on the turn of longitude the scene is drawn on', () => {
+    const cross = sceneOf(stopsAt([[170, -15], [-170, -15]]))
+    const context = { from: 'Pacific · Scene 1', stops: cross.stops.map(({ name, at }) => ({ name, at })), legs: cross.legs }
+    const east = { ...sceneOf(stopsAt([[175, -15], [178, -15]])), context }
+    const west = { ...sceneOf(stopsAt([[-175, -15], [-172, -15]])), context }
+    // The context route unwraps to 170 … 190, so its middle is 180; the scene's own turn decides which side that is.
+    expect(contextShot(east, '16:9')!.center[0]).toBeCloseTo(180, 6)
+    expect(contextShot(west, '16:9')!.center[0]).toBeCloseTo(-180, 6)
   })
 })

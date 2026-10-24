@@ -306,7 +306,9 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
    * validation say why, and the error is logged the first time for each project. The tracks come back regardless.
    */
   async function seaPathsFor(entry: Registered, project: Project): Promise<SeaPaths> {
-    if (!project.scenes.some((scene) => scene.legs.some((leg) => leg.mode === 'sea' || leg.mode === 'track'))) return {}
+    // Sea legs of the scenes and their contexts are routed; track legs read their recorded tracks.
+    const hasTrack = project.scenes.some((scene) => scene.legs.some((leg) => leg.mode === 'track'))
+    if (seaLegsOf(project).size === 0 && !hasTrack) return {}
     const failed = async (e: unknown, reason: string): Promise<SeaPaths> => {
       if (!entry.seaPathsFailed) {
         entry.seaPathsFailed = true

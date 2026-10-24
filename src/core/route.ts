@@ -1,7 +1,7 @@
 import { airPath } from './air.js'
 import { dist, lerp, sampleChain, type Control } from './curve.js'
 import { toLngLat, toXY, unwrapLng, headingDeg, type XY } from './geo.js'
-import type { LegMode, LngLat, Scene, SymbolKind } from './schema.js'
+import type { LegMode, LngLat, Scene, Stop, SymbolKind } from './schema.js'
 import { seaLegKey, type SeaPath, type SeaPaths } from './sea.js'
 import { cutTrack, trackKey, type TrackCut } from './track.js'
 
@@ -239,6 +239,34 @@ export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
     }
   }
   return { legs, length, bounds: [[west, south], [east, north]] }
+}
+
+/**
+ * The routed line of a scene's context, or `undefined` when it has none. Built like the scene's own route, from stand-in
+ * stops that don't pause and show no sign. A context sea leg takes its path from `seaPaths` like any other.
+ */
+export function buildContextRoute(scene: Scene, seaPaths?: SeaPaths): Route | undefined {
+  const { context } = scene
+  if (!context) return undefined
+  const stops = context.stops.map((s, i): Stop => ({ id: `context-${i}`, name: s.name, at: s.at, pause: 0, sign: 'none' }))
+  return buildRoute({ ...scene, stops, legs: context.legs }, seaPaths)
+}
+
+/**
+ * `route` moved by whole turns of longitude so the middle of its bounds lies nearest `lng`. A context route unwraps from
+ * its own first stop and the scene's route from the scene's, so the two can sit a turn apart until one is moved.
+ */
+export function routeNear(route: Route, lng: number): Route {
+  const [[west], [east]] = route.bounds
+  const turns = Math.round((lng - (west + east) / 2) / 360)
+  if (turns === 0) return route
+  const move = ([x, y]: LngLat): LngLat => [x + turns * 360, y]
+  return {
+    ...route,
+    // One turn is one unit of x.
+    legs: route.legs.map((leg) => ({ ...leg, path: leg.path.map(move), xy: leg.xy.map(([x, y]): XY => [x + turns, y]) })),
+    bounds: [move(route.bounds[0]), move(route.bounds[1])],
+  }
 }
 
 /** `lng` shifted by whole turns into [-180, 180). */

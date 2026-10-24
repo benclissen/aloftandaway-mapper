@@ -25,6 +25,8 @@ export const CREDIT_FONT = '500 14px "Plus Jakarta Sans"'
 const { dotRadius: DOT_RADIUS, badgeRadius: BADGE_RADIUS, badgeRing: BADGE_RING, iconSize: ICON_SIZE, iconHalo: ICON_HALO } = SYMBOL_SIZES
 const TERMINAL_SCALE = 1.5
 const DOT_STROKE = 2.5
+/** A context stop's dot is the normal dot at this opacity. */
+const CONTEXT_OPACITY = 0.5
 const NAVY = '#0a2434'
 const WHITE = '#ffffff'
 /** The icons are drawn on a grid of 24 units. */
@@ -64,7 +66,7 @@ export interface OverlayArgs {
 
 export { signText }
 
-/** Clears the overlay canvas and draws stop dots, signs and (when burned in) the map credit. */
+/** Clears the overlay canvas and draws context and stop dots, signs and (when burned in) the map credit. */
 export function drawOverlay(ctx: CanvasRenderingContext2D, args: OverlayArgs): void {
   const { scene, state, project2px, pixelRatio } = args
   const width = ctx.canvas.width / pixelRatio
@@ -78,6 +80,13 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, args: OverlayArgs): v
   const signs = layer === 'signs' || layer === 'all'
   const credit = layer === 'map' || layer === 'all'
   const color = scene.look.line.color
+  // The context's faint dots go under everything else the scene draws.
+  if (dots && scene.context) {
+    ctx.save()
+    ctx.globalAlpha = CONTEXT_OPACITY
+    for (const stop of scene.context.stops) drawDot(ctx, project2px(stop.at), DOT_RADIUS, color)
+    ctx.restore()
+  }
   // The plain dot sits under the stop dots, as the old map-layer head did; a vehicle sits on top of them.
   const head = dots && state.head ? project2px(state.head.at) : undefined
   const dotHead = effectiveSymbol(scene, args.legIndex ?? 0) === 'dot'

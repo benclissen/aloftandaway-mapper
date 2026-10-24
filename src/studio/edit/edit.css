@@ -330,6 +330,28 @@
   gap: 8px;
 }
 
+.camera-key {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.studio .camera-key button {
+  border: 0;
+  border-radius: 0;
+}
+
+.studio .camera-key button + button {
+  border-left: 1px solid var(--line);
+  padding-inline: 6px;
+  color: var(--muted);
+}
+
+.studio .camera-key button:focus-visible {
+  outline-offset: -2px;
+}
+
 .segmented {
   display: inline-flex;
   margin-right: 8px;

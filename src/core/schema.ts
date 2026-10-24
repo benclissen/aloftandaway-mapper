@@ -200,10 +200,19 @@ export const ShotSchema = z.strictObject({
 })
 export type Shot = z.infer<typeof ShotSchema>
 
+/** A shot the glide camera reaches `at` seconds from the scene's first frame. */
+export const CameraKeySchema = z.strictObject({
+  at: z.number().min(0),
+  shot: ShotSchema,
+})
+export type CameraKey = z.infer<typeof CameraKeySchema>
+
 export const CameraSchema = z.strictObject({
   mode: z.enum(['fixed', 'glide', 'follow']),
   start: ShotSchema.optional(),
   end: ShotSchema.optional(),
+  /** Glide only. When set, the camera flies key to key on its own clock and `start` and `end` are ignored. */
+  keys: z.array(CameraKeySchema).min(1).optional(),
   follow: z
     .strictObject({
       zoom: z.number().min(0).max(22).optional(),
@@ -217,6 +226,22 @@ export const CameraSchema = z.strictObject({
 })
 export type Camera = z.infer<typeof CameraSchema>
 
+/**
+ * Another scene's route, copied into this scene and drawn faintly under its own, so a close-up still shows where it
+ * sits. A snapshot: it doesn't follow the scene it came from.
+ */
+export const ContextSchema = z.strictObject({
+  /** A label for people, such as `Icon of the Seas · Scene 1`. */
+  from: z.string(),
+  stops: z.array(z.strictObject({ name: z.string(), at: LngLatSchema })).min(2),
+  /**
+   * `stops.length - 1` of them; leg i joins stop i and stop i + 1. Never `track`: a context keeps no recorded tracks, so
+   * `copy_context` copies a track leg as `line`.
+   */
+  legs: z.array(z.strictObject({ mode: LegModeSchema, via: z.array(ViaPointSchema) })),
+})
+export type Context = z.infer<typeof ContextSchema>
+
 export const SceneSchema = z.strictObject({
   id: z.uuid(),
   name: z.string(),
@@ -227,6 +252,8 @@ export const SceneSchema = z.strictObject({
   legs: z.array(LegSchema),
   look: LookSchema,
   camera: CameraSchema,
+  /** Drawn under the scene's own route. */
+  context: ContextSchema.optional(),
 })
 export type Scene = z.infer<typeof SceneSchema>
 
@@ -285,6 +312,24 @@ export const ProjectSchema = z
           })
         }
       })
+      if (scene.context) {
+        const expectedContextLegs = scene.context.stops.length - 1
+        if (scene.context.legs.length !== expectedContextLegs) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['scenes', i, 'context', 'legs'],
+            message: `expected ${expectedContextLegs} legs for ${scene.context.stops.length} stops, got ${scene.context.legs.length}`,
+          })
+        }
+        scene.context.legs.forEach((leg, j) => {
+          if (leg.mode !== 'track') return
+          ctx.addIssue({
+            code: 'custom',
+            path: ['scenes', i, 'context', 'legs', j, 'mode'],
+            message: "a context leg can't follow a recorded track; use 'line'",
+          })
+        })
+      }
       const stopIds = new Set<string>()
       scene.stops.forEach((stop, j) => {
         if (stopIds.has(stop.id)) {

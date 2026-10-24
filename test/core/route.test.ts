@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 import {
   AIR_SAMPLES,
   applyPatch,
+  buildContextRoute,
   buildRoute,
   clampLat,
   decodeLand,
@@ -16,6 +17,7 @@ import {
   nearestOnLeg,
   parseTrackCsv,
   pointAt,
+  routeNear,
   routeSea,
   seaLegKey,
   slicePath,
@@ -893,5 +895,63 @@ describe('track legs', () => {
     expect(r.legs[0]!.path.at(-1)![0]).toBeCloseTo(182, 9)
     expect(r.legs[1]!.path[0]).toEqual(r.legs[0]!.path.at(-1))
     expect(r.legs[1]!.path.at(-1)![0]).toBeCloseTo(183, 9)
+  })
+})
+
+describe('buildContextRoute', () => {
+  const withContext = (scene: Scene, legs: Scene['legs'] = scene.legs): Scene => ({
+    ...scene,
+    context: { from: 'Greek Islands · Scene 1', stops: scene.stops.map(({ name, at }) => ({ name, at })), legs },
+  })
+
+  test('is undefined when the scene has no context', () => {
+    expect(buildContextRoute(sceneOf(greekIslands()))).toBeUndefined()
+  })
+
+  test('routes the context like a scene of its own, whatever the scene itself holds', () => {
+    const greek = sceneOf(greekIslands())
+    const scene = { ...sceneOf(stopsAt([[0, 0], [1, 1]])), context: withContext(greek).context }
+    const route = buildContextRoute(scene)!
+    const own = buildRoute(greek)
+    expect(route.legs).toHaveLength(3)
+    expect(route.length).toBeCloseTo(own.length, 12)
+    expect(route.bounds).toEqual(own.bounds)
+    expect(route.bounds).not.toEqual(buildRoute(scene).bounds)
+  })
+
+  test('a context sea leg takes its path from seaPaths, and is pending without one', () => {
+    const { scene: greek, cached, seaPaths } = greekSea()
+    const scene = withContext(sceneOf(stopsAt([[0, 0], [1, 1]])), [])
+    scene.context = withContext(greek).context
+    expect(buildContextRoute(scene)!.legs[0]!.sea).toEqual({ status: 'pending' })
+    const leg = buildContextRoute(scene, seaPaths)!.legs[0]!
+    expect(leg.drawnAs).toBe('sea')
+    expect(leg.path).toHaveLength(cached.path.length)
+    expect(leg.sea?.status).toBe('ok')
+  })
+})
+
+describe('routeNear', () => {
+  test('moves a route a whole turn onto the side of the antimeridian given', () => {
+    // Unwrapped from 179, the route runs on to 181. The scene's own route, from -179, sits a turn west.
+    const route = buildRoute(sceneOf(stopsAt([[179, 0], [-179, 1]])))
+    expect(route.bounds[1][0]).toBeCloseTo(181, 9)
+    const moved = routeNear(route, -179)
+    expect(moved.bounds[0][0]).toBeCloseTo(-181, 9)
+    expect(moved.bounds[1][0]).toBeCloseTo(-179, 9)
+    expect(moved.length).toBe(route.length)
+    const leg = moved.legs[0]!
+    expect(leg.path[0]).toEqual([-181, 0])
+    expect(leg.path.at(-1)).toEqual([-179, 1])
+    leg.xy.forEach((xy, i) => {
+      expect(xy[0]).toBeCloseTo(toXY(leg.path[i]!)[0], 12)
+      expect(xy[1]).toBe(route.legs[0]!.xy[i]![1])
+    })
+  })
+
+  test('leaves a route that already lies nearest alone', () => {
+    const route = buildRoute(sceneOf(greekIslands()))
+    expect(routeNear(route, 25)).toBe(route)
+    expect(routeNear(route, 25 + 360).bounds[0][0]).toBeCloseTo(route.bounds[0][0] + 360, 9)
   })
 })

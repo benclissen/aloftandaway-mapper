@@ -6,6 +6,7 @@ import {
   applyPatch,
   buildRoute,
   buildTimeline,
+  contextShot,
   formatTimecode,
   frameSize,
   chooseLine,
@@ -38,6 +39,7 @@ import {
   validateProject,
   zodIssues,
   type Issue,
+  type PatchOp,
   type Project,
   type Route,
   type Scene,
@@ -56,7 +58,7 @@ import { resolveSeaPaths } from '../server/paths.js'
 import { fixOf } from '../server/errors.js'
 import { getServer } from '../server/server.js'
 import { writeTrack } from '../server/tracks.js'
-import { assertAbsolute, createProject, loadProject, mutateProject } from '../server/store.js'
+import { assertAbsolute, createProject, loadProject, mutateProject, StoreError } from '../server/store.js'
 
 /** An error the agent can act on. `fix` says what to do next. */
 export class ToolError extends Error {
@@ -127,8 +129,8 @@ function legLine(scene: Scene, i: number, route: Route): string | undefined {
 
 /**
  * What every project-changing tool returns: the project, one entry per scene with its timeline and the camera's start
- * and end shots as rendered (fitted to the route where the scene has none), the follow settings in use when the camera
- * follows, and what validation says. With more than one scene, the summary opens with the joined length and heads each
+ * and end shots as rendered (fitted to the route where the scene has none), its camera keys when it has them, the shot
+ * that fits its route context when it has one, the follow settings in use when the camera follows, and what validation says. With more than one scene, the summary opens with the joined length and heads each
  * scene's lines. `startSeconds` is where the scene starts in a join of every scene.
  */
 function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
@@ -151,11 +153,14 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
       ...(many ? [`${sceneLabel(project, index)} (id ${scene.id})`] : []),
       `${many ? '' : `${project.name}: `}${plural(scene.stops.length, 'stop')}, ${timeline.durationSeconds.toFixed(1)} s (${plural(timeline.totalFrames, 'frame')}${scene.timing.length === undefined ? '' : ', fixed length'}), ${width}×${height}.`,
       `Style: ${scene.look.theme}, terrain ${scene.look.terrain ? 'on' : 'off'}.`,
+      ...(scene.context ? [`Context: ${scene.context.from}, ${plural(scene.context.stops.length, 'stop')}.`] : []),
+      ...(scene.camera.keys?.length ? [`Camera keys: ${scene.camera.keys.map((k) => `${+k.at.toFixed(2)} s`).join(', ')}.`] : []),
       ...(scene.stops.length
         ? scene.stops.map((s, i) => `${i + 1}. ${s.name} [${s.at[0]}, ${s.at[1]}] arrives ${formatTimecode(arrivals[i]!.frame, timeline.fps)}${s.sharp ? ' · sharp' : ''}`)
         : ['No stops yet.']),
       ...scene.legs.flatMap((_, i) => legLine(scene, i, route) ?? []),
     ])
+    const resolvedContext = contextShot(scene, project.output.aspect, seaPaths)
     const entry = {
       id: scene.id,
       name: scene.name,
@@ -163,8 +168,10 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
       startSeconds,
       timeline: { durationSeconds: timeline.durationSeconds, totalFrames: timeline.totalFrames, arrivals },
       camera: {
+        ...(scene.camera.keys ? { keys: scene.camera.keys } : {}),
         resolvedStart: wrapped(shots.start),
         resolvedEnd: wrapped(shots.end),
+        ...(resolvedContext ? { resolvedContext: wrapped(resolvedContext) } : {}),
         ...(scene.camera.mode === 'follow' ? { resolvedFollow: resolveFollow(scene, project.output.aspect, route) } : {}),
       },
     }
@@ -319,6 +326,43 @@ function toCallToolResult({ summary, data, image }: ToolResult): CallToolResult 
     // Some clients show the model only structuredContent and drop the text, so the summary rides along.
     structuredContent: { summary, ...data },
   }
+}
+
+/**
+ * Loads the project of every other folder a `copy_context` op names, once each. An op naming the project's own folder
+ * is rewritten without it, so core copies from the project being changed and refuses a scene as its own context.
+ * Other folders are keyed by their resolved path, which the returned ops carry.
+ */
+async function loadContextSources(ownFolder: string, ops: PatchOp[] | undefined): Promise<{ ops: PatchOp[] | undefined; sources: Map<string, Project> }> {
+  const sources = new Map<string, Project>()
+  if (!ops) return { ops, sources }
+  const own = path.resolve(ownFolder)
+  const out: PatchOp[] = []
+  for (const op of ops) {
+    if (op.op !== 'copy_context' || op.folder === undefined) {
+      out.push(op)
+      continue
+    }
+    assertAbsolute(op.folder)
+    const resolved = path.resolve(op.folder)
+    if (resolved === own) {
+      const { folder: _own, ...rest } = op
+      out.push(rest)
+      continue
+    }
+    if (!sources.has(resolved)) {
+      try {
+        sources.set(resolved, await loadProject(resolved))
+      } catch (e) {
+        if (e instanceof StoreError && e.message.startsWith('No project found')) {
+          throw new ToolError(`copy_context: ${e.message}`, 'Check the path; it must be the absolute path of another Mapper project folder.')
+        }
+        throw e
+      }
+    }
+    out.push({ ...op, folder: resolved })
+  }
+  return { ops: out, sources }
 }
 
 /** Parses the input, runs the tool and turns any failure into a tool error. Never throws. */
@@ -498,7 +542,7 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'get_project',
     description:
-      'Read a project: name, output and credit, plus scenes. The scenes are in project.scenes, in film order; each has its own stops, legs, look, camera and timing. The result also has, per scene, position, startSeconds (its start in a join of every scene), timeline (arrival times) and camera (resolvedStart and resolvedEnd, the shots fitted to the route when none are stored; resolvedFollow when camera.mode is follow), and validation. Positions are [lng, lat]. Read it before changing anything; the user may have edited in the studio. The folder must be absolute.',
+      'Read a project: name, output and credit, plus scenes. The scenes are in project.scenes, in film order; each has its own stops, legs, look, camera and timing. The result also has, per scene, position, startSeconds (its start in a join of every scene), timeline (arrival times) and camera (resolvedStart and resolvedEnd, the shots fitted to the route when none are stored; keys; resolvedContext, a shot fitting the context route; resolvedFollow when camera.mode is follow), and validation. Positions are [lng, lat]. Read it before changing anything; the user may have edited in the studio. The folder must be absolute.',
     input: z.strictObject({ folder }),
     async run({ folder }) {
       return withPaths(folder, await loadProject(folder))
@@ -628,14 +672,15 @@ export const TOOLS: ToolDef<any>[] = [
   tool({
     name: 'update_project',
     description:
-      "Edit a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. scene (id or 1-based position; default first) picks the scene. 'sceneSet' patches its name, timing, look and camera; null removes a key. timing.length fixes the length in seconds; travel follows. look.theme: aloftandaway, aloftandaway-warm, paper, light, dark, nautical, atlas, outdoor, satellite, monochrome, blank. look.terrain: true adds hill shading and 3D relief. look.symbolStyle: badge, badge-line, icon. follow.pitch is 0-60. 'ops' edits stops, legs, via points and scenes: add_scene { index?, name?, copyLookFrom? } appends unless index is set; duplicate_scene, remove_scene, move_scene { id, index } take a scene id. Op indexes are 0-based; copyLookFrom is an id or 1-based position. A leg symbol alone sets its mode, unless it's a track leg. Coordinates are [lng, lat]. The folder must be absolute.",
+      "Edit a project, all or nothing. 'set' is a JSON Merge Patch over name, output and credit. scene (id or 1-based position; default first) picks the scene. 'sceneSet' patches its name, timing, look, camera and context; null removes a key. timing.length fixes the length in seconds; travel follows. camera.keys (glide only) is [{ at, shot }], at in seconds from the scene start; start and end are ignored while set. look.theme: aloftandaway, aloftandaway-warm, paper, light, dark, nautical, atlas, outdoor, satellite, monochrome, blank. look.terrain: true adds hill shading and 3D relief. look.symbolStyle: badge, badge-line, icon. follow.pitch is 0-60. 'ops' edits stops, legs, via points and scenes: add_scene { index?, name?, copyLookFrom? } appends unless index is set; duplicate_scene, remove_scene, move_scene { id, index } take a scene id. copy_context { folder?, scene? } copies that scene's route in as faint context, a snapshot; folder is another project's absolute path (omit for this one); context: null removes it. Op indexes are 0-based; copyLookFrom is an id or 1-based position. A leg symbol alone sets its mode, unless it's a track leg. Coordinates are [lng, lat]. The folder must be absolute.",
     input: z.strictObject({ folder, ...ProjectPatchSchema.shape }),
     async run({ folder, set, scene: ref, sceneSet, ops }) {
       // The scene is found before the patch runs, so a scene op that moves it can't change which scene the result names.
       let target = ''
+      const { ops: patchOps, sources } = await loadContextSources(folder, ops)
       const project = await mutateProject(folder, (p) => {
         target = resolveScene(p, ref).scene.id
-        return applyPatch(p, { set, scene: ref, sceneSet, ops })
+        return applyPatch(p, { set, scene: ref, sceneSet, ops: patchOps }, { sources })
       })
       const editsScene = sceneSet !== undefined || (ops ?? []).some((op) => !isSceneOp(op))
       const listsScenes = !editsScene && (ops ?? []).length > 0

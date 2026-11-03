@@ -1,7 +1,7 @@
-import { mkdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { ROUTER_VERSION, routeSea, seaLegKey, type LandSource, type LngLat, type Project, type SeaPath, type SeaPaths, type ViaPoint } from '../core/index.js'
-import { inOrder, writeFileAtomic } from './atomic.js'
+import { inOrder } from './atomic.js'
+import { readCache, saveNewest, wellFormed } from './path-cache.js'
 import { resolveRoadPaths } from './road-paths.js'
 import type { RoadRouter } from './roads.js'
 import { loadLand } from './land.js'
@@ -22,45 +22,12 @@ export const RETRY_MS = OFFLINE_MS
  * soon gives the same path; a day on, the build may have changed.
  */
 export const UNSETTLED_RETRY_MS = 24 * 60 * 60 * 1000
-const MAX_ENTRIES = 200
 
 /**
  * A cached path. `water` says how its water was checked. An unverified path also has `retryAt`, the ISO time from
  * which the next call routes it again.
  */
 type Entry = SeaPath & { usedAt: string; water?: WaterNote; retryAt?: string }
-
-interface CacheFile {
-  version: number
-  router: number
-  land: string
-  paths: Record<string, Entry>
-}
-
-/** True when `value` is a `SeaPath` that `buildRoute` can use. */
-export function wellFormed(value: unknown): value is SeaPath {
-  if (typeof value !== 'object' || value === null) return false
-  const e = value as Partial<SeaPath>
-  if (e.status === 'fallback') return true
-  if (e.status !== 'ok') return false
-  if (!Array.isArray(e.path) || e.path.length === 0) return false
-  if (!Array.isArray(e.knots) || e.knots.length === 0) return false
-  const n = e.path.length
-  return e.knots.every((k) => Number.isInteger(k) && k >= 0 && k < n)
-}
-
-/** The last cache read or written for each file, with the file's change time and size at that moment. */
-const memo = new Map<string, { stamp: string; land: string; paths: Record<string, Entry> }>()
-
-/** Changes whenever the file is rewritten; undefined if it can't be read. */
-async function stampOf(file: string): Promise<string | undefined> {
-  try {
-    const s = await stat(file, { bigint: true })
-    return `${s.mtimeNs}:${s.size}`
-  } catch {
-    return undefined
-  }
-}
 
 /** True when `entry` is a path with the cache's own fields in shape. */
 function wellKept(entry: unknown): entry is Entry {
@@ -74,26 +41,13 @@ function wellKept(entry: unknown): entry is Entry {
 }
 
 /** The cache's paths when the file is for this `land` version, else none. */
-async function readCache(file: string, land: string): Promise<Record<string, Entry>> {
-  const stamp = await stampOf(file)
-  if (stamp === undefined) return {}
-  const known = memo.get(file)
-  if (known && known.stamp === stamp && known.land === land) return known.paths
-  const kept: Record<string, Entry> = {}
-  try {
-    const raw = JSON.parse(await readFile(file, 'utf8')) as Partial<CacheFile> | null
-    if (raw && raw.version === CACHE_VERSION && raw.router === ROUTER_VERSION && raw.land === land) {
-      if (typeof raw.paths === 'object' && raw.paths !== null) {
-        for (const [key, entry] of Object.entries(raw.paths)) {
-          if (wellKept(entry)) kept[key] = entry
-        }
-      }
-    }
-  } catch {
-    // A corrupt cache is rebuilt.
-  }
-  memo.set(file, { stamp, land, paths: kept })
-  return kept
+function readPaths(file: string, land: string): Promise<Record<string, Entry>> {
+  return readCache(
+    file,
+    land,
+    (raw) => raw.version === CACHE_VERSION && raw.router === ROUTER_VERSION && raw.land === land,
+    wellKept,
+  )
 }
 
 /** Whether a path is worth routing again within the minute: one the network or the budget left unverified. */
@@ -150,9 +104,6 @@ function offlineEntry(sea: SeaPath, done: number): Entry {
   }
 }
 
-/** Folders whose cache couldn't be written, logged once each. */
-const unwritable = new Set<string>()
-
 /** Every sea leg in `project`, keyed by `seaLegKey`: each scene's own, and those of its context. */
 export function seaLegsOf(project: Project): Map<string, [LngLat, LngLat, ViaPoint[]]> {
   const legs = new Map<string, [LngLat, LngLat, ViaPoint[]]>()
@@ -202,7 +153,7 @@ export function resolveSeaPaths(folder: string, project: Project, opts: ResolveO
     // The planet build stays out: a new one doesn't re-route anything, and each entry records its own.
     const version = water ? `${land.version}+${SEA_WATER_VERSION}` : land.version
     const file = path.join(dir, PATHS_FILE)
-    const cache = await readCache(file, version)
+    const cache = await readPaths(file, version)
     const clock = opts.now ?? Date.now
     const budget: SeaBudget = { tiles: SEA_BUDGET_TILES }
     let routed = false
@@ -224,26 +175,8 @@ export function resolveSeaPaths(folder: string, project: Project, opts: ResolveO
     }
 
     if (routed) {
-      const now = new Date(clock()).toISOString()
-      for (const key of legs.keys()) cache[key]!.usedAt = now
-      const newest = Object.fromEntries(
-        Object.entries(cache)
-          .sort((a, b) => (a[1].usedAt < b[1].usedAt ? 1 : a[1].usedAt > b[1].usedAt ? -1 : 0))
-          .slice(0, MAX_ENTRIES),
-      )
-      const out: CacheFile = { version: CACHE_VERSION, router: ROUTER_VERSION, land: version, paths: newest }
-      try {
-        await mkdir(path.dirname(file), { recursive: true })
-        await writeFileAtomic(file, JSON.stringify(out))
-        const stamp = await stampOf(file)
-        if (stamp !== undefined) memo.set(file, { stamp, land: version, paths: newest })
-        unwritable.delete(dir)
-      } catch (e) {
-        if (!unwritable.has(dir)) {
-          unwritable.add(dir)
-          console.error(`Mapper could not save sea routes to ${file}:`, e)
-        }
-      }
+      const header = { version: CACHE_VERSION, router: ROUTER_VERSION, land: version }
+      await saveNewest(file, dir, 'sea', header, version, cache, legs.keys(), new Date(clock()).toISOString())
     }
     return result
   })

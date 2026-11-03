@@ -175,7 +175,7 @@ test('a via point on a road leg has no sharp corner; a line leg keeps it', async
   try {
     await page.getByTestId('leg-row-0').click()
     await page.getByTestId('via-marker-0-0').waitFor()
-    // The router can't be reached, so the leg says so, and the handle stays at the via point as placed.
+    // The router can't be reached, so the leg says so, and the leg falls back to a line through the via point, so the handle sits on that line.
     await page.getByTestId('leg-road-0').waitFor()
     await page.getByTestId('via-marker-0-0').click({ button: 'right' })
     await page.getByTestId('point-menu-remove').waitFor()

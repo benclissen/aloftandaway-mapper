@@ -145,6 +145,7 @@ test("answers when the cache can't be written", async () => {
     expect((await resolveRoadPaths(folder, p, { router, now: () => T0 }))[key()]!.status).toBe('ok')
     expect((await resolveRoadPaths(folder, p, { router, now: () => T0 + 1 }))[key()]!.status).toBe('ok')
     expect(err).toHaveBeenCalledTimes(1)
+    expect(router.calls).toHaveLength(1)
   } finally {
     err.mockRestore()
   }

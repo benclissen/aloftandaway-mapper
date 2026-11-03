@@ -194,7 +194,7 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
   return { summary, data: { project, scenes, validation } }
 }
 
-/** `projectResult` for a project just read or written in `folder`, with its sea legs routed first. */
+/** `projectResult` for a project just read or written in `folder`, with its sea and road legs routed first. */
 async function withPaths(folder: string, project: Project): Promise<ToolResult> {
   return projectResult(project, await resolvePaths(folder, project))
 }

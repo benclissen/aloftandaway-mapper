@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { LegModeSchema, NO_ROAD_ROUTE, ROAD_OFFLINE, SYMBOLS, THEMES, type Route, type Scene } from '../../src/core/index.js'
 import { fallbackNote, legModeChanges, legModeOptions, MODE_LABELS, SYMBOL_LABELS, THEME_NAMES, roadNote, trackNote, unverifiedNote } from '../../src/studio/edit/labels.js'
-import { canAddVia, isSharp, viaHandleAt } from '../../src/studio/edit/RouteEditor.js'
+import { canAddVia, canSharpen, isSharp, viaHandleAt } from '../../src/studio/edit/RouteEditor.js'
 import { greekIslands } from '../fixtures/projects.js'
 
 test('every symbol, mode and theme has a label', () => {
@@ -121,5 +121,30 @@ describe('viaHandleAt', () => {
     expect(viaHandleAt(scene, { legs: [leg({ status: 'pending' })] } as Route, 0, 0)).toEqual([24.001, 37.502])
     expect(viaHandleAt(scene, { legs: [leg()] } as Route, 0, 0)).toEqual([24.001, 37.502])
     expect(viaHandleAt(scene, { legs: [leg()] } as Route, 0, 5)).toBeUndefined()
+  })
+})
+
+describe('canSharpen', () => {
+  const scene = (symbol: 'car' | 'train', mode: 'land' | 'line'): Scene => {
+    const s = structuredClone(greekIslands().scenes[0]!)
+    s.look.symbol = symbol
+    s.legs[0] = { ...s.legs[0]!, mode, via: [{ at: [25, 37] }] }
+    return s
+  }
+  const via = { kind: 'via', leg: 0, index: 0 } as const
+
+  test('is false for a via point on a car land leg, which follows a road', () => {
+    expect(canSharpen(scene('car', 'land'), via)).toBe(false)
+  })
+
+  test('is true for a via point on a train land leg, a line leg, or a stop', () => {
+    expect(canSharpen(scene('train', 'land'), via)).toBe(true)
+    expect(canSharpen(scene('car', 'line'), via)).toBe(true)
+    const s = scene('car', 'land')
+    expect(canSharpen(s, { kind: 'stop', id: s.stops[0]!.id })).toBe(true)
+  })
+
+  test('is true for a via point whose leg is gone', () => {
+    expect(canSharpen(scene('car', 'land'), { kind: 'via', leg: 99, index: 0 })).toBe(true)
   })
 })

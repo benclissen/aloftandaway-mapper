@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, expect, test } from 'vitest'
+import { ROAD_CREDIT_WRITTEN } from '../../src/core/index.js'
 import { startFakeOsrm, type FakeOsrm } from '../helpers/fake-osrm.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -95,12 +96,36 @@ test('a car leg follows the road: no warnings, a cache file, and a frame', async
   })
 }, 90_000)
 
+test('a render with a car leg writes the road credit', async () => {
+  await withMapper(working, async (call) => {
+    const folder = path.join(tmp, 'render')
+    await carProject(call, folder)
+    const started = (await call('render', { folder, range: { from: 0, to: 0.2 } })).structuredContent as { data?: { jobId: string }; jobId?: string }
+    const jobId = started.data?.jobId ?? started.jobId!
+    const deadline = Date.now() + 120_000
+    let status: CallToolResult
+    for (;;) {
+      status = await call('render_status', { jobId })
+      const state = (status.structuredContent as { state: string }).state
+      if (state === 'done') break
+      expect(state, textOf(status)).toBe('running')
+      expect(Date.now(), 'render did not finish in time').toBeLessThan(deadline)
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    expect(textOf(status)).toContain(ROAD_CREDIT_WRITTEN)
+    const dirs = await readdir(path.join(folder, 'renders'))
+    const manifest = JSON.parse(await readFile(path.join(folder, 'renders', dirs[0]!, 'manifest.json'), 'utf8')) as { credit: string }
+    expect(manifest.credit).toContain(ROAD_CREDIT_WRITTEN)
+  })
+}, 180_000)
+
 test('a router that answers 503 gives a road-offline warning', async () => {
   await withMapper(down, async (call) => {
     const folder = path.join(tmp, 'down')
     await carProject(call, folder)
     const found = (await call('validate_project', { folder })).structuredContent as Warnings
     expect(found.errors).toEqual([])
+    expect(down.requests.length).toBeGreaterThan(0)
     expect(found.warnings.map((w) => w.code)).toContain('road-offline')
   })
 }, 90_000)

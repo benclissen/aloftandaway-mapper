@@ -24,6 +24,9 @@ const memo = new Map<string, { stamp: string; tag: string; paths: Record<string,
 /** Folders whose cache couldn't be written, logged once each per kind of route. */
 const unwritable = new Set<string>()
 
+/** The stamp the memo holds for a file that doesn't exist, so routes that couldn't be saved are still remembered. */
+const UNWRITTEN = 'unwritten'
+
 /** Changes whenever the file is rewritten; undefined if it can't be read. */
 export async function stampOf(file: string): Promise<string | undefined> {
   try {
@@ -45,9 +48,10 @@ export async function readCache<E extends { usedAt: string }>(
   keep: (entry: unknown) => entry is E,
 ): Promise<Record<string, E>> {
   const stamp = await stampOf(file)
-  if (stamp === undefined) return {}
   const known = memo.get(file)
-  if (known && known.stamp === stamp && known.tag === tag) return known.paths as Record<string, E>
+  // A file that isn't there may be one that couldn't be written, whose routes are kept under `UNWRITTEN`.
+  if (known && known.stamp === (stamp ?? UNWRITTEN) && known.tag === tag) return known.paths as Record<string, E>
+  if (stamp === undefined) return {}
   const kept: Record<string, E> = {}
   try {
     const raw = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown> | null
@@ -91,6 +95,8 @@ export async function saveNewest<E extends { usedAt: string }>(
     if (stamp !== undefined) memo.set(file, { stamp, tag, paths: newest })
     unwritable.delete(label)
   } catch (e) {
+    // Keep the routes anyway, so they aren't worked out again on every call. A file that appears later has another stamp.
+    memo.set(file, { stamp: (await stampOf(file)) ?? UNWRITTEN, tag, paths: newest })
     if (!unwritable.has(label)) {
       unwritable.add(label)
       console.error(`Mapper could not save ${kind} routes to ${file}:`, e)

@@ -1,8 +1,8 @@
 import { defineConfig } from 'vitest/config'
 
 /**
- * Unit tests never touch the network: tile requests go to an address that refuses connections, and tests that need
- * tiles start a local fake. `MAPPER_NET=1` leaves the real upstream in place.
+ * Unit tests never touch the network: tile requests and road routing requests go to an address that refuses
+ * connections, and tests that need tiles or roads start a local fake. `MAPPER_NET=1` leaves the real upstream in place.
  */
 const offline = process.env.MAPPER_NET
   ? {}

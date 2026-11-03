@@ -1,6 +1,7 @@
 import { Marker, type Map as MapLibreMap, type MapMouseEvent } from 'maplibre-gl'
 import {
   clampLat,
+  legProfile,
   nearestOnLeg,
   unwrapLng,
   type LngLat,
@@ -57,6 +58,11 @@ export function isSharp(scene: Scene, target: PointTarget): boolean | undefined 
   }
   const via = scene.legs[target.leg]?.via[target.index]
   return via && via.sharp === true
+}
+
+/** Whether the point can be made sharp: not a via point of a leg drawn along a road, which ignores the setting. */
+export function canSharpen(scene: Scene, target: PointTarget): boolean {
+  return !(target.kind === 'via' && legProfile(scene.legs[target.leg] ?? { mode: 'line' }, scene.look))
 }
 
 /**
@@ -306,7 +312,7 @@ export class RouteEditor {
       e.stopPropagation()
       if (this.justDragged.delete(marker) || !e.altKey) return
       const t = target()
-      const edit = t && this.scene && sharpEdit(this.scene, t)
+      const edit = t && this.scene && canSharpen(this.scene, t) && sharpEdit(this.scene, t)
       if (edit) void this.edit(edit.patch, edit.label)
     })
     element.addEventListener('contextmenu', (e) => {

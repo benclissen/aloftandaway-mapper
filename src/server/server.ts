@@ -59,9 +59,9 @@ export interface ServerOptions {
   land?: () => Promise<LandSource>
   /** Checks sea routes against the basemap's water. Defaults to the router on this server's tile store. */
   water?: SeaWater
-  /** How often an open studio's unverified sea routes are worked out again, in ms. Default 60 s. */
+  /** How often an open studio's unverified sea and road routes are worked out again, in ms. Default 60 s. */
   retryMs?: number
-  /** The clock the sea route cache's retry times use, in ms. For tests. */
+  /** The clock the sea and road route caches' retry times use, in ms. For tests. */
   now?: () => number
 }
 
@@ -104,9 +104,9 @@ interface Registered {
   roadPathsFailed: boolean
   /** Whether a failed restamp has been logged since the last one that succeeded. */
   restampFailed: boolean
-  /** What each open socket was last sent: the version, its sea routes as JSON, and whether any is retried soon. */
+  /** What each open socket was last sent: the version, its sea and road routes as JSON, and whether any is retried soon. */
   shown: Map<WebSocket, Shown>
-  /** The next retry of unverified sea routes, while a socket shows one that's retried within the minute. */
+  /** The next retry of unverified sea or road routes, while a socket shows one that's retried within the minute. */
   retry: NodeJS.Timeout | undefined
   /** Whether a retry is running now. */
   retrying: boolean
@@ -115,7 +115,7 @@ interface Registered {
 interface Shown {
   updatedAt: string
   paths: string
-  /** Whether a route it shows was left unverified by the network or the budget, so is routed again within the minute. */
+  /** Whether a sea or road route it shows was left unverified by the network or the budget, so is routed again within the minute. */
   retry: boolean
 }
 
@@ -309,8 +309,8 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   ]
 
   /**
-   * The sea routes for `project`, and the recorded tracks it uses. When the routes can't be worked out (the land
-   * data is missing, say) every sea leg falls back with the reason, so it draws as a line and the studio and
+   * The sea and road routes for `project`, and the recorded tracks it uses. When the routes can't be worked out (the
+   * land data is missing, say) every sea leg falls back with the reason, so it draws as a line and the studio and
    * validation say why, and the error is logged the first time for each project. The tracks come back regardless.
    */
   async function seaPathsFor(entry: Registered, project: Project): Promise<SeaPaths> {
@@ -476,10 +476,10 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     entry.shown.set(ws, { updatedAt: message.project.updatedAt, paths, retry })
   }
 
-  // Retrying unverified sea routes
+  // Retrying unverified sea and road routes
 
   /**
-   * Keeps a retry coming while an open socket shows a sea route the network or the budget left unverified, and none
+   * Keeps a retry coming while an open socket shows a sea or road route the network or the budget left unverified, and none
    * otherwise: an unsettled route waits a day, for the next call after that. Each retry is `retryMs` after the last
    * one finished, so a slow one never overlaps the next.
    */
@@ -499,7 +499,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   }
 
   /**
-   * Works out the project's sea routes again, through the cache, which routes an unverified one only once its minute
+   * Works out the project's sea and road routes again, through the cache, which routes an unverified one only once its minute
    * is up. Sockets showing this version get the routes when they differ from what they show, as a paths-only message
    * the studio takes without clearing its undo history. A version the server hasn't passed on yet goes out as an
    * ordinary reload instead, with its origin.

@@ -100,6 +100,17 @@ doesn't re-route it; to re-route every sea leg on the current build, delete
 - A `blank` scene with a sea leg carries the map credit, since the route is
   drawn from OpenStreetMap data.
 
+Land legs follow roads, cycle routes or footpaths by transport. Trains, trams
+and cable cars stay a curve. Road routes come from the public OSRM service that
+FOSSGIS runs at `routing.openstreetmap.de`, so they need the internet. The
+coordinates of a road leg's stops and via points are sent to FOSSGIS, whose
+server logs them. Nothing else from the project is sent. To use another OSRM
+server, set `MAPPER_ROAD_ROUTER` to its URL with `{profile}` where `car`,
+`bike` or `foot` goes, for example `http://localhost:5000/route/v1/{profile}`.
+A road leg that can't be routed is drawn as a curve with a `road-offline` or
+`road-no-route` warning. A stop more than 0.5 km from the road it joins gets
+`road-stop-far`.
+
 Air legs follow the great circle, bowed toward the nearer pole so even short
 flights curve (at least 15% of their length). The follow camera keeps the
 moving symbol in view, with its zoom, orientation and look-ahead set in the

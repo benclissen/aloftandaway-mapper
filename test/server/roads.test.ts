@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, test } from 'vitest'
+import { haversineKm, roadPath } from '../../src/core/index.js'
 import { createRoadRouter, ROAD_USER_AGENT } from '../../src/server/roads.js'
 
 const OK = { code: 'Ok', routes: [{ geometry: { coordinates: [[25.4, 36.3], [25.5, 36.4]] } }], waypoints: [] }
@@ -79,5 +80,21 @@ describe('road router', () => {
     replies.forEach((r, i) => {
       expect(r.kind === 'ok' && r.answer.routes![0]!.geometry.coordinates[0]).toEqual([i + 1, i + 1])
     })
+  })
+})
+
+describe('road router, network', () => {
+  // One real request to the default service. Runs only with MAPPER_NET=1.
+  test.skipIf(!process.env.MAPPER_NET)('routes Athinios to Oia by car', async () => {
+    const stops: [number, number][] = [[25.4325, 36.348], [25.3756, 36.4614]]
+    const reply = await createRoadRouter().route('car', stops)
+    expect(reply.kind).toBe('ok')
+    if (reply.kind !== 'ok') return
+    const path = roadPath(reply.answer, stops[0], stops[1], [])
+    expect(path.status).toBe('ok')
+    let km = 0
+    for (let i = 1; i < path.path.length; i++) km += haversineKm(path.path[i - 1]!, path.path[i]!)
+    expect(km).toBeGreaterThanOrEqual(20)
+    expect(km).toBeLessThanOrEqual(27)
   })
 })

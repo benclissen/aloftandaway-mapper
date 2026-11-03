@@ -258,6 +258,38 @@ holds or pauses instead. Changing a pause leaves the total at 8 s. If the holds
 and pauses add up to more than the length, the patch is refused. `null` clears
 the length. The summary shows `(200 frames, fixed length)`.
 
+## Road legs
+
+A `land` leg follows roads. Mapper asks a road router for the way between the
+leg's stops and draws that, so a drive, bus ride or walk follows the road that
+was taken rather than cutting across bends.
+
+- The transport picks the network. `walk` follows footpaths, `bike` follows
+  cycle routes, and car, bus, coach and the other road vehicles follow roads.
+  `train`, `tram` and `cable-car` don't use roads, so they stay a curve.
+- Via points are must-pass points on a road leg. Mapper matches each one to the
+  nearest usable road, and the line goes through that road point. It doesn't
+  detour to the via point itself. Drag one onto another road to reroute the leg
+  there. `sharp` is ignored on road legs.
+- For a hand-drawn curve instead, set the leg's mode to `line` with
+  `update_leg`.
+- Routes come from a public service, so they need the internet. The first
+  route of a leg waits on the network, and later renders reuse it. A leg that
+  can't be routed is drawn as a curve, with one of the warnings below.
+  `MAPPER_ROAD_ROUTER` points Mapper at another OSRM server (see the README).
+
+Validation reports these warnings for road legs:
+
+- `road-offline`: the road router couldn't be reached, so the leg is drawn as a
+  curve. Mapper tries again by itself. Check the internet connection, then
+  validate again.
+- `road-no-route`: the router found no road between the leg's stops, so the leg
+  is drawn as a curve. Move a stop onto a road with `update_stop`, or set the
+  leg's mode to `line`.
+- `road-stop-far`: a stop is more than 0.5 km from the road its route starts or
+  ends on, so the route joins it in a straight line. Move the stop onto a road
+  with `update_stop`.
+
 ## Look and camera
 
 Set the style with `look.theme`, through `sceneSet` or the studio's style

@@ -54,7 +54,7 @@ import {
 import { contactSheet, PreviewAtSchema, previewFrame } from '../render/preview.js'
 import { cancelRender, renderStatus, startRenderJob, type RenderStatus } from '../render/jobs.js'
 import type { RenderResult } from '../render/render.js'
-import { resolveSeaPaths } from '../server/paths.js'
+import { resolvePaths } from '../server/paths.js'
 import { fixOf } from '../server/errors.js'
 import { getServer } from '../server/server.js'
 import { writeTrack } from '../server/tracks.js'
@@ -122,6 +122,10 @@ function legLine(scene: Scene, i: number, route: Route): string | undefined {
     if (status === 'fallback') parts.push(`sea route failed: ${reason ?? 'no route found'}`)
     else if (crossesLand) parts.push(`sea route crosses land near [${crossesLand[0].toFixed(4)}, ${crossesLand[1].toFixed(4)}]`)
     else parts.push('sea route')
+  } else if (drawn?.road) {
+    const { status, reason, profile } = drawn.road
+    if (status === 'fallback') parts.push(`road route failed: ${reason ?? 'no route found'}`)
+    else parts.push(status === 'pending' ? 'road route pending' : `road route (${profile})`)
   }
   if (!parts.length) return undefined
   return `Leg ${i + 1} ${scene.stops[i]?.name ?? ''} → ${scene.stops[i + 1]?.name ?? ''}: ${parts.join(', ')}`
@@ -190,9 +194,9 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
   return { summary, data: { project, scenes, validation } }
 }
 
-/** `projectResult` for a project just read or written in `folder`, with its sea legs routed first. */
+/** `projectResult` for a project just read or written in `folder`, with its sea and road legs routed first. */
 async function withPaths(folder: string, project: Project): Promise<ToolResult> {
-  return projectResult(project, await resolveSeaPaths(folder, project))
+  return projectResult(project, await resolvePaths(folder, project))
 }
 
 /**
@@ -696,7 +700,7 @@ export const TOOLS: ToolDef<any>[] = [
     input: z.strictObject({ folder }),
     async run({ folder }) {
       const project = await loadProject(folder)
-      const { errors, warnings } = validateProject(project, { seaPaths: await resolveSeaPaths(folder, project) })
+      const { errors, warnings } = validateProject(project, { seaPaths: await resolvePaths(folder, project) })
       const summary = [validationLine(errors, warnings), ...issueLines('error', errors), ...issueLines('warning', warnings)].join('\n')
       return { summary, data: { errors, warnings } }
     },

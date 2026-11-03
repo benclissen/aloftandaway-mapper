@@ -20,7 +20,7 @@ import { CLIENT_ID, getProject, patch, RequestError, sceneParam, setSceneParam, 
 import { EditHistory, EditQueue, OutsideWrites, pathsUpdate, redoPatch, scenesAround, type Entry } from './history.js'
 import { LegsPanel } from './LegsPanel.js'
 import { PointMenu } from './PointMenu.js'
-import { isSharp, removeViaEdit, sharpEdit, type PointMenuTarget } from './RouteEditor.js'
+import { canSharpen, isSharp, removeViaEdit, sharpEdit, type PointMenuTarget } from './RouteEditor.js'
 import { SceneTabs, type SceneSummary } from './SceneTabs.js'
 import { Scrubber, type Tick } from './Scrubber.js'
 import { keyTime, ShotPanel } from './ShotPanel.js'
@@ -576,6 +576,7 @@ export function App() {
           target={pointMenu.target.point}
           at={pointMenu.at}
           sharp={menuSharp}
+          canSharpen={canSharpen(menuScene, pointMenu.target.point)}
           onToggleSharp={() => {
             const edit = sharpEdit(menuScene, pointMenu.target.point)
             if (edit) void onEdit(edit.patch, edit.label, pointMenu.seen)

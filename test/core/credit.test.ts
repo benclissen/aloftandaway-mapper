@@ -5,6 +5,8 @@ import {
   SATELLITE_CREDIT_WRITTEN,
   TERRAIN_CREDIT,
   TERRAIN_CREDIT_WRITTEN,
+  ROAD_CREDIT_WRITTEN,
+  hasRoadLeg,
   hasSeaLeg,
   projectCredit,
   sceneCredit,
@@ -72,6 +74,31 @@ describe('map credit per scene', () => {
     expect(projectCredit({ scenes: [scene] }, 'written')).toEqual([MAP_CREDIT])
     scene.context.legs[1] = { mode: 'air', via: [] }
     expect(sceneCredit(scene)).toEqual([])
+  })
+
+  test('a blank scene with a car land leg carries the map credit, and the written form the road credit', () => {
+    const scene = blankLegs(false, 'air', 'line')
+    scene.look.symbol = 'car'
+    scene.legs[1] = { ...scene.legs[1]!, mode: 'land' }
+    expect(hasRoadLeg(scene)).toBe(true)
+    expect(sceneCredit(scene)).toEqual([MAP_CREDIT])
+    expect(sceneCredit(scene, 'written')).toEqual([MAP_CREDIT, ROAD_CREDIT_WRITTEN])
+    expect(ROAD_CREDIT_WRITTEN).toBe('Road routes: OSRM on OpenStreetMap data, routing.openstreetmap.de (FOSSGIS)')
+  })
+
+  test('a land leg on a train adds nothing, and a context road leg counts', () => {
+    const scene = blankLegs(false, 'air', 'line')
+    scene.legs[1] = { ...scene.legs[1]!, mode: 'land', symbol: 'train' }
+    expect(hasRoadLeg(scene)).toBe(false)
+    expect(sceneCredit(scene, 'written')).toEqual([])
+    scene.look.symbol = 'car'
+    scene.context = {
+      from: 'Cruise',
+      stops: scene.stops.map(({ name, at }) => ({ name, at })),
+      legs: [{ mode: 'land', via: [] }, { mode: 'air', via: [] }],
+    }
+    expect(hasRoadLeg(scene)).toBe(true)
+    expect(sceneCredit(scene, 'written')).toEqual([MAP_CREDIT, ROAD_CREDIT_WRITTEN])
   })
 
   test('a blank scene without a sea leg still has no credit', () => {

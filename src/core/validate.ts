@@ -1,5 +1,6 @@
 import { cameraAt, projectToLayout, resolveShots } from './camera.js'
 import { haversineKm } from './geo.js'
+import { ROAD_OFFLINE, ROAD_STOP_FAR_KM } from './road.js'
 import { buildContextRoute, buildRoute } from './route.js'
 import { fpsValue, THEME_MAX_ZOOM, type Aspect, type Fps, type Project, type Scene } from './schema.js'
 import { NO_LAND_DATA, STOP_FAR_KM, STRAIGHT_LINE, UNVERIFIED_CAUSE, type SeaPaths } from './sea.js'
@@ -327,6 +328,41 @@ function validateScene(
           message: `${nameOf(stop)} is ${km.toFixed(1)} km from the water its sea route ${end} in, so the line crosses land to reach it.`,
           path: ['stops', stop],
           fix: 'Move the stop to the quay with update_stop, or add a via point at the harbour mouth with insert_via.',
+        })
+      }
+      route.legs.forEach((leg, i) => {
+        if (leg.road?.status !== 'fallback') return
+        if (leg.road.unverified === 'offline') {
+          warnings.push({
+            code: 'road-offline',
+            message: `${legName(i)} couldn't be routed along roads, because ${leg.road.reason ?? ROAD_OFFLINE}. It's drawn as a curve.`,
+            path: ['legs', i],
+            fix: 'Mapper tries again by itself; check the internet connection.',
+          })
+        } else {
+          warnings.push({
+            code: 'road-no-route',
+            message: `${legName(i)} has no road route between its stops. It's drawn as a curve.`,
+            path: ['legs', i],
+            fix: "Move a stop onto a road with update_stop, or set the leg's mode to line.",
+          })
+        }
+      })
+      // A stop can end one road leg and start the next: it is warned once, for the worse gap.
+      const roadFar = new Map<number, number>()
+      route.legs.forEach((leg, i) => {
+        const gaps = leg.road?.status === 'ok' ? leg.road.stopGapKm : undefined
+        if (!gaps) return
+        ;([[i, gaps[0]], [i + 1, gaps[1]]] as const).forEach(([stop, km]) => {
+          if (km > ROAD_STOP_FAR_KM && km > (roadFar.get(stop) ?? 0)) roadFar.set(stop, km)
+        })
+      })
+      for (const [stop, km] of [...roadFar].sort((a, b) => a[0] - b[0])) {
+        warnings.push({
+          code: 'road-stop-far',
+          message: `${nameOf(stop)} is ${km.toFixed(1)} km from the nearest road, so the route joins it in a straight line.`,
+          path: ['stops', stop],
+          fix: 'Move the stop onto a road with update_stop.',
         })
       }
       route.legs.forEach((leg, i) => {

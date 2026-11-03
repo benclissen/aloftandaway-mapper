@@ -17,11 +17,11 @@ import {
   type SeaPaths,
   type Timeline,
 } from '../core/index.js'
-import { resolveSeaPaths } from '../server/paths.js'
+import { resolvePaths } from '../server/paths.js'
 import { loadProject } from '../server/store.js'
 import { launchBrowser } from './chrome.js'
 import { LOAD_TIMEOUT_MS, RenderPage } from './page.js'
-import { describeWarnings, seaWarningLines } from './warnings.js'
+import { describeWarnings, roadWarningLines, seaWarningLines } from './warnings.js'
 
 const DEFAULT_PREVIEW_WIDTH = 960
 const DEFAULT_SHEET_WIDTH = 1920
@@ -194,7 +194,7 @@ interface Loaded {
  */
 async function withProject<T>(folder: string, ref: SceneRef | undefined, frameWidth: (aspect: Aspect) => number, use: (loaded: Loaded) => Promise<T>): Promise<T> {
   const project = await loadProject(folder)
-  const seaPaths = await resolveSeaPaths(folder, project)
+  const seaPaths = await resolvePaths(folder, project)
   const { scene, index } = resolveScene(project, ref)
   const timeline = buildTimeline(scene, project.output.fps, buildRoute(scene, seaPaths))
   if (timeline.totalFrames < 1) throw new Error('The project has no frames to preview.')
@@ -258,7 +258,7 @@ export async function previewFrame(args: { folder: string; at: PreviewAt; width?
       const frame = resolveFrame(at, timeline)
       const { settled } = await page.renderFrame(frame)
       const png = await page.capturePng()
-      const shown = { ...scenePreview(project, index), ...previewWarnings(settled ? [] : [frame], seaWarningLines(scene, seaPaths)) }
+      const shown = { ...scenePreview(project, index), ...previewWarnings(settled ? [] : [frame], [...seaWarningLines(scene, seaPaths), ...roadWarningLines(scene, seaPaths)]) }
       return { frame, png, fps: fpsValue(timeline.fps), name: frameFile(project, index, frame), shown }
     })
     const file = path.join(await previewsDir(args.folder), name)
@@ -333,7 +333,7 @@ export async function contactSheet(args: { folder: string; count?: number; width
         cells.push({ dataUrl: `data:image/png;base64,${png.toString('base64')}`, caption: frameCaption(project, scene, timeline, frame) })
       }
       const prefix = project.scenes.length > 1 ? `scene${index + 1}-` : ''
-      const shown = { ...scenePreview(project, index), ...previewWarnings([...unsettled], seaWarningLines(scene, seaPaths)) }
+      const shown = { ...scenePreview(project, index), ...previewWarnings([...unsettled], [...seaWarningLines(scene, seaPaths), ...roadWarningLines(scene, seaPaths)]) }
       return { frames, cells, fps: fpsValue(timeline.fps), prefix, shown }
     })
 

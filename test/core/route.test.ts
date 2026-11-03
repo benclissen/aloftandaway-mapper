@@ -17,6 +17,8 @@ import {
   nearestOnLeg,
   parseTrackCsv,
   pointAt,
+  ROAD_OFFLINE,
+  roadLegKey,
   routeNear,
   routeSea,
   seaLegKey,
@@ -32,6 +34,7 @@ import {
   type Scene,
   type SeaPath,
   type SeaPaths,
+  type SymbolKind,
   type ViaPoint,
   type XY,
 } from '../../src/core/index.js'
@@ -580,6 +583,94 @@ describe('sea and air legs', () => {
   })
 })
 
+describe('road legs', () => {
+  // Leg 0 crosses the antimeridian, so the road leg starts at 190 while its cached path starts at -170.
+  const roadScene = (mode: Scene['legs'][number]['mode'] = 'land', symbol: SymbolKind = 'car'): Scene => {
+    const base = sceneOf(stopsAt([[170, 0], [-170, 0], [-165, 1], [-160, 1]]))
+    return {
+      ...base,
+      legs: [{ mode: 'line', via: [] }, { mode, symbol, via: [] }, { mode: 'line', via: [] }],
+    }
+  }
+  const key = roadLegKey('car', [-170, 0], [-165, 1], [])
+  const cached: SeaPath = {
+    status: 'ok',
+    path: [[-170, 0], [-169, 0.4], [-167, 0.2], [-166, 0.9], [-165, 1]],
+    knots: [0, 4],
+    stopGapKm: [0.1, 0.2],
+  }
+
+  test('a routed road leg follows its path and stands alone', () => {
+    const r = buildRoute(roadScene(), { [key]: cached })
+    const leg = r.legs[1]!
+    expect(leg.mode).toBe('land')
+    expect(leg.drawnAs).toBe('line')
+    expect(leg.path).toEqual(cached.path.map(([lng, lat]) => [lng + 360, lat]))
+    expect(leg.knots).toEqual([0, 4])
+    expect(leg.road).toEqual({ status: 'ok', profile: 'car', stopGapKm: [0.1, 0.2] })
+    // The chain before ends exactly at stop 1, shaped as if the next leg were a flight.
+    expect(r.legs[0]!.path.at(-1)).toEqual([190, 0])
+    const air = buildRoute(roadScene('air'), { [key]: cached })
+    expect(r.legs[0]!.path).toEqual(air.legs[0]!.path)
+    expect(r.legs[0]!.road).toBeUndefined()
+    // The chain after starts again at stop 2.
+    expect(r.legs[2]!.path[0]).toEqual([195, 1])
+    expect(r.legs[2]!.path).toEqual(air.legs[2]!.path)
+  })
+
+  test('an unrouted road leg curves as today', () => {
+    const r = buildRoute(roadScene(), {})
+    const line = buildRoute(roadScene('line'), {})
+    expect(r.legs.map((l) => l.path)).toEqual(line.legs.map((l) => l.path))
+    expect(r.legs[1]!.road).toEqual({ status: 'pending', profile: 'car' })
+    expect(buildRoute(roadScene()).legs[1]!.road).toEqual({ status: 'pending', profile: 'car' })
+  })
+
+  test('a fallback road leg curves as today with its reason', () => {
+    const fallback: SeaPath = { status: 'fallback', reason: ROAD_OFFLINE, unverified: 'offline', path: [], knots: [] }
+    const r = buildRoute(roadScene(), { [key]: fallback })
+    const line = buildRoute(roadScene('line'), {})
+    expect(r.legs.map((l) => l.path)).toEqual(line.legs.map((l) => l.path))
+    expect(r.legs[1]!.road).toEqual({ status: 'fallback', profile: 'car', reason: ROAD_OFFLINE, unverified: 'offline' })
+  })
+
+  test('a land leg on train still chains and has no road', () => {
+    const r = buildRoute(roadScene('land', 'train'), { [key]: cached })
+    const line = buildRoute(roadScene('line'), {})
+    expect(r.legs.map((l) => l.path)).toEqual(line.legs.map((l) => l.path))
+    expect(r.legs[1]!.mode).toBe('land')
+    expect(r.legs[1]!.road).toBeUndefined()
+  })
+
+  // One via at [11, 1], which the router matched to the road at point 7.
+  const viaScene = (): { scene: Scene; seaPaths: SeaPaths } => {
+    const base = sceneOf(stopsAt([[0, 0], [12, 0]]))
+    const via: ViaPoint[] = [{ at: [11, 1] }]
+    const path: LngLat[] = Array.from({ length: 13 }, (_, i) => [i, i === 0 || i === 12 ? 0 : 0.5])
+    const road: SeaPath = { status: 'ok', path, knots: [0, 7, 12], stopGapKm: [0, 0] }
+    return {
+      scene: { ...base, legs: [{ mode: 'land', symbol: 'car', via }] },
+      seaPaths: { [roadLegKey('car', [0, 0], [12, 0], via)]: road },
+    }
+  }
+
+  test('via knots come from the road path', () => {
+    const { scene, seaPaths } = viaScene()
+    const leg = buildRoute(scene, seaPaths).legs[0]!
+    expect(leg.knots).toEqual([0, 7, 12])
+    expect(leg.path[7]).toEqual([7, 0.5])
+    expect(leg.path[0]).toEqual([0, 0])
+    expect(leg.path.at(-1)).toEqual([12, 0])
+  })
+
+  test('nearestOnLeg inserts via points in order on a road leg', () => {
+    const { scene, seaPaths } = viaScene()
+    const r = buildRoute(scene, seaPaths)
+    expect(nearestOnLeg(r, 0, [10, 0.51]).insertIndex).toBe(1)
+    expect(nearestOnLeg(r, 0, [3, 0.51]).insertIndex).toBe(0)
+  })
+})
+
 describe('effectiveSymbol', () => {
   test('a leg symbol wins over look.symbol, which applies to every other leg', () => {
     const scene = structuredClone(sceneOf(greekIslands()))
@@ -928,6 +1019,18 @@ describe('buildContextRoute', () => {
     expect(leg.drawnAs).toBe('sea')
     expect(leg.path).toHaveLength(cached.path.length)
     expect(leg.sea?.status).toBe('ok')
+  })
+
+  test('a context land leg is a road leg by the scene\'s look', () => {
+    const greek = sceneOf(greekIslands())
+    const scene: Scene = { ...sceneOf(stopsAt([[0, 0], [1, 1]])), look: { ...greek.look, symbol: 'walk' } }
+    scene.context = withContext(greek, greek.legs.map(() => ({ mode: 'land' as const, via: [] }))).context
+    const [from, to] = [greek.stops[0]!.at, greek.stops[1]!.at]
+    const road: SeaPath = { status: 'ok', path: [from, [24.5, 37.6], to], knots: [0, 2], stopGapKm: [0, 0] }
+    const route = buildContextRoute(scene, { [roadLegKey('foot', from, to, [])]: road })!
+    expect(route.legs[0]!.road).toEqual({ status: 'ok', profile: 'foot', stopGapKm: [0, 0] })
+    expect(route.legs[0]!.path).toEqual(road.path)
+    expect(route.legs[1]!.road).toEqual({ status: 'pending', profile: 'foot' })
   })
 })
 

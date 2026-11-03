@@ -15,6 +15,8 @@ import {
   NO_LAND_DATA,
   PATHS_ORIGIN,
   ProjectError,
+  ROAD_OFFLINE,
+  roadLegsOf,
   STALE_BASE_MESSAGE,
   type PatchRequest,
   type LandSource,
@@ -23,6 +25,8 @@ import {
   type ServerMessage,
 } from '../core/index.js'
 import { loadLand } from './land.js'
+import { resolveRoadPaths } from './road-paths.js'
+import { roadRouter, type RoadRouter } from './roads.js'
 import { RETRY_MS, resolveSeaPaths, retriesSoon, seaLegsOf } from './paths.js'
 import { readTrackPaths } from './tracks.js'
 import { seaWaterOn, type SeaWater } from './sea-water.js'
@@ -47,15 +51,17 @@ export interface MapperServer {
 export interface ServerOptions {
   studioDir: string
   cacheDir: string
+  /** The road router for land legs. Defaults to the shared one (`MAPPER_ROAD_ROUTER`, then the public service). */
+  roadRouter?: RoadRouter
   /** The tile server for the map and the sea router. Defaults to `MAPPER_TILE_UPSTREAM`, then OpenFreeMap. */
   tileUpstream?: string
   /** Where sea routes get their land data. Defaults to the data that ships with Mapper. */
   land?: () => Promise<LandSource>
   /** Checks sea routes against the basemap's water. Defaults to the router on this server's tile store. */
   water?: SeaWater
-  /** How often an open studio's unverified sea routes are worked out again, in ms. Default 60 s. */
+  /** How often an open studio's unverified sea and road routes are worked out again, in ms. Default 60 s. */
   retryMs?: number
-  /** The clock the sea route cache's retry times use, in ms. For tests. */
+  /** The clock the sea and road route caches' retry times use, in ms. For tests. */
   now?: () => number
 }
 
@@ -94,11 +100,13 @@ interface Registered {
   origins: Map<string, string>
   /** Whether a failure to work out sea routes has been logged for this project. */
   seaPathsFailed: boolean
+  /** Whether a road routing failure was logged for this folder. */
+  roadPathsFailed: boolean
   /** Whether a failed restamp has been logged since the last one that succeeded. */
   restampFailed: boolean
-  /** What each open socket was last sent: the version, its sea routes as JSON, and whether any is retried soon. */
+  /** What each open socket was last sent: the version, its sea and road routes as JSON, and whether any is retried soon. */
   shown: Map<WebSocket, Shown>
-  /** The next retry of unverified sea routes, while a socket shows one that's retried within the minute. */
+  /** The next retry of unverified sea or road routes, while a socket shows one that's retried within the minute. */
   retry: NodeJS.Timeout | undefined
   /** Whether a retry is running now. */
   retrying: boolean
@@ -107,7 +115,7 @@ interface Registered {
 interface Shown {
   updatedAt: string
   paths: string
-  /** Whether a route it shows was left unverified by the network or the budget, so is routed again within the minute. */
+  /** Whether a sea or road route it shows was left unverified by the network or the budget, so is routed again within the minute. */
   retry: boolean
 }
 
@@ -301,14 +309,14 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   ]
 
   /**
-   * The sea routes for `project`, and the recorded tracks it uses. When the routes can't be worked out (the land
-   * data is missing, say) every sea leg falls back with the reason, so it draws as a line and the studio and
+   * The sea and road routes for `project`, and the recorded tracks it uses. When the routes can't be worked out (the
+   * land data is missing, say) every sea leg falls back with the reason, so it draws as a line and the studio and
    * validation say why, and the error is logged the first time for each project. The tracks come back regardless.
    */
   async function seaPathsFor(entry: Registered, project: Project): Promise<SeaPaths> {
     // Sea legs of the scenes and their contexts are routed; track legs read their recorded tracks.
     const hasTrack = project.scenes.some((scene) => scene.legs.some((leg) => leg.mode === 'track'))
-    if (seaLegsOf(project).size === 0 && !hasTrack) return {}
+    if (seaLegsOf(project).size === 0 && roadLegsOf(project).size === 0 && !hasTrack) return {}
     const failed = async (e: unknown, reason: string): Promise<SeaPaths> => {
       if (!entry.seaPathsFailed) {
         entry.seaPathsFailed = true
@@ -318,7 +326,8 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
       for (const key of seaLegsOf(project).keys()) paths[key] = { status: 'fallback', reason, path: [], knots: [] }
       return { ...(await readTrackPaths(entry.folder, project).catch(() => ({}))), ...paths }
     }
-    const work = (async (): Promise<SeaPaths> => {
+    const seaWork = async (): Promise<SeaPaths> => {
+      if (seaLegsOf(project).size === 0 && !hasTrack) return {}
       let source: LandSource | undefined
       try {
         // Tracks alone need no land data.
@@ -331,7 +340,25 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
       } catch (e) {
         return await failed(e, 'Mapper could not work out the sea route')
       }
-    })()
+    }
+    // A road failure leaves every road leg drawn as a line, and never touches the sea routes.
+    const roadWork = async (): Promise<SeaPaths> => {
+      if (roadLegsOf(project).size === 0) return {}
+      try {
+        return await resolveRoadPaths(entry.folder, project, { router: opts.roadRouter ?? roadRouter(), now: opts.now })
+      } catch (e) {
+        if (!entry.roadPathsFailed) {
+          entry.roadPathsFailed = true
+          console.error(`Mapper could not work out road routes for ${entry.folder}:`, e)
+        }
+        const paths: SeaPaths = {}
+        for (const key of roadLegsOf(project).keys()) {
+          paths[key] = { status: 'fallback', reason: ROAD_OFFLINE, unverified: 'offline', path: [], knots: [] }
+        }
+        return paths
+      }
+    }
+    const work = Promise.all([seaWork(), roadWork()]).then(([sea, road]) => ({ ...sea, ...road }))
     resolving.add(work)
     try {
       return await work
@@ -449,10 +476,10 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
     entry.shown.set(ws, { updatedAt: message.project.updatedAt, paths, retry })
   }
 
-  // Retrying unverified sea routes
+  // Retrying unverified sea and road routes
 
   /**
-   * Keeps a retry coming while an open socket shows a sea route the network or the budget left unverified, and none
+   * Keeps a retry coming while an open socket shows a sea or road route the network or the budget left unverified, and none
    * otherwise: an unsettled route waits a day, for the next call after that. Each retry is `retryMs` after the last
    * one finished, so a slow one never overlaps the next.
    */
@@ -472,7 +499,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
   }
 
   /**
-   * Works out the project's sea routes again, through the cache, which routes an unverified one only once its minute
+   * Works out the project's sea and road routes again, through the cache, which routes an unverified one only once its minute
    * is up. Sockets showing this version get the routes when they differ from what they show, as a paths-only message
    * the studio takes without clearing its undo history. A version the server hasn't passed on yet goes out as an
    * ordinary reload instead, with its origin.
@@ -593,6 +620,7 @@ export async function startServer(opts: ServerOptions): Promise<MapperServer> {
       timer: undefined,
       origins: new Map(),
       seaPathsFailed: false,
+      roadPathsFailed: false,
       restampFailed: false,
       shown: new Map(),
       retry: undefined,

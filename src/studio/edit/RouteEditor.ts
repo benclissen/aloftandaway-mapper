@@ -1,6 +1,7 @@
 import { Marker, type Map as MapLibreMap, type MapMouseEvent } from 'maplibre-gl'
 import {
   clampLat,
+  legProfile,
   nearestOnLeg,
   unwrapLng,
   type LngLat,
@@ -59,6 +60,11 @@ export function isSharp(scene: Scene, target: PointTarget): boolean | undefined 
   return via && via.sharp === true
 }
 
+/** Whether the point can be made sharp: not a via point of a leg drawn along a road, which ignores the setting. */
+export function canSharpen(scene: Scene, target: PointTarget): boolean {
+  return !(target.kind === 'via' && legProfile(scene.legs[target.leg] ?? { mode: 'line' }, scene.look))
+}
+
 /**
  * The edit that switches the point between a sharp corner and a curve, or undefined if it no longer exists. The patch
  * names `scene`, so it goes to that scene whichever tab is active.
@@ -79,6 +85,18 @@ export function sharpEdit(scene: Scene, target: PointTarget): Edit | undefined {
     patch: { scene: scene.id, ops: [{ op: 'update_via', leg: target.leg, index: target.index, changes: { sharp: value } }] },
     label: sharp ? 'Curve through a via point' : 'Make a via point sharp',
   }
+}
+
+/**
+ * Where the handle for via `index` of `leg` sits, before it is moved to the world copy nearest the view. On a leg
+ * drawn along a road it is the via point as placed, since the drawn path holds the road point matched to it; on
+ * any other leg it is the point on the drawn path.
+ */
+export function viaHandleAt(scene: Scene, route: Route, leg: number, index: number): LngLat | undefined {
+  const routeLeg = route.legs[leg]
+  if (routeLeg?.road?.status === 'ok') return scene.legs[leg]?.via[index]?.at
+  const knot = routeLeg?.knots[index + 1]
+  return knot === undefined ? undefined : routeLeg!.path[knot]
 }
 
 /** Whether a leg takes via points. A recorded track is drawn as logged, so it takes none. */
@@ -241,9 +259,8 @@ export class RouteEditor {
 
   /** Where via `index` of `leg` sits on the drawn route, in the world copy nearest the view. */
   private viaPosition(route: Route, leg: number, index: number): LngLat | undefined {
-    const routeLeg = route.legs[leg]
-    const knot = routeLeg?.knots[index + 1]
-    const at = knot === undefined ? undefined : routeLeg!.path[knot]
+    const scene = this.scene
+    const at = scene && viaHandleAt(scene, route, leg, index)
     if (!at) return undefined
     return [unwrapLng(this.map.getCenter().lng, at[0]), at[1]]
   }
@@ -295,7 +312,7 @@ export class RouteEditor {
       e.stopPropagation()
       if (this.justDragged.delete(marker) || !e.altKey) return
       const t = target()
-      const edit = t && this.scene && sharpEdit(this.scene, t)
+      const edit = t && this.scene && canSharpen(this.scene, t) && sharpEdit(this.scene, t)
       if (edit) void this.edit(edit.patch, edit.label)
     })
     element.addEventListener('contextmenu', (e) => {

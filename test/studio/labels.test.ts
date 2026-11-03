@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
-import { SYMBOLS, THEMES, LegModeSchema } from '../../src/core/index.js'
-import { fallbackNote, legModeChanges, legModeOptions, MODE_LABELS, SYMBOL_LABELS, THEME_NAMES, trackNote, unverifiedNote } from '../../src/studio/edit/labels.js'
-import { canAddVia, isSharp } from '../../src/studio/edit/RouteEditor.js'
+import { LegModeSchema, NO_ROAD_ROUTE, ROAD_OFFLINE, SYMBOLS, THEMES, type Route, type Scene } from '../../src/core/index.js'
+import { fallbackNote, legModeChanges, legModeOptions, MODE_LABELS, SYMBOL_LABELS, THEME_NAMES, roadNote, trackNote, unverifiedNote } from '../../src/studio/edit/labels.js'
+import { canAddVia, canSharpen, isSharp, viaHandleAt } from '../../src/studio/edit/RouteEditor.js'
 import { greekIslands } from '../fixtures/projects.js'
 
 test('every symbol, mode and theme has a label', () => {
@@ -83,5 +83,68 @@ describe('recorded-track legs', () => {
     expect(trackNote({ status: 'ok', id: ID, stopGapKm: [0.4, 2] })).toBeUndefined()
     expect(trackNote({ status: 'ok', id: ID })).toBeUndefined()
     expect(trackNote(undefined)).toBeUndefined()
+  })
+})
+
+describe('roadNote', () => {
+  test('says why a car leg is drawn as a curve', () => {
+    expect(roadNote({ status: 'fallback', profile: 'car', reason: ROAD_OFFLINE, unverified: 'offline' })).toBe(
+      "Couldn't reach the road router, so it's drawn as a curve. Mapper tries again by itself.",
+    )
+    expect(roadNote({ status: 'fallback', profile: 'car', reason: NO_ROAD_ROUTE })).toBe(
+      "No road route between these stops, so it's drawn as a curve.",
+    )
+  })
+
+  test('names a stop that is far from the road, and is silent otherwise', () => {
+    expect(roadNote({ status: 'ok', profile: 'car', stopGapKm: [0.2, 1.2] })).toBe('A stop is 1.2 km from the nearest road.')
+    expect(roadNote({ status: 'ok', profile: 'car', stopGapKm: [0.2, 0.5] })).toBeUndefined()
+    expect(roadNote({ status: 'ok', profile: 'car' })).toBeUndefined()
+    expect(roadNote({ status: 'pending', profile: 'car' })).toBeUndefined()
+    expect(roadNote(undefined)).toBeUndefined()
+  })
+})
+
+describe('viaHandleAt', () => {
+  const scene = {
+    legs: [{ mode: 'land', via: [{ at: [24, 37.5] }] }, { mode: 'line', via: [{ at: [26, 36.5] }] }],
+  } as unknown as Scene
+  const leg = (road?: { status: 'ok' | 'pending' | 'fallback' }) =>
+    ({ knots: [0, 1, 2], path: [[23, 37], [24.001, 37.502], [25, 36]], road: road && { profile: 'car', ...road } }) as unknown as Route['legs'][number]
+
+  test('stays where the via was placed on a leg that follows the road', () => {
+    expect(viaHandleAt(scene, { legs: [leg({ status: 'ok' })] } as Route, 0, 0)).toEqual([24, 37.5])
+  })
+
+  test('sits on the drawn path on any other leg', () => {
+    expect(viaHandleAt(scene, { legs: [leg({ status: 'fallback' })] } as Route, 0, 0)).toEqual([24.001, 37.502])
+    expect(viaHandleAt(scene, { legs: [leg({ status: 'pending' })] } as Route, 0, 0)).toEqual([24.001, 37.502])
+    expect(viaHandleAt(scene, { legs: [leg()] } as Route, 0, 0)).toEqual([24.001, 37.502])
+    expect(viaHandleAt(scene, { legs: [leg()] } as Route, 0, 5)).toBeUndefined()
+  })
+})
+
+describe('canSharpen', () => {
+  const scene = (symbol: 'car' | 'train', mode: 'land' | 'line'): Scene => {
+    const s = structuredClone(greekIslands().scenes[0]!)
+    s.look.symbol = symbol
+    s.legs[0] = { ...s.legs[0]!, mode, via: [{ at: [25, 37] }] }
+    return s
+  }
+  const via = { kind: 'via', leg: 0, index: 0 } as const
+
+  test('is false for a via point on a car land leg, which follows a road', () => {
+    expect(canSharpen(scene('car', 'land'), via)).toBe(false)
+  })
+
+  test('is true for a via point on a train land leg, a line leg, or a stop', () => {
+    expect(canSharpen(scene('train', 'land'), via)).toBe(true)
+    expect(canSharpen(scene('car', 'line'), via)).toBe(true)
+    const s = scene('car', 'land')
+    expect(canSharpen(s, { kind: 'stop', id: s.stops[0]!.id })).toBe(true)
+  })
+
+  test('is true for a via point whose leg is gone', () => {
+    expect(canSharpen(scene('car', 'land'), { kind: 'via', leg: 99, index: 0 })).toBe(true)
   })
 })

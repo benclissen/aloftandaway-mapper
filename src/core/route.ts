@@ -1,6 +1,7 @@
 import { airPath } from './air.js'
 import { dist, lerp, sampleChain, type Control } from './curve.js'
 import { toLngLat, toXY, unwrapLng, headingDeg, type XY } from './geo.js'
+import { legProfile, roadLegKey, type RoadProfile } from './road.js'
 import type { LegMode, LngLat, Scene, Stop, SymbolKind } from './schema.js'
 import { seaLegKey, type SeaPath, type SeaPaths } from './sea.js'
 import { cutTrack, trackKey, type TrackCut } from './track.js'
@@ -9,7 +10,7 @@ export interface RouteLeg {
   mode: LegMode
   /**
    * `sea` follows a routed sea path, `air` is a flight arc, `track` follows a recorded track, and `line` is a plain
-   * curve through the controls.
+   * curve through the controls or, on a road leg, its road path.
    */
   drawnAs: 'line' | 'sea' | 'air' | 'track'
   /** Unwrapped `[lng, lat]`, sampled from `xy`. The ends are exactly the unwrapped stop coordinates. */
@@ -36,6 +37,18 @@ export interface RouteLeg {
     stopGapKm?: SeaPath['stopGapKm']
   }
   /**
+   * On every land leg with a road profile (see `legProfile`). `ok` when it follows its road path, which it does on its
+   * own; `pending` until it has been routed and `fallback` when routing failed, with the reason. Both curve with their
+   * neighbours like any other land leg. `unverified` and `stopGapKm` are the path's own.
+   */
+  road?: {
+    status: 'ok' | 'pending' | 'fallback'
+    profile: RoadProfile
+    reason?: string
+    unverified?: 'offline'
+    stopGapKm?: [number, number]
+  }
+  /**
    * On every track leg. `missing` when `seaPaths` has no points for its track, and then it's drawn as a straight
    * line. `stopGapKm` is how far the start and end stops are from the places on the track the leg is cut at.
    */
@@ -52,9 +65,6 @@ export interface Route {
   /** South-west and north-east corners of every path point, longitudes unwrapped. */
   bounds: [LngLat, LngLat]
 }
-
-/** Whether a leg's line may curve through its end stops into neighbouring legs. */
-const curves = (mode: LegMode) => mode === 'line' || mode === 'land'
 
 function finishLeg(mode: LegMode, drawnAs: RouteLeg['drawnAs'], path: LngLat[], xy: XY[], knots: number[]): RouteLeg {
   const cum = [0]
@@ -74,9 +84,10 @@ const nearestTurn = (lng: number, near: number): number => lng + Math.round((nea
 
 /**
  * The routed line of a scene. Line and land legs curve through their stops and via points. A sea leg follows its
- * path in `seaPaths`, keyed by `seaLegKey`, and is drawn as a line until it has one. An air leg is a flight arc. A
- * track leg follows its recorded track's points in `seaPaths`, keyed by `trackKey`, between the cuts `cutTrack`
- * finds, and is drawn as a straight line when they're missing.
+ * path in `seaPaths`, keyed by `seaLegKey`, and is drawn as a line until it has one. A road leg (a land leg with a
+ * road profile) follows its `ok` path in `seaPaths`, keyed by `roadLegKey`, and curves like any land leg until it has
+ * one. An air leg is a flight arc. A track leg follows its recorded track's points in `seaPaths`, keyed by
+ * `trackKey`, between the cuts `cutTrack` finds, and is drawn as a straight line when they're missing.
  */
 export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
   const { stops } = scene
@@ -93,18 +104,35 @@ export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
     return [prevLng, p[1]]
   }
   const specs = stops.slice(1).map((_, i) => scene.legs[i] ?? { mode: 'line' as const, via: [] })
+  // Each road leg's profile and its entry in `seaPaths`, if it has one.
+  const roads = specs.map((spec, i) => {
+    const profile = legProfile(spec, scene.look)
+    if (!profile) return undefined
+    return { profile, entry: seaPaths?.[roadLegKey(profile, stops[i]!.at, stops[i + 1]!.at, spec.via)] }
+  })
+  /** Whether leg `i` follows a routed road path, and so is a chain on its own. */
+  const routed = (i: number): boolean => roads[i]?.entry?.status === 'ok'
+  /** Whether leg `i`'s line may curve through its end stops into neighbouring legs. */
+  const curves = (i: number): boolean => (specs[i]!.mode === 'line' || specs[i]!.mode === 'land') && !routed(i)
   let start: LngLat = unwrap(stops[0]!.at)
 
   // Where the last track leg ended on its track, so the next leg on the same track starts there.
   let cut: { leg: number; id: string; end: TrackCut } | undefined
 
   // One curve runs through each chain of `line` and `land` legs. A sharp stop ends a
-  // chain, and a sea, air or track leg is a chain on its own.
+  // chain, and a sea, air, track or routed road leg is a chain on its own.
   const legs: RouteLeg[] = []
   for (let first = 0; first < specs.length; ) {
     const spec = specs[first]!
-    const leg =
-      spec.mode === 'sea' ? seaLeg(first) : spec.mode === 'air' ? airLeg(first) : spec.mode === 'track' ? trackLeg(first) : undefined
+    const leg = routed(first)
+      ? roadLeg(first)
+      : spec.mode === 'sea'
+        ? seaLeg(first)
+        : spec.mode === 'air'
+          ? airLeg(first)
+          : spec.mode === 'track'
+            ? trackLeg(first)
+            : undefined
     if (leg) {
       legs.push(leg)
       start = leg.path[leg.path.length - 1]!
@@ -113,17 +141,26 @@ export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
       continue
     }
     let last = first
-    while (
-      curves(specs[last]!.mode) &&
-      last + 1 < specs.length &&
-      curves(specs[last + 1]!.mode) &&
-      stops[last + 1]!.sharp !== true
-    )
-      last++
+    while (curves(last) && last + 1 < specs.length && curves(last + 1) && stops[last + 1]!.sharp !== true) last++
     legs.push(...lineChain(first, last))
     start = legs[legs.length - 1]!.path.at(-1)!
     first = last + 1
   }
+
+  // Tag every road leg. A routed one was tagged `ok` as it was built.
+  legs.forEach((leg, i) => {
+    const road = roads[i]
+    if (!road || leg.road) return
+    const { profile, entry } = road
+    leg.road = entry
+      ? {
+          status: 'fallback',
+          profile,
+          ...(entry.reason !== undefined && { reason: entry.reason }),
+          ...(entry.unverified === 'offline' && { unverified: entry.unverified }),
+        }
+      : { status: 'pending', profile }
+  })
 
   /** Legs `first` to `last` as one curve from `start`. */
   function lineChain(first: number, last: number): RouteLeg[] {
@@ -185,6 +222,29 @@ export function buildRoute(scene: Scene, seaPaths?: SeaPaths): Route {
       status: 'ok',
       ...(cached.crossesLand && { crossesLand: cached.crossesLand }),
       ...(cached.unverified && { unverified: cached.unverified }),
+      ...(cached.stopGapKm && { stopGapKm: cached.stopGapKm }),
+    }
+    return leg
+  }
+
+  /**
+   * Leg `i` on its routed road path, shifted by whole turns onto the unwrapped start, with the stops exactly on their
+   * own coordinates. Via knots stay on the road points the router matched them to.
+   */
+  function roadLeg(i: number): RouteLeg {
+    const { profile, entry } = roads[i]!
+    const cached = entry!
+    const shift = Math.round((start[0] - cached.path[0]![0]) / 360) * 360
+    const path: LngLat[] = cached.path.map(([lng, lat]) => [lng + shift, lat])
+    const last = path.length - 1
+    const to = stops[i + 1]!.at
+    path[0] = start
+    path[last] = [nearestTurn(to[0], path[last]![0]), to[1]]
+    const leg = finishLeg('land', 'line', path, path.map(toXY), [...cached.knots])
+    leg.road = {
+      status: 'ok',
+      profile,
+      ...(cached.unverified === 'offline' && { unverified: cached.unverified }),
       ...(cached.stopGapKm && { stopGapKm: cached.stopGapKm }),
     }
     return leg

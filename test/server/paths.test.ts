@@ -198,8 +198,13 @@ test('answers the routes when the cache cannot be written', async () => {
   const error = vi.spyOn(console, 'error').mockImplementation(() => {})
   try {
     const p = projectWith([{ from: A, to: B }])
-    const paths = await resolveSeaPaths(folder, p, { land: island(), water: undefined })
+    const land = island()
+    const paths = await resolveSeaPaths(folder, p, { land, water: undefined })
     expect(paths[seaLegKey(A, B, [])]!.status).toBe('ok')
+    const routed = land.calls
+    expect(routed).toBeGreaterThan(0)
+    await resolveSeaPaths(folder, p, { land, water: undefined })
+    expect(land.calls).toBe(routed)
     await resolveSeaPaths(folder, projectWith([{ from: B, to: A }]), { land: island(), water: undefined })
     expect(error).toHaveBeenCalledTimes(1)
   } finally {

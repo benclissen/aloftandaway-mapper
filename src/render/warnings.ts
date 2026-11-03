@@ -63,3 +63,15 @@ export function seaWarningLines(scene: Scene, seaPaths: SeaPaths, label?: string
     return [label ? `${label}: ${line[0]!.toLowerCase()}${line.slice(1)}` : line]
   })
 }
+
+/**
+ * One line for each road leg of `scene` that fell back to a curve: the leg's number and why. A leg still being
+ * routed, or routed, has none. `label` prefixes each line as it does `seaWarningLines`.
+ */
+export function roadWarningLines(scene: Scene, seaPaths: SeaPaths, label?: string): string[] {
+  return buildRoute(scene, seaPaths).legs.flatMap((leg, i) => {
+    if (leg.road?.status !== 'fallback') return []
+    const line = `Leg ${i + 1}: no road route was found (${leg.road.reason ?? 'routing failed'}), so it's drawn as a curve.`
+    return [label ? `${label}: ${line[0]!.toLowerCase()}${line.slice(1)}` : line]
+  })
+}

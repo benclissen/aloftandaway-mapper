@@ -138,6 +138,14 @@ describe('tools', () => {
     expect(text(got)).toContain('0 errors, 0 warnings')
   })
 
+  test('set_stops with legMode land reports the road route as failed', async () => {
+    const folder = path.join(tmp, 'road')
+    await call('create_project', { folder, name: 'Road' })
+    const set = await call('set_stops', { folder, stops: STOPS.slice(0, 2), legMode: 'land' })
+    expect(set.isError).toBeFalsy()
+    expect(text(set)).toContain('road route failed')
+  })
+
   test('set_stops with legMode sea reports the sea route', async () => {
     const folder = path.join(tmp, 'sea')
     await call('create_project', { folder, name: 'Sea' })

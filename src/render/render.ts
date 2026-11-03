@@ -13,7 +13,7 @@ import {
   type SceneRef,
   type SeaPaths,
 } from '../core/index.js'
-import { resolveSeaPaths } from '../server/paths.js'
+import { resolvePaths } from '../server/paths.js'
 import { packageRoot } from '../server/server.js'
 import { assertAbsolute, loadProject, projectHash } from '../server/store.js'
 import { launchBrowser, type LaunchedBrowser } from './chrome.js'
@@ -25,7 +25,7 @@ import type { CompletedPass, LayerRequest, MediaKind, PlannedJoin, PlannedScene,
 import { buildManifest, renderedFrames, writeManifest, type ExportManifest } from './manifest.js'
 import { publishFcpxml, type PublishedFcpxml } from './publish.js'
 import { errorMessage, joinParts, MEDIA, removeParts, renderPass, throwIfAborted } from './render-pass.js'
-import { describeWarnings, mergeWarnings, NO_WARNINGS, seaWarningLines, type RenderWarnings } from './warnings.js'
+import { describeWarnings, mergeWarnings, NO_WARNINGS, roadWarningLines, seaWarningLines, type RenderWarnings } from './warnings.js'
 
 /** Progress fps is averaged over this many frames. */
 const FPS_WINDOW = 25
@@ -165,7 +165,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   const snapshot = await loadProject(folder)
   const hash = projectHash(snapshot)
   // Resolved once: validation, the plan and every page load share these paths, so the frame counts agree.
-  const seaPaths = await resolveSeaPaths(folder, snapshot)
+  const seaPaths = await resolvePaths(folder, snapshot)
   // Only the picked scenes have to be renderable.
   assertRenderable(snapshot, seaPaths, pickedSceneIndexes(snapshot, args.scenes))
   const plan = planExport(snapshot, {
@@ -218,7 +218,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
     args.onWarnings?.(warningLines())
   }
   /** The sea paths used without all the basemap's water are known up front, so they are warned about from the start. */
-  for (const scene of plan.scenes) warn({ unsettled: [], other: seaWarningLines(scene.scene, seaPaths, label(scene)) }, scene.id)
+  for (const scene of plan.scenes) warn({ unsettled: [], other: [...seaWarningLines(scene.scene, seaPaths, label(scene)), ...roadWarningLines(scene.scene, seaPaths, label(scene))] }, scene.id)
   const makeManifest = (status: ExportManifest['status'], extra: { renderFps?: number; error?: string } = {}): ExportManifest =>
     buildManifest({
       project: snapshot,

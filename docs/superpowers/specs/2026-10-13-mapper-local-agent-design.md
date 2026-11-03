@@ -3,6 +3,8 @@
 Date: 2026-10-13
 Status: approved; revised 2026-10-17
 
+**Revision, 2026-11-03 (road following):** land legs follow roads; see 2026-11-03-road-following-design.md.
+
 **Revision, 2026-10-14:** the studio gains hands-on route editing (waypoints,
 curved/sharp points, transport per leg, map style, undo). The transport list
 grows to about 20 and the map styles to 9. Projects gain scenes. These need
@@ -703,7 +705,7 @@ Each leg becomes a polyline in `[lng, lat]`:
   path is found the leg falls back to `line`, and `validate_project` reports
   it. Without tiles (offline, over budget) the leg is routed on Natural Earth
   alone and flagged unverified.
-- **land**: same as `line` for now. Road snapping is out of scope.
+- **land**: follows roads, cycle routes or footpaths by transport (car and other road vehicles drive, `bike` and `walk` use their own networks). Trains, trams and cable cars stay a curve, and a road leg with no route is drawn as a curve with a warning.
 - **track**: the recorded points of `tracks/<id>.json` between the leg's two
   stops, as logged (see "Revision, 2026-10-17 (stage 10 decisions)"). No
   smoothing, no router, no via points.

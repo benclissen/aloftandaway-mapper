@@ -122,6 +122,10 @@ function legLine(scene: Scene, i: number, route: Route): string | undefined {
     if (status === 'fallback') parts.push(`sea route failed: ${reason ?? 'no route found'}`)
     else if (crossesLand) parts.push(`sea route crosses land near [${crossesLand[0].toFixed(4)}, ${crossesLand[1].toFixed(4)}]`)
     else parts.push('sea route')
+  } else if (drawn?.road) {
+    const { status, reason, profile } = drawn.road
+    if (status === 'fallback') parts.push(`road route failed: ${reason ?? 'no route found'}`)
+    else parts.push(status === 'pending' ? 'road route pending' : `road route (${profile})`)
   }
   if (!parts.length) return undefined
   return `Leg ${i + 1} ${scene.stops[i]?.name ?? ''} → ${scene.stops[i + 1]?.name ?? ''}: ${parts.join(', ')}`

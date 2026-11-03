@@ -3,6 +3,9 @@ import {
   buildRoute,
   buildTimeline,
   NO_LAND_DATA,
+  NO_ROAD_ROUTE,
+  ROAD_OFFLINE,
+  roadLegKey,
   SYMBOLS,
   haversineKm,
   trackKey,
@@ -436,6 +439,72 @@ describe('validateProject', () => {
           message: "Leg 1 (Piraeus → Mykonos)'s sea route crosses land near [24.1235, 37.5000]",
         }),
       ])
+    })
+
+    describe('road legs', () => {
+      const roadProject = () => {
+        const project = greekIslands()
+        const scene = sceneOf(project)
+        scene.look.symbol = 'car'
+        scene.legs[0] = { ...scene.legs[0]!, mode: 'land' }
+        scene.legs[1] = { ...scene.legs[1]!, mode: 'land' }
+        const at = scene.stops.map((s) => s.at)
+        const key = (i: number) => roadLegKey('car', at[i]!, at[i + 1]!, [])
+        const ok = (i: number, gap: [number, number]): SeaPaths[string] => ({
+          status: 'ok', path: [at[i]!, at[i + 1]!], knots: [0, 1], stopGapKm: gap,
+        })
+        return { project, key, ok }
+      }
+      const only = (project: Project, seaPaths: SeaPaths, code: string) =>
+        validateProject(project, { seaPaths }).warnings.filter((w) => w.code === code)
+
+      test('road-offline', () => {
+        const { project, key } = roadProject()
+        const seaPaths: SeaPaths = { [key(1)]: { status: 'fallback', reason: ROAD_OFFLINE, unverified: 'offline', path: [], knots: [] } }
+        expect(only(project, seaPaths, 'road-offline')).toEqual([
+          {
+            code: 'road-offline',
+            message: "Leg 2 (Mykonos → Santorini) couldn't be routed along roads, because the road router couldn't be reached. It's drawn as a curve.",
+            path: ['scenes', 0, 'legs', 1],
+            fix: 'Mapper tries again by itself; check the internet connection.',
+          },
+        ])
+        expect(only(project, seaPaths, 'road-no-route')).toEqual([])
+      })
+
+      test('road-no-route', () => {
+        const { project, key } = roadProject()
+        const seaPaths: SeaPaths = { [key(1)]: { status: 'fallback', reason: NO_ROAD_ROUTE, path: [], knots: [] } }
+        expect(only(project, seaPaths, 'road-no-route')).toEqual([
+          {
+            code: 'road-no-route',
+            message: "Leg 2 (Mykonos → Santorini) has no road route between its stops. It's drawn as a curve.",
+            path: ['scenes', 0, 'legs', 1],
+            fix: "Move a stop onto a road with update_stop, or set the leg's mode to line.",
+          },
+        ])
+        expect(only(project, seaPaths, 'road-offline')).toEqual([])
+      })
+
+      test('warns road-stop-far once per stop', () => {
+        const { project, key, ok } = roadProject()
+        const seaPaths: SeaPaths = { [key(0)]: ok(0, [0.1, 0.8]), [key(1)]: ok(1, [1.2, 0.1]) }
+        expect(only(project, seaPaths, 'road-stop-far')).toEqual([
+          {
+            code: 'road-stop-far',
+            message: 'Mykonos is 1.2 km from the nearest road, so the route joins it in a straight line.',
+            path: ['scenes', 0, 'stops', 1],
+            fix: 'Move the stop onto a road with update_stop.',
+          },
+        ])
+        expect(only(project, { [key(0)]: ok(0, [0.4, 0.5]) }, 'road-stop-far')).toEqual([])
+      })
+
+      test('a pending road leg gives no warning', () => {
+        const { project } = roadProject()
+        const found = validateProject(project, { seaPaths: {} }).warnings.filter((w) => w.code.startsWith('road-'))
+        expect(found).toEqual([])
+      })
     })
 
     describe('sea-unverified', () => {

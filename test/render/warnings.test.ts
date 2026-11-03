@@ -5,8 +5,8 @@ import type { Browser } from 'playwright'
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
 import { renderProject } from '../../src/render/render.js'
 import { renderPass } from '../../src/render/render-pass.js'
-import { seaLegKey, type SeaPaths } from '../../src/core/index.js'
-import { describeWarnings, mergeWarnings, NO_WARNINGS, seaWarningLines } from '../../src/render/warnings.js'
+import { NO_ROAD_ROUTE, ROAD_OFFLINE, roadLegKey, seaLegKey, type SeaPaths } from '../../src/core/index.js'
+import { describeWarnings, mergeWarnings, NO_WARNINGS, roadWarningLines, seaWarningLines } from '../../src/render/warnings.js'
 import { resolveSeaPaths } from '../../src/server/paths.js'
 import { saveProject } from '../../src/server/store.js'
 import { twoScenes } from '../fixtures/projects.js'
@@ -96,6 +96,32 @@ describe('a render with warnings', () => {
     expect(reported.at(-1)).toEqual(expected)
     const manifest = JSON.parse(await readFile(result.manifest, 'utf8')) as { warnings?: string[] }
     expect(manifest.warnings).toEqual(expected)
+  })
+})
+
+describe('road warning lines', () => {
+  const setup = () => {
+    const sail = structuredClone(twoScenes().scenes[1]!)
+    sail.look.symbol = 'car'
+    sail.legs[1] = { ...sail.legs[1]!, mode: 'land' }
+    const [, from, to] = sail.stops.map((stop) => stop.at)
+    return { sail, key: roadLegKey('car', from!, to!, []), from: from!, to: to! }
+  }
+
+  test('an offline or no-route fallback is one line, with the label prefix on a multi-scene project', () => {
+    const { sail, key } = setup()
+    const offline: SeaPaths = { [key]: { status: 'fallback', reason: ROAD_OFFLINE, unverified: 'offline', path: [], knots: [] } }
+    expect(roadWarningLines(sail, offline)).toEqual(["Leg 2: no road route was found (the road router couldn't be reached), so it's drawn as a curve."])
+    const none: SeaPaths = { [key]: { status: 'fallback', reason: NO_ROAD_ROUTE, path: [], knots: [] } }
+    expect(roadWarningLines(sail, none, 'Scene 2 of 2 · Sail')).toEqual([
+      "Scene 2 of 2 · Sail: leg 2: no road route was found (there is no road route between its stops), so it's drawn as a curve.",
+    ])
+  })
+
+  test('an ok or pending road leg has none', () => {
+    const { sail, key, from, to } = setup()
+    expect(roadWarningLines(sail, { [key]: { status: 'ok', path: [from, to], knots: [0, 1], stopGapKm: [0, 0] } })).toEqual([])
+    expect(roadWarningLines(sail, {})).toEqual([])
   })
 })
 

@@ -1,3 +1,4 @@
+import { legProfile } from './road.js'
 import { MAP_CREDIT, type Project, type Scene } from './schema.js'
 
 /** Required for the `satellite` style. Only the 2016 EOX Cloudless layer may be used (CC BY 4.0). */
@@ -63,6 +64,21 @@ export function hasSeaLeg(scene: Pick<Scene, 'stops' | 'legs' | 'context'>): boo
   )
 }
 
+/** The road router's credit as written into notes, the manifest and tool text. The burned-in credit doesn't carry it. */
+export const ROAD_CREDIT_WRITTEN = 'Road routes: OSRM on OpenStreetMap data, routing.openstreetmap.de (FOSSGIS)'
+
+/**
+ * Whether the scene draws a road leg: a land leg with a road profile, between two of its stops or in its route
+ * context (which uses the scene's look). A road route is made from OpenStreetMap data, so the scene needs the map
+ * credit even where no map is shown.
+ */
+export function hasRoadLeg(scene: Pick<Scene, 'stops' | 'legs' | 'context' | 'look'>): boolean {
+  return (
+    scene.legs.some((leg, i) => legProfile(leg, scene.look) !== undefined && i + 1 < scene.stops.length) ||
+    (scene.context?.legs.some((leg, i) => legProfile(leg, scene.look) !== undefined && i + 1 < scene.context!.stops.length) ?? false)
+  )
+}
+
 /**
  * The credit lines a scene needs, in order. The map credit comes first, also for satellite (its labels are
  * OpenStreetMap data). `blank` shows no map data, so it needs the map credit only when a sea leg's route (the
@@ -71,9 +87,11 @@ export function hasSeaLeg(scene: Pick<Scene, 'stops' | 'legs' | 'context'>): boo
 export function sceneCredit(scene: Scene, form: CreditForm = 'burned'): string[] {
   const { theme } = scene.look
   const lines: string[] = []
-  if (theme !== 'blank' || hasSeaLeg(scene)) lines.push(MAP_CREDIT)
+  const road = hasRoadLeg(scene)
+  if (theme !== 'blank' || hasSeaLeg(scene) || road) lines.push(MAP_CREDIT)
   if (theme === 'satellite') lines.push(form === 'written' ? SATELLITE_CREDIT_WRITTEN : SATELLITE_CREDIT)
   if (usesElevation(scene.look)) lines.push(form === 'written' ? TERRAIN_CREDIT_WRITTEN : TERRAIN_CREDIT)
+  if (road && form === 'written') lines.push(ROAD_CREDIT_WRITTEN)
   return lines
 }
 

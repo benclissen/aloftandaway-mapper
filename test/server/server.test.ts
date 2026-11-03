@@ -5,8 +5,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { WebSocket } from 'ws'
-import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, PATHS_ORIGIN, routeSea, seaLegKey, STALE_BASE_MESSAGE, trackKey, validateProject, type LandSource, type LngLat, type Project, type ServerMessage, type ViaPoint } from '../../src/core/index.js'
+import { decodeLand, encodeLand, landIndex, NO_LAND_DATA, PATHS_ORIGIN, ROAD_OFFLINE, roadLegKey, routeSea, seaLegKey, STALE_BASE_MESSAGE, trackKey, validateProject, type LandSource, type LngLat, type Project, type ServerMessage, type ViaPoint } from '../../src/core/index.js'
 import { PROJECT_FILE, createProject, loadProject, mutateProject, saveProject } from '../../src/server/store.js'
+import type { RoadReply, RoadRouter } from '../../src/server/roads.js'
 import type { SeaWater } from '../../src/server/sea-water.js'
 import { writeTrack } from '../../src/server/tracks.js'
 import { getServer, startServer, WATCH_DEBOUNCE_MS, type MapperServer, type ServerOptions } from '../../src/server/server.js'
@@ -978,6 +979,109 @@ describe('sea paths', () => {
       }
     } finally {
       console.error = error
+    }
+  })
+})
+
+describe('road paths', () => {
+  let roads: MapperServer
+  let roadKey: string
+  const P: LngLat = [9, 50]
+  const Q: LngLat = [9.1, 50.1]
+  const FAR: LngLat = [11, 50]
+  const island = (): LandSource =>
+    landIndex(decodeLand(encodeLand('test-land', [[[9.8, 49.5], [10.2, 49.5], [10.2, 50.5], [9.8, 50.5]]])))
+  const carKey = roadLegKey('car', P, Q, [])
+  const okReply = (): RoadReply => ({
+    kind: 'ok',
+    answer: { code: 'Ok', routes: [{ geometry: { coordinates: [[9.001, 50.001], [9.05, 50.08], [9.099, 50.099]] } }] },
+  })
+  const router = (reply: () => RoadReply | Promise<RoadReply>): RoadRouter & { calls: number } => {
+    const r = { calls: 0, route: async () => (r.calls++, reply()) }
+    return r
+  }
+  const withCarLeg = (p: Project): Project => ({
+    ...p,
+    scenes: [
+      {
+        ...p.scenes[0]!,
+        stops: [
+          { id: 'a', name: 'A', at: P, pause: 0, sign: 'always' },
+          { id: 'b', name: 'B', at: Q, pause: 0, sign: 'always' },
+        ],
+        legs: [{ mode: 'land', via: [] }],
+      },
+    ],
+  })
+  async function roadServer(roadRouter: RoadRouter, extra: Partial<ServerOptions> = {}): Promise<void> {
+    // Only this server watches the folder, so no other server rewrites its path cache.
+    await server.close()
+    await saveProject(folder, withCarLeg(await loadProject(folder)))
+    roads = await startServer({ studioDir, cacheDir: path.join(tmp, 'cache3'), land: async () => island(), water: fakeWater(), roadRouter, ...extra })
+    roadKey = await roads.registerProject(folder)
+  }
+  afterEach(async () => {
+    await roads?.close()
+  })
+
+  test('pushes road paths to the studio', async () => {
+    await roadServer(router(okReply))
+    const body = (await call(`${roads.base}api/projects/${roadKey}`)).json()
+    expect(body.seaPaths[carKey].status).toBe('ok')
+    const { ws, next } = await connect(roads.base.replace('http:', 'ws:') + `ws/projects/${roadKey}`)
+    try {
+      expect(((await next()) as any).seaPaths[carKey].status).toBe('ok')
+    } finally {
+      ws.close()
+    }
+  })
+
+  test("a road failure doesn't break sea paths", async () => {
+    const error = console.error
+    console.error = () => undefined
+    try {
+      await roadServer({
+        route: async () => {
+          throw new Error('boom')
+        },
+      })
+      await mutateProject(folder, (p) => {
+        const scene = p.scenes[0]!
+        return {
+          ...p,
+          scenes: [
+            {
+              ...scene,
+              stops: [...scene.stops, { id: 'c', name: 'C', at: FAR, pause: 0, sign: 'always' }],
+              legs: [...scene.legs, { mode: 'sea', via: [] }],
+            },
+          ],
+        }
+      })
+      const body = (await call(`${roads.base}api/projects/${roadKey}`)).json()
+      expect(body.seaPaths[carKey]).toMatchObject({ status: 'fallback', reason: ROAD_OFFLINE, unverified: 'offline', path: [] })
+      expect(body.seaPaths[seaLegKey(Q, FAR, [])]).toBeDefined()
+    } finally {
+      console.error = error
+    }
+  })
+
+  test('retries an offline road leg', async () => {
+    let online = false
+    let clock = 0
+    const r = router(() => (online ? okReply() : { kind: 'offline' }))
+    await roadServer(r, { retryMs: RETRY, now: () => clock })
+    const { ws, next } = await connect(roads.base.replace('http:', 'ws:') + `ws/projects/${roadKey}`)
+    try {
+      const first = (await next()) as any
+      expect(first.seaPaths[carKey].unverified).toBe('offline')
+      online = true
+      clock = 61_000
+      const upgraded = (await next(2000)) as any
+      expect(upgraded.seaPaths[carKey].status).toBe('ok')
+      expect(r.calls).toBeGreaterThan(1)
+    } finally {
+      ws.close()
     }
   })
 })

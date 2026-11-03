@@ -34,7 +34,8 @@ export interface SeaPath {
   reason?: string
   /**
    * Unwrapped from `from`'s longitude. `path[0]` is exactly `from`, `path[knots[i + 1]]` is exactly
-   * via `i`, and the last point is exactly `to`. Empty on fallback.
+   * via `i`, and the last point is exactly `to`. On a road entry `path[knots[i + 1]]` is instead the road point the
+   * router matched to via `i`, not the via itself. Empty on fallback.
    */
   path: LngLat[]
   /** Indices into `path` of `from`, each via point in order, and `to`. Empty on fallback. */
@@ -56,7 +57,7 @@ export interface SeaPath {
 /**
  * Each sea leg's path, keyed by `seaLegKey`. It also carries each recorded track the project uses, keyed by
  * `trackKey` (`track:<id>`), as `{ status: 'ok', path: points, knots: [] }` with the points wrapped to ±180. A track
- * whose file is missing or unreadable has no entry.
+ * whose file is missing or unreadable has no entry. Each road leg's path (see `roadPath`) is keyed by `roadLegKey`.
  */
 export type SeaPaths = Record<string, SeaPath>
 

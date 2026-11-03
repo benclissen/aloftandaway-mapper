@@ -45,7 +45,7 @@ beforeAll(async () => {
     new StdioClientTransport({
       command: process.execPath,
       args: [MAIN, 'mcp'],
-      env: { ...(process.env as Record<string, string>), MAPPER_CACHE_DIR: path.join(tmp, 'cache'), MAPPER_TILE_UPSTREAM: seaFixtures.url },
+      env: { ...(process.env as Record<string, string>), MAPPER_CACHE_DIR: path.join(tmp, 'cache'), MAPPER_TILE_UPSTREAM: seaFixtures.url, MAPPER_ROAD_ROUTER: 'http://127.0.0.1:9' },
       stderr: 'inherit',
     }),
   )
@@ -158,6 +158,39 @@ test('studio edits reach the agent', async () => {
   const differing = pixelDiff(before, after)
   expect(differing, `${differing} of ${width * height} pixels differ`).toBeGreaterThan(width * height * 0.005)
 }, 120_000)
+
+test('a via point on a road leg has no sharp corner; a line leg keeps it', async () => {
+  const folder = path.join(tmp, 'road-menu')
+  await call('create_project', { folder, name: 'Roads' })
+  await call('set_stops', { folder, stops: STOPS })
+  await call('update_project', {
+    folder,
+    ops: [
+      { op: 'update_leg', index: 0, changes: { mode: 'land', symbol: 'car', via: [{ at: [24.4, 37.9] }] } },
+      { op: 'update_leg', index: 1, changes: { mode: 'line', via: [{ at: [25.4, 37] }] } },
+    ],
+  })
+
+  const { page, close } = await openStudio(folder)
+  try {
+    await page.getByTestId('leg-row-0').click()
+    await page.getByTestId('via-marker-0-0').waitFor()
+    // The router can't be reached, so the leg says so, and the handle stays at the via point as placed.
+    await page.getByTestId('leg-road-0').waitFor()
+    await page.getByTestId('via-marker-0-0').click({ button: 'right' })
+    await page.getByTestId('point-menu-remove').waitFor()
+    expect(await page.getByTestId('point-menu-sharp').count()).toBe(0)
+    await page.keyboard.press('Escape')
+
+    await page.getByTestId('leg-row-1').click()
+    await page.getByTestId('via-marker-1-0').waitFor()
+    await page.getByTestId('via-marker-1-0').click({ button: 'right' })
+    await page.getByTestId('point-menu-sharp').waitFor()
+    await page.getByTestId('point-menu-remove').waitFor()
+  } finally {
+    await close()
+  }
+}, 60_000)
 
 test('an agent edit to another scene clears history and keeps the tab', async () => {
   const folder = path.join(tmp, 'two-scenes')

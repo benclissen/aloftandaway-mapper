@@ -81,6 +81,18 @@ export function sharpEdit(scene: Scene, target: PointTarget): Edit | undefined {
   }
 }
 
+/**
+ * Where the handle for via `index` of `leg` sits, before it is moved to the world copy nearest the view. On a leg
+ * drawn along a road it is the via point as placed, since the drawn path holds the road point matched to it; on
+ * any other leg it is the point on the drawn path.
+ */
+export function viaHandleAt(scene: Scene, route: Route, leg: number, index: number): LngLat | undefined {
+  const routeLeg = route.legs[leg]
+  if (routeLeg?.road?.status === 'ok') return scene.legs[leg]?.via[index]?.at
+  const knot = routeLeg?.knots[index + 1]
+  return knot === undefined ? undefined : routeLeg!.path[knot]
+}
+
 /** Whether a leg takes via points. A recorded track is drawn as logged, so it takes none. */
 export function canAddVia(leg: Pick<Leg, 'mode'> | undefined): boolean {
   return leg !== undefined && leg.mode !== 'track'
@@ -241,9 +253,8 @@ export class RouteEditor {
 
   /** Where via `index` of `leg` sits on the drawn route, in the world copy nearest the view. */
   private viaPosition(route: Route, leg: number, index: number): LngLat | undefined {
-    const routeLeg = route.legs[leg]
-    const knot = routeLeg?.knots[index + 1]
-    const at = knot === undefined ? undefined : routeLeg!.path[knot]
+    const scene = this.scene
+    const at = scene && viaHandleAt(scene, route, leg, index)
     if (!at) return undefined
     return [unwrapLng(this.map.getCenter().lng, at[0]), at[1]]
   }

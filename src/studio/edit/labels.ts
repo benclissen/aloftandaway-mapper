@@ -1,4 +1,4 @@
-import { STRAIGHT_LINE, TRACK_NEAR_KM, UNVERIFIED_CAUSE, type Leg, type LegChanges, type LegMode, type RouteLeg, type SeaPath, type SymbolKind, type ThemeId } from '../../core/index.js'
+import { NO_ROAD_ROUTE, ROAD_OFFLINE, ROAD_STOP_FAR_KM, STRAIGHT_LINE, TRACK_NEAR_KM, UNVERIFIED_CAUSE, type Leg, type LegChanges, type LegMode, type RouteLeg, type SeaPath, type SymbolKind, type ThemeId } from '../../core/index.js'
 
 export const SYMBOL_LABELS: Record<SymbolKind, string> = {
   none: 'None',
@@ -51,6 +51,22 @@ export function trackNote(track: RouteLeg['track']): string | undefined {
   if (track.status === 'missing') return "Its recorded track file is missing, so it's drawn as a straight line."
   const km = Math.max(...(track.stopGapKm ?? [0]))
   return km > TRACK_NEAR_KM ? `A stop is ${km.toFixed(1)} km from the recorded track.` : undefined
+}
+
+/**
+ * The legs panel's note for a leg that follows roads and isn't drawn along one, or has a stop far from the nearest road.
+ * A pending route has none; the router's answer replaces it.
+ */
+export function roadNote(road: RouteLeg['road']): string | undefined {
+  if (!road) return undefined
+  if (road.status === 'fallback') {
+    if (road.reason === ROAD_OFFLINE) return "Couldn't reach the road router, so it's drawn as a curve. Mapper tries again by itself."
+    if (road.reason === NO_ROAD_ROUTE) return "No road route between these stops, so it's drawn as a curve."
+    return undefined
+  }
+  if (road.status !== 'ok') return undefined
+  const km = Math.max(...(road.stopGapKm ?? [0]))
+  return km > ROAD_STOP_FAR_KM ? `A stop is ${km.toFixed(1)} km from the nearest road.` : undefined
 }
 
 export const THEME_NAMES: Record<ThemeId, string> = {

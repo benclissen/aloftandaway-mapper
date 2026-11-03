@@ -6,6 +6,7 @@ import {
   fpsValue,
   invertPatch,
   isSceneOp,
+  legProfile,
   newSceneId,
   sceneTitle,
   sceneTitleOf,
@@ -576,6 +577,9 @@ export function App() {
           target={pointMenu.target.point}
           at={pointMenu.at}
           sharp={menuSharp}
+          canSharpen={
+            !(pointMenu.target.point.kind === 'via' && legProfile(menuScene.legs[pointMenu.target.point.leg] ?? { mode: 'line' }, menuScene.look))
+          }
           onToggleSharp={() => {
             const edit = sharpEdit(menuScene, pointMenu.target.point)
             if (edit) void onEdit(edit.patch, edit.label, pointMenu.seen)

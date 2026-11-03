@@ -1,7 +1,9 @@
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { ROUTER_VERSION, routeSea, seaLegKey, type LandSource, type LngLat, type Project, type SeaPath, type SeaPaths, type ViaPoint } from '../core/index.js'
-import { writeFileAtomic } from './atomic.js'
+import { inOrder, writeFileAtomic } from './atomic.js'
+import { resolveRoadPaths } from './road-paths.js'
+import type { RoadRouter } from './roads.js'
 import { loadLand } from './land.js'
 import { OFFLINE_MS, SEA_BUDGET_TILES, SEA_WATER_VERSION, seaWater, type SeaBudget, type SeaWater, type WaterNote } from './sea-water.js'
 import { readTrackPaths } from './tracks.js'
@@ -36,7 +38,7 @@ interface CacheFile {
 }
 
 /** True when `value` is a `SeaPath` that `buildRoute` can use. */
-function wellFormed(value: unknown): value is SeaPath {
+export function wellFormed(value: unknown): value is SeaPath {
   if (typeof value !== 'object' || value === null) return false
   const e = value as Partial<SeaPath>
   if (e.status === 'fallback') return true
@@ -151,19 +153,6 @@ function offlineEntry(sea: SeaPath, done: number): Entry {
 /** Folders whose cache couldn't be written, logged once each. */
 const unwritable = new Set<string>()
 
-const chains = new Map<string, Promise<unknown>>()
-
-/** Runs `task` after every earlier task for `folder` has finished, whether or not they failed. */
-function inOrder<T>(folder: string, task: () => Promise<T>): Promise<T> {
-  const run = (chains.get(folder) ?? Promise.resolve()).then(task, task)
-  const tail = run.catch(() => undefined)
-  chains.set(folder, tail)
-  void tail.then(() => {
-    if (chains.get(folder) === tail) chains.delete(folder)
-  })
-  return run
-}
-
 /** Every sea leg in `project`, keyed by `seaLegKey`: each scene's own, and those of its context. */
 export function seaLegsOf(project: Project): Map<string, [LngLat, LngLat, ViaPoint[]]> {
   const legs = new Map<string, [LngLat, LngLat, ViaPoint[]]>()
@@ -258,4 +247,19 @@ export function resolveSeaPaths(folder: string, project: Project, opts: ResolveO
     }
     return result
   })
+}
+
+/**
+ * Every leg's path: the sea legs' (`resolveSeaPaths`), the recorded tracks', and the road legs' (`resolveRoadPaths`),
+ * in one map. The two never share a key.
+ */
+export async function resolvePaths(
+  folder: string,
+  project: Project,
+  opts: ResolveOptions & { router?: RoadRouter } = {},
+): Promise<SeaPaths> {
+  const { router, ...seaOpts } = opts
+  const sea = await resolveSeaPaths(folder, project, seaOpts)
+  const road = await resolveRoadPaths(folder, project, { router, now: opts.now })
+  return { ...sea, ...road }
 }

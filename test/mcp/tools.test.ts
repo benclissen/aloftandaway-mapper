@@ -143,7 +143,7 @@ describe('tools', () => {
     await call('create_project', { folder, name: 'Road' })
     const set = await call('set_stops', { folder, stops: STOPS.slice(0, 2), legMode: 'land' })
     expect(set.isError).toBeFalsy()
-    expect(text(set)).toContain('road route pending')
+    expect(text(set)).toContain('road route failed')
   })
 
   test('set_stops with legMode sea reports the sea route', async () => {

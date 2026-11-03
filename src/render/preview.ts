@@ -17,7 +17,7 @@ import {
   type SeaPaths,
   type Timeline,
 } from '../core/index.js'
-import { resolveSeaPaths } from '../server/paths.js'
+import { resolvePaths } from '../server/paths.js'
 import { loadProject } from '../server/store.js'
 import { launchBrowser } from './chrome.js'
 import { LOAD_TIMEOUT_MS, RenderPage } from './page.js'
@@ -194,7 +194,7 @@ interface Loaded {
  */
 async function withProject<T>(folder: string, ref: SceneRef | undefined, frameWidth: (aspect: Aspect) => number, use: (loaded: Loaded) => Promise<T>): Promise<T> {
   const project = await loadProject(folder)
-  const seaPaths = await resolveSeaPaths(folder, project)
+  const seaPaths = await resolvePaths(folder, project)
   const { scene, index } = resolveScene(project, ref)
   const timeline = buildTimeline(scene, project.output.fps, buildRoute(scene, seaPaths))
   if (timeline.totalFrames < 1) throw new Error('The project has no frames to preview.')

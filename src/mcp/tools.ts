@@ -54,7 +54,7 @@ import {
 import { contactSheet, PreviewAtSchema, previewFrame } from '../render/preview.js'
 import { cancelRender, renderStatus, startRenderJob, type RenderStatus } from '../render/jobs.js'
 import type { RenderResult } from '../render/render.js'
-import { resolveSeaPaths } from '../server/paths.js'
+import { resolvePaths } from '../server/paths.js'
 import { fixOf } from '../server/errors.js'
 import { getServer } from '../server/server.js'
 import { writeTrack } from '../server/tracks.js'
@@ -196,7 +196,7 @@ function projectResult(project: Project, seaPaths: SeaPaths): ToolResult {
 
 /** `projectResult` for a project just read or written in `folder`, with its sea legs routed first. */
 async function withPaths(folder: string, project: Project): Promise<ToolResult> {
-  return projectResult(project, await resolveSeaPaths(folder, project))
+  return projectResult(project, await resolvePaths(folder, project))
 }
 
 /**
@@ -700,7 +700,7 @@ export const TOOLS: ToolDef<any>[] = [
     input: z.strictObject({ folder }),
     async run({ folder }) {
       const project = await loadProject(folder)
-      const { errors, warnings } = validateProject(project, { seaPaths: await resolveSeaPaths(folder, project) })
+      const { errors, warnings } = validateProject(project, { seaPaths: await resolvePaths(folder, project) })
       const summary = [validationLine(errors, warnings), ...issueLines('error', errors), ...issueLines('warning', warnings)].join('\n')
       return { summary, data: { errors, warnings } }
     },

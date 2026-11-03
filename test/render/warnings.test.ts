@@ -7,7 +7,7 @@ import { renderProject } from '../../src/render/render.js'
 import { renderPass } from '../../src/render/render-pass.js'
 import { NO_ROAD_ROUTE, ROAD_OFFLINE, roadLegKey, seaLegKey, type SeaPaths } from '../../src/core/index.js'
 import { describeWarnings, mergeWarnings, NO_WARNINGS, roadWarningLines, seaWarningLines } from '../../src/render/warnings.js'
-import { resolveSeaPaths } from '../../src/server/paths.js'
+import { resolvePaths } from '../../src/server/paths.js'
 import { saveProject } from '../../src/server/store.js'
 import { twoScenes } from '../fixtures/projects.js'
 
@@ -22,14 +22,14 @@ vi.mock('../../src/render/render-pass.js', async (importOriginal) => ({
 
 vi.mock('../../src/server/paths.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/server/paths.js')>()),
-  resolveSeaPaths: vi.fn(),
+  resolvePaths: vi.fn(),
 }))
 
 let tmp: string
 
 beforeAll(async () => {
-  const { resolveSeaPaths: real } = await vi.importActual<typeof import('../../src/server/paths.js')>('../../src/server/paths.js')
-  vi.mocked(resolveSeaPaths).mockImplementation(real)
+  const { resolvePaths: real } = await vi.importActual<typeof import('../../src/server/paths.js')>('../../src/server/paths.js')
+  vi.mocked(resolvePaths).mockImplementation(real)
   tmp = await mkdtemp(path.join(os.tmpdir(), 'mapper-warnings-'))
 })
 
@@ -213,7 +213,7 @@ describe('unverified sea paths', () => {
     const folder = await mkdtemp(path.join(tmp, 'unverified-'))
     const { project, seaPaths } = sailBySea('offline')
     await saveProject(folder, project)
-    vi.mocked(resolveSeaPaths).mockResolvedValueOnce(seaPaths)
+    vi.mocked(resolvePaths).mockResolvedValueOnce(seaPaths)
     const reported: string[][] = []
     const result = await renderProject({ folder, layers: ['map'], onWarnings: (w) => reported.push(w) })
     const expected = [`Scene 2 of 2 · Sail: l${OFFLINE.slice(1)}`]
@@ -223,13 +223,13 @@ describe('unverified sea paths', () => {
     expect(manifest.warnings).toEqual(expected)
 
     // Only picked scenes count: Drive alone has none, Sail alone keeps its label.
-    vi.mocked(resolveSeaPaths).mockResolvedValueOnce(seaPaths)
+    vi.mocked(resolvePaths).mockResolvedValueOnce(seaPaths)
     expect((await renderProject({ folder, layers: ['map'], scenes: [2] })).warnings).toEqual(expected)
-    vi.mocked(resolveSeaPaths).mockResolvedValueOnce(seaPaths)
+    vi.mocked(resolvePaths).mockResolvedValueOnce(seaPaths)
     expect((await renderProject({ folder, layers: ['map'], scenes: [1] })).warnings).toEqual([])
 
     // A verified path adds nothing.
-    vi.mocked(resolveSeaPaths).mockResolvedValueOnce(sailBySea().seaPaths)
+    vi.mocked(resolvePaths).mockResolvedValueOnce(sailBySea().seaPaths)
     const clean = await renderProject({ folder, layers: ['map'] })
     expect(clean.warnings).toEqual([])
     expect(JSON.parse(await readFile(clean.manifest, 'utf8'))).not.toHaveProperty('warnings')

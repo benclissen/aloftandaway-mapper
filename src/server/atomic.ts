@@ -32,3 +32,16 @@ export async function writeFileAtomic(file: string, text: string, opts: AtomicOp
     throw e
   }
 }
+
+const chains = new Map<string, Promise<unknown>>()
+
+/** Runs `task` after every earlier task for `folder` has finished, whether or not they failed. */
+export function inOrder<T>(folder: string, task: () => Promise<T>): Promise<T> {
+  const run = (chains.get(folder) ?? Promise.resolve()).then(task, task)
+  const tail = run.catch(() => undefined)
+  chains.set(folder, tail)
+  void tail.then(() => {
+    if (chains.get(folder) === tail) chains.delete(folder)
+  })
+  return run
+}

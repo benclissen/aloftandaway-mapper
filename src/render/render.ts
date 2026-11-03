@@ -13,7 +13,7 @@ import {
   type SceneRef,
   type SeaPaths,
 } from '../core/index.js'
-import { resolveSeaPaths } from '../server/paths.js'
+import { resolvePaths } from '../server/paths.js'
 import { packageRoot } from '../server/server.js'
 import { assertAbsolute, loadProject, projectHash } from '../server/store.js'
 import { launchBrowser, type LaunchedBrowser } from './chrome.js'
@@ -165,7 +165,7 @@ export async function renderProject(args: RenderArgs): Promise<RenderResult> {
   const snapshot = await loadProject(folder)
   const hash = projectHash(snapshot)
   // Resolved once: validation, the plan and every page load share these paths, so the frame counts agree.
-  const seaPaths = await resolveSeaPaths(folder, snapshot)
+  const seaPaths = await resolvePaths(folder, snapshot)
   // Only the picked scenes have to be renderable.
   assertRenderable(snapshot, seaPaths, pickedSceneIndexes(snapshot, args.scenes))
   const plan = planExport(snapshot, {

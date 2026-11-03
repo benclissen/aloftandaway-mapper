@@ -57,9 +57,11 @@ Route context legs (`scene.context`) have no symbol of their own, so they take
 the profile of the scene's `look.symbol`, by the same table.
 
 A `land` leg with no profile still curves into neighbouring `line` and `land`
-legs, exactly as now. A `land` leg with a profile (a road leg) is drawn on its
-own, like a sea leg: the curve of the legs before it ends at its first stop,
-and the legs after it start a new curve at its last stop.
+legs, exactly as now. A road leg (a `land` leg with a profile) that has a
+route is drawn on its own, like a sea leg: the curve of the legs before it
+ends at its first stop, and the legs after it start a new curve at its last
+stop. A road leg without a route yet (pending or fallback) is drawn exactly as
+today, curving into its neighbours.
 
 ### Via points
 
@@ -126,9 +128,9 @@ timeline read it the same way. `unverified` only ever takes `'offline'`.
 `buildRoute` reads road paths from the same lookup it already takes
 (`SeaPaths`, which also carries tracks). A road leg with an `ok` path follows
 it: its first and last points are the stops exactly, and `knots` index the
-stops and the matched via points. A road leg without one is drawn as a curve on
-its own (`lineChain(i, i)`), tagged `pending` or `fallback` with its reason,
-the same way an unrouted sea leg is. `RouteLeg` gains a `road` status field
+stops and the matched via points. A road leg without one takes part in the
+`line`/`land` curve chain exactly as today, and is tagged `pending` or
+`fallback` with its reason. `RouteLeg` gains a `road` status field
 alongside `sea`. A road leg is drawn in the leg's normal line style.
 
 ### `src/server/roads.ts`

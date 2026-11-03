@@ -84,12 +84,16 @@ const FNV_OFFSET = 0xcbf29ce484222325n
 const FNV_PRIME = 0x100000001b3n
 const MASK_64 = 0xffffffffffffffffn
 
-/** A cache key for one sea leg: 16 hex characters of FNV-1a 64 over its inputs. */
-export function seaLegKey(from: LngLat, to: LngLat, via: ViaPoint[]): string {
-  const text = JSON.stringify([ROUTER_VERSION, from, to, via.map((v) => [v.at, v.sharp === true])])
+/** FNV-1a 64 over the UTF-8 bytes of `text`, as 16 hex characters. */
+export function fnv1a64(text: string): string {
   let hash = FNV_OFFSET
   for (const byte of new TextEncoder().encode(text)) hash = ((hash ^ BigInt(byte)) * FNV_PRIME) & MASK_64
   return hash.toString(16).padStart(16, '0')
+}
+
+/** A cache key for one sea leg: 16 hex characters of FNV-1a 64 over its inputs. */
+export function seaLegKey(from: LngLat, to: LngLat, via: ViaPoint[]): string {
+  return fnv1a64(JSON.stringify([ROUTER_VERSION, from, to, via.map((v) => [v.at, v.sharp === true])]))
 }
 
 /** `lng` shifted by whole turns into [-180, 180). */
